@@ -16,6 +16,7 @@ import { fetchWithProxy } from "../utils/proxy-fetch.js";
 import { isApiKeyOptionalForEndpoint } from "../utils/llm-endpoint-auth.js";
 import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
 import { createLeadingThinkTagStripper, stripLeadingThinkBlock } from "./think-tag-stripper.js";
+import { CODEX_SERVICE_ID, runCodexCliCompletion } from "./codex-cli.js";
 
 
 // === Streaming Monitor Types ===
@@ -174,7 +175,8 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   // pi-ai provider 字段：大多数情况 pi-ai 会按 baseUrl 自动嗅探（openrouter.ai / api.z.ai /
   // api.x.ai / deepseek.com / anthropic.com 等）。这里只列 pi-ai 嗅探不到、需要显式指定的少数情况。
   let piProvider: string;
-  if (inkosProvider?.id === "google") piProvider = "google";
+  if (inkosProvider?.id === CODEX_SERVICE_ID) piProvider = "codex-cli";
+  else if (inkosProvider?.id === "google") piProvider = "google";
   else if (inkosProvider?.id === "zhipu") piProvider = "zai";
   else if (inkosProvider?.id === "openrouter") piProvider = "openrouter";
   else if (inkosProvider?.id === "githubCopilot") piProvider = "githubCopilot";
@@ -1225,6 +1227,73 @@ export async function chatCompletion(
   },
 ): Promise<LLMResponse> {
   if (isLlmStubEnabled()) return Promise.resolve(stubChatCompletion(messages, model));
+  if (client.service === CODEX_SERVICE_ID) {
+    const maxTokens = options?.maxTokens ?? client.defaults.maxTokens;
+    const signal = options?.signal;
+    const errorCtx = { baseUrl: "local://codex-subscription", model, service: client.service };
+    const systemParts = messages.filter((message) => message.role === "system").map((message) => message.content);
+    try {
+      return await withTransientLLMRetry(async () => {
+        signal?.throwIfAborted();
+        assertWithinContextWindow({
+          piModel: resolvePiModel(client, model),
+          model,
+          estimatedInputTokens: estimateLLMMessagesTokens(messages),
+          reservedOutputTokens: maxTokens,
+        });
+        const result = await runCodexCliCompletion({
+          context: {
+            systemPrompt: [
+              ...systemParts,
+              `Keep the complete response within approximately ${maxTokens} tokens.`,
+            ].join("\n\n"),
+            messages: messages
+              .filter((message) => message.role !== "system")
+              .map((message) => message.role === "user"
+                ? { role: "user" as const, content: message.content, timestamp: Date.now() }
+                : {
+                    role: "assistant" as const,
+                    content: [{ type: "text" as const, text: message.content }],
+                    api: "openai-responses" as PiApi,
+                    provider: "codex-cli",
+                    model,
+                    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+                    stopReason: "stop" as const,
+                    timestamp: Date.now(),
+                  }),
+          },
+          model,
+          signal,
+        });
+        if (result.kind !== "text") {
+          throw new Error("Codex requested a tool where no InkOS tools are available");
+        }
+        const estimatedOutputTokens = estimateTextTokens(result.text);
+        if (estimatedOutputTokens > maxTokens) {
+          throw new Error(
+            `Codex output exceeded the InkOS limit: estimated ${estimatedOutputTokens} tokens > ${maxTokens}`,
+          );
+        }
+        options?.onTextDelta?.(result.text);
+        options?.onStreamProgress?.({
+          elapsedMs: 0,
+          totalChars: result.text.length,
+          chineseChars: (result.text.match(/[\u4e00-\u9fff]/g) || []).length,
+          status: "done",
+        });
+        return {
+          content: result.text,
+          usage: {
+            promptTokens: result.usage.input,
+            completionTokens: result.usage.output,
+            totalTokens: result.usage.totalTokens,
+          },
+        };
+      }, { enabled: options?.retry ?? true, signal });
+    } catch (error) {
+      throw wrapLLMError(error, errorCtx);
+    }
+  }
   // C1 (v2.0.0)：删除 maxTokensCap 机制。per-call 显式传的 maxTokens 永远不被裁剪。
   const resolved = {
     temperature: clampTemperatureForModel(

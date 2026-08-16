@@ -11,6 +11,7 @@ export interface ServiceInfo {
   readonly group?: EndpointGroup;
   readonly connected: boolean;
   readonly apiKeyOptional?: boolean;
+  readonly authMode?: "local-subscription";
 }
 
 export interface ModelInfo {

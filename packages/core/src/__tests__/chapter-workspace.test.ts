@@ -2,14 +2,45 @@ import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 import {
   archiveChapterVersion,
   listChapterVersions,
   readChapterPlanDocument,
   readChapterUserBrief,
   readChapterVersion,
+  readChapterVersionMetadata,
   saveChapterUserBrief,
 } from "../state/chapter-workspace.js";
+
+const ARC_PROVENANCE: ChapterArcProvenance = {
+  version: 1,
+  bookId: "book-a",
+  arcId: "arc-opening",
+  arcUpdatedAt: "2026-07-01T00:00:00.000Z",
+  arcTitle: "Opening",
+  chapterNumber: 4,
+  episodeRole: "pressure",
+  openingState: "The harbor is locked.",
+  promise: "Find the witness.",
+  goal: "Reach the witness.",
+  obstacle: "The guards are searching.",
+  pressure: "Dawn is close.",
+  turn: "The witness has moved.",
+  payoff: "A clue survives.",
+  irreversibleChange: "The guard knows her face.",
+  nextHook: "Who moved the witness?",
+  beats: ["The witness disappears."],
+  endingHook: "A bloodied receipt",
+  characterChanges: [],
+  relationshipChanges: [],
+  worldChanges: [],
+  hookOperations: [],
+  mustKeep: ["The rain"],
+  mustAvoid: ["Reveal the culprit"],
+  styleEmphasis: ["Tight POV"],
+  sourceForecast: { forecastId: "forecast-1", branchId: "branch-2" },
+};
 
 async function exists(path: string): Promise<boolean> {
   return access(path).then(() => true).catch(() => false);
@@ -81,6 +112,36 @@ describe("chapter workspace", () => {
     const bookDir = await mkdtemp(join(tmpdir(), "inkos-chapter-workspace-"));
     await expect(readChapterVersion(bookDir, 1, "../book.json"))
       .rejects.toThrow(/invalid chapter version id/i);
+  });
+
+  it("round-trips Arc provenance while legacy or corrupt sidecars stay readable", async () => {
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-chapter-workspace-"));
+    const withArc = await archiveChapterVersion(
+      bookDir,
+      4,
+      "# Chapter 4\n\nArc draft.",
+      "revision",
+      new Date("2026-07-04T00:00:00.000Z"),
+      { arcProvenance: ARC_PROVENANCE },
+    );
+    const legacy = await archiveChapterVersion(
+      bookDir,
+      4,
+      "# Chapter 4\n\nLegacy draft.",
+      "manual",
+      new Date("2026-07-05T00:00:00.000Z"),
+    );
+
+    await expect(readChapterVersionMetadata(bookDir, 4, withArc.id))
+      .resolves.toEqual({ arcProvenance: ARC_PROVENANCE });
+    await expect(readChapterVersionMetadata(bookDir, 4, legacy.id)).resolves.toEqual({});
+
+    const sidecarPath = join(bookDir, "chapters", ".versions", "0004", `${withArc.id}.json`);
+    await writeFile(sidecarPath, "{not valid json", "utf-8");
+    await expect(readChapterVersion(bookDir, 4, withArc.id))
+      .resolves.toBe("# Chapter 4\n\nArc draft.");
+    await expect(readChapterVersionMetadata(bookDir, 4, withArc.id)).resolves.toEqual({});
+    await expect(listChapterVersions(bookDir, 4)).resolves.toHaveLength(2);
   });
 
   it("does not expose archives from another chapter", async () => {

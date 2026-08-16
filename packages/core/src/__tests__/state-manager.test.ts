@@ -1,10 +1,85 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, rm, writeFile, readFile, mkdir, stat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir, stat, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateManager } from "../state/manager.js";
 import type { BookConfig } from "../models/book.js";
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
+
+function chapterArcProvenance(bookId: string, chapterNumber: number): ChapterArcProvenance {
+  return {
+    version: 1,
+    bookId,
+    arcId: "arc-opening",
+    arcUpdatedAt: "2026-08-09T10:00:00.000Z",
+    arcTitle: "첫 거래",
+    chapterNumber,
+    episodeRole: "payoff",
+    openingState: "빚 독촉이 시작됐다.",
+    promise: "첫 거래를 성사시킨다.",
+    goal: "계약을 확보한다.",
+    obstacle: "상대가 조건을 숨긴다.",
+    pressure: "마감이 다가온다.",
+    turn: "주인공이 비용을 감수한다.",
+    payoff: "첫 계약을 얻는다.",
+    irreversibleChange: "고객과 관계가 생긴다.",
+    nextHook: "다음 주문은 더 크다.",
+    beats: ["첫 계약을 얻는다."],
+    endingHook: "더 큰 주문이 들어온다.",
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+    storyRail: {
+      planUpdatedAt: "2026-08-09T09:00:00.000Z",
+      anchor: {
+        id: "A01",
+        routeOrder: 100,
+        title: "첫 장기 목적지",
+        detailLevel: "compound",
+        state: "planned",
+        entryState: "빚 독촉이 시작됐다.",
+        trigger: "주인공이 첫 거래를 선택한다.",
+        irreversibleChange: "첫 고객과 계약이 생긴다.",
+        humanAftermath: "가족의 역할이 달라진다.",
+        readerDebt: "첫 약속의 실제 대가를 보여준다.",
+        payoffAxis: "신뢰와 현금흐름",
+        nextPressure: "더 큰 주문을 감당해야 한다.",
+      },
+      activeB: {
+        bId: "B001",
+        routeOrder: 100,
+        status: "active",
+        targetAnchorId: "A01",
+        narrativeFunction: "첫 거래를 반복 가능한 계약으로 바꾼다.",
+        payoffAxis: "첫 신뢰",
+        carriedReaderDebt: "약속을 실제로 지킬 수 있는가",
+        contrastRequirement: "설명보다 선택과 비용으로 증명한다.",
+      },
+    },
+  };
+}
+
+function chapterMeta(
+  number: number,
+  title: string,
+  arcProvenance?: ChapterArcProvenance,
+): ChapterMeta {
+  return {
+    number,
+    title,
+    status: "ready-for-review",
+    wordCount: 10,
+    createdAt: "2026-08-09T10:00:00.000Z",
+    updatedAt: "2026-08-09T10:00:00.000Z",
+    auditIssues: [],
+    lengthWarnings: [],
+    ...(arcProvenance ? { arcProvenance } : {}),
+  };
+}
 
 describe("StateManager", () => {
   let tempDir: string;
@@ -130,6 +205,105 @@ describe("StateManager", () => {
         join(manager.bookDir("book-b"), "chapters"),
       );
       expect(dirStat.isDirectory()).toBe(true);
+    });
+
+    it("recovers nested Arc and Story Rail provenance after a corrupt index is rebuilt", async () => {
+      const bookId = "provenance-rebuild";
+      const chaptersDir = join(manager.bookDir(bookId), "chapters");
+      const provenance = chapterArcProvenance(bookId, 1);
+      await mkdir(chaptersDir, { recursive: true });
+      await writeFile(join(chaptersDir, "0001_첫_거래.md"), "# 제1화\n\n본문은 그대로다.", "utf-8");
+      await manager.saveChapterIndex(bookId, [chapterMeta(1, "첫 거래", provenance)]);
+
+      const sidecarPath = join(chaptersDir, ".current-metadata", "000001.json");
+      const sidecar = JSON.parse(await readFile(sidecarPath, "utf-8")) as {
+        arcProvenance?: ChapterArcProvenance;
+      };
+      expect(sidecar.arcProvenance?.storyRail).toEqual(provenance.storyRail);
+
+      await writeFile(join(chaptersDir, "index.json"), "{ corrupt index", "utf-8");
+      const rebuilt = await manager.loadChapterIndex(bookId);
+
+      expect(rebuilt).toHaveLength(1);
+      expect(rebuilt[0]?.arcProvenance).toEqual(provenance);
+      await expect(readFile(join(chaptersDir, "0001_첫_거래.md"), "utf-8"))
+        .resolves.toBe("# 제1화\n\n본문은 그대로다.");
+    });
+
+    it("deletes current provenance metadata when a legacy restore explicitly omits it", async () => {
+      const bookId = "legacy-restore-provenance";
+      const chaptersDir = join(manager.bookDir(bookId), "chapters");
+      await mkdir(chaptersDir, { recursive: true });
+      await writeFile(join(chaptersDir, "0001_복원.md"), "legacy restored body", "utf-8");
+      await manager.saveChapterIndex(bookId, [
+        chapterMeta(1, "복원", chapterArcProvenance(bookId, 1)),
+      ]);
+
+      const sidecarPath = join(chaptersDir, ".current-metadata", "000001.json");
+      await expect(stat(sidecarPath)).resolves.toBeTruthy();
+      await manager.saveChapterIndex(bookId, [chapterMeta(1, "복원")]);
+      await expect(stat(sidecarPath)).rejects.toThrow();
+
+      await writeFile(join(chaptersDir, "index.json"), "{ corrupt after legacy restore", "utf-8");
+      const rebuilt = await manager.loadChapterIndex(bookId);
+      expect(rebuilt[0]?.arcProvenance).toBeUndefined();
+    });
+
+    it("cleans metadata for chapters removed from the index before their number is reused", async () => {
+      const bookId = "reused-number-provenance";
+      const chaptersDir = join(manager.bookDir(bookId), "chapters");
+      await mkdir(chaptersDir, { recursive: true });
+      await writeFile(join(chaptersDir, "0001_유지.md"), "chapter one", "utf-8");
+      await writeFile(join(chaptersDir, "0002_이전.md"), "old chapter two", "utf-8");
+      await manager.saveChapterIndex(bookId, [
+        chapterMeta(1, "유지"),
+        chapterMeta(2, "이전", chapterArcProvenance(bookId, 2)),
+      ]);
+
+      const sidecarPath = join(chaptersDir, ".current-metadata", "000002.json");
+      await expect(stat(sidecarPath)).resolves.toBeTruthy();
+      await manager.saveChapterIndex(bookId, [chapterMeta(1, "유지")]);
+      await expect(stat(sidecarPath)).rejects.toThrow();
+
+      await rm(join(chaptersDir, "0002_이전.md"));
+      await writeFile(join(chaptersDir, "0002_새_원고.md"), "new chapter two", "utf-8");
+      await writeFile(join(chaptersDir, "index.json"), "{ force rebuild", "utf-8");
+      const rebuilt = await manager.loadChapterIndex(bookId);
+      expect(rebuilt.find((chapter) => chapter.number === 2)?.arcProvenance).toBeUndefined();
+    });
+
+    it("ignores current metadata whose validated provenance names another chapter", async () => {
+      const bookId = "mismatched-provenance-sidecar";
+      const chaptersDir = join(manager.bookDir(bookId), "chapters");
+      const metadataDir = join(chaptersDir, ".current-metadata");
+      await mkdir(metadataDir, { recursive: true });
+      await writeFile(join(chaptersDir, "0001_원고.md"), "chapter one", "utf-8");
+      await writeFile(join(chaptersDir, "index.json"), "{ force rebuild", "utf-8");
+      await writeFile(join(metadataDir, "000001.json"), JSON.stringify({
+        version: 1,
+        chapterNumber: 1,
+        arcProvenance: chapterArcProvenance(bookId, 2),
+      }), "utf-8");
+
+      const rebuilt = await manager.loadChapterIndex(bookId);
+      expect(rebuilt[0]?.arcProvenance).toBeUndefined();
+    });
+
+    it("ignores current metadata whose validated provenance belongs to another book", async () => {
+      const bookId = "current-book";
+      const chaptersDir = join(manager.bookDir(bookId), "chapters");
+      const metadataDir = join(chaptersDir, ".current-metadata");
+      await mkdir(metadataDir, { recursive: true });
+      await writeFile(join(chaptersDir, "0001_현재_원고.md"), "chapter one", "utf-8");
+      await writeFile(join(chaptersDir, "index.json"), "{ force rebuild", "utf-8");
+      await writeFile(join(metadataDir, "000001.json"), JSON.stringify({
+        version: 1,
+        chapterNumber: 1,
+        arcProvenance: chapterArcProvenance("another-book", 1),
+      }), "utf-8");
+
+      const rebuilt = await manager.loadChapterIndex(bookId);
+      expect(rebuilt[0]?.arcProvenance).toBeUndefined();
     });
   });
 
@@ -706,6 +880,38 @@ describe("StateManager", () => {
       const release2 = await manager.acquireBookLock("lock-book-3");
       expect(typeof release2).toBe("function");
       await release2();
+    });
+
+    it("recovers an abandoned prepared file transaction before returning the Book lock", async () => {
+      const bookId = "lock-book-recovery";
+      const bookDir = manager.bookDir(bookId);
+      const targetPath = join(bookDir, "story", "current_state.md");
+      const transactionDir = join(bookDir, ".inkos-file-txn-abandoned");
+      const backupPath = join(transactionDir, "backup", "story", "current_state.md");
+      await Promise.all([
+        mkdir(join(bookDir, "story"), { recursive: true }),
+        mkdir(join(transactionDir, "backup", "story"), { recursive: true }),
+      ]);
+      await writeFile(targetPath, "old state", "utf8");
+      await rename(targetPath, backupPath);
+      await writeFile(targetPath, "interrupted new state", "utf8");
+      await writeFile(join(transactionDir, "manifest.json"), JSON.stringify({
+        version: 1,
+        entries: [{
+          relativePath: "story/current_state.md",
+          operation: "write",
+          hadOriginal: true,
+        }],
+      }), "utf8");
+      await writeFile(join(transactionDir, "phase"), "prepared\n", "utf8");
+
+      const release = await manager.acquireBookLock(bookId);
+      try {
+        await expect(readFile(targetPath, "utf8")).resolves.toBe("old state");
+        await expect(stat(transactionDir)).rejects.toThrow();
+      } finally {
+        await release();
+      }
     });
 
     it("allows only one concurrent lock claimant", async () => {

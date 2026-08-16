@@ -1,6 +1,6 @@
 import { memo, useRef, useEffect, useMemo, useState } from "react";
 import type { Theme } from "../hooks/use-theme";
-import type { TFunction } from "../hooks/use-i18n";
+import type { TFunction, UiLanguage } from "../hooks/use-i18n";
 import type { SSEMessage } from "../hooks/use-sse";
 import { fetchJson, postApi, useApi } from "../hooks/use-api";
 import type { ChatAttachmentPayload, MessagePart } from "../store/chat/types";
@@ -86,6 +86,7 @@ export interface ChatPageProps {
   readonly nav: Nav;
   readonly theme: Theme;
   readonly t: TFunction;
+  readonly uiLanguage?: UiLanguage;
   readonly sse: { messages: ReadonlyArray<SSEMessage>; connected: boolean };
 }
 
@@ -376,7 +377,7 @@ function SkillPickerPanel({
 
 // -- Component --
 
-export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-create", nav, theme, t, sse: _sse }: ChatPageProps) {
+export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-create", nav, theme, t, uiLanguage = t("nav.connected") === "Connected" ? "en" : "zh", sse: _sse }: ChatPageProps) {
   // -- Store selectors --
   const messages = useChatStore(chatSelectors.activeMessages);
   const activeSession = useChatStore(chatSelectors.activeSession);
@@ -406,7 +407,8 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoScrollPinnedRef = useRef(true);
 
-  const isZh = t("nav.connected") === "\u5DF2\u8FDE\u63A5";
+  const isZh = uiLanguage === "zh";
+  const copy = (ko: string, zh: string, en: string) => uiLanguage === "ko" ? ko : isZh ? zh : en;
   const hasBook = Boolean(activeBookId);
   const currentSessionKind: ChatSessionKind = activeSession?.sessionKind
     ?? (mode === "interactive-film-authoring" ? "interactive-film-authoring"
@@ -521,12 +523,12 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
   }, [services, modelsByService]);
 
   const selectedModelLabel = useMemo(() => {
-    if (!selectedModel) return isZh ? "选择模型" : "Select model";
+    if (!selectedModel) return copy("모델 선택", "选择模型", "Select model");
     const group = groupedModels.find((item) => item.service === selectedService);
     const model = group?.models.find((item) => item.id === selectedModel);
     const modelLabel = model?.name ?? selectedModel;
     return group ? `${group.label} · ${modelLabel}` : modelLabel;
-  }, [groupedModels, selectedModel, selectedService, isZh]);
+  }, [groupedModels, selectedModel, selectedService, uiLanguage]);
 
   // Auto-select from saved service config first, then fall back to the first available model.
   useEffect(() => {
@@ -778,9 +780,11 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     markProposalResolved(details.execId, "rejected");
     if (!activeSessionId) return;
     autoScrollPinnedRef.current = true;
-    const rejectionText = isZh
-      ? `取消这次操作：${details.title ?? details.instruction}`
-      : `Cancel this action: ${details.title ?? details.instruction}`;
+    const rejectionText = copy(
+      `이 작업 취소: ${details.title ?? details.instruction}`,
+      `取消这次操作：${details.title ?? details.instruction}`,
+      `Cancel this action: ${details.title ?? details.instruction}`,
+    );
     await sendMessage(activeSessionId, rejectionText, {
       activeBookId,
       sessionKind: currentSessionKind,
@@ -793,7 +797,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     autoScrollPinnedRef.current = true;
     await sendMessage(
       activeSessionId,
-      buildNarrativeForecastSelectionInstruction(forecastId, branchId, isZh ? "zh" : "en"),
+      buildNarrativeForecastSelectionInstruction(forecastId, branchId, uiLanguage),
       {
         activeBookId,
         sessionKind: "book",
@@ -807,7 +811,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     autoScrollPinnedRef.current = true;
     await sendMessage(
       activeSessionId,
-      buildNarrativeForecastRecheckInstruction(forecastId, isZh ? "zh" : "en"),
+      buildNarrativeForecastRecheckInstruction(forecastId, uiLanguage),
       {
         activeBookId,
         sessionKind: "book",
@@ -870,9 +874,11 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
         ? "说一个可玩的世界、角色处境或开场动作，我会启动互动世界；之后你可以自由行动或点建议动作。"
         : "Describe a playable world, character situation, or opening action to start an interactive world.";
     }
-    return isZh
-      ? "\u544A\u8BC9\u6211\u4F60\u60F3\u5199\u4EC0\u4E48\u2014\u2014\u9898\u6750\u3001\u4E16\u754C\u89C2\u3001\u4E3B\u89D2\u3001\u6838\u5FC3\u51B2\u7A81"
-      : "Tell me what you want to write \u2014 genre, world, protagonist, core conflict";
+    return copy(
+      "쓰고 싶은 이야기를 들려주세요 — 장르, 세계관, 주인공, 핵심 갈등",
+      "\u544A\u8BC9\u6211\u4F60\u60F3\u5199\u4EC0\u4E48\u2014\u2014\u9898\u6750\u3001\u4E16\u754C\u89C2\u3001\u4E3B\u89D2\u3001\u6838\u5FC3\u51B2\u7A81",
+      "Tell me what you want to write \u2014 genre, world, protagonist, core conflict",
+    );
   })();
 
   return (
@@ -1162,8 +1168,8 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                   onClick={() => setSkillPanelOpen((value) => !value)}
                   disabled={loading || !activeSessionId}
                   className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/50 transition-colors disabled:opacity-30 ${skillPanelOpen || selectedSkillIds.length > 0 ? "bg-primary/10 text-primary" : "text-muted-foreground hover:border-primary/40 hover:text-primary"}`}
-                  title={isZh ? "添加 Skill" : "Add skill"}
-                  aria-label={isZh ? "添加 Skill" : "Add skill"}
+                  title={copy("스킬 추가", "添加 Skill", "Add skill")}
+                  aria-label={copy("스킬 추가", "添加 Skill", "Add skill")}
                 >
                   <Plus size={16} strokeWidth={2.4} />
                 </button>
@@ -1172,8 +1178,8 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                   onClick={() => fileInputRef.current?.click()}
                   disabled={!activeSessionId}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-30"
-                  title={isZh ? "上传图片或资料" : "Attach files"}
-                  aria-label={isZh ? "上传图片或资料" : "Attach files"}
+                  title={copy("이미지 또는 자료 첨부", "上传图片或资料", "Attach files")}
+                  aria-label={copy("이미지 또는 자료 첨부", "上传图片或资料", "Attach files")}
                 >
                   <Paperclip size={16} strokeWidth={2.3} />
                 </button>
@@ -1182,7 +1188,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSend(input); } }}
-                  placeholder={isZh ? "输入指令..." : "Enter command..."}
+                  placeholder={copy("요청을 입력하세요...", "输入指令...", "Enter command...")}
                   disabled={!activeSessionId}
                   rows={1}
                   className="flex-1 bg-transparent text-base leading-7 placeholder:text-muted-foreground/50 outline-none! border-none! ring-0! shadow-none focus:outline-none! focus:ring-0! focus:border-none! resize-none disabled:opacity-50 max-h-[200px] overflow-y-auto"
@@ -1223,7 +1229,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                     onClick={() => nav.toServices()}
                     className="text-[15px] text-muted-foreground/50 hover:text-primary transition-colors"
                   >
-                    {isZh ? "配置模型 →" : "Set up models →"}
+                    {copy("모델 설정 →", "配置模型 →", "Set up models →")}
                   </button>
                 )}
                 {currentSessionKind === "play" && (

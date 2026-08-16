@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateManager } from "../state/manager.js";
@@ -121,6 +121,80 @@ describe("agent deterministic writing tools", () => {
     expect(result.content[0]?.type).toBe("text");
     await expect(readFile(join(state.bookDir("harbor"), "story", "roles", "主要角色", "林月.md"), "utf-8"))
       .resolves.toContain("不再相信公会");
+  });
+
+  it("rejects truth-file symlinks into Rail, outside-project, or another Book authority", async () => {
+    const bookDir = state.bookDir("harbor");
+    const aliasDir = join(bookDir, "story", "roles", "major");
+    const aliasPath = join(aliasDir, "Alias.md");
+    const planPath = join(bookDir, "story", "rails", "plan.json");
+    const outsidePath = join(root, "outside.md");
+    const otherPath = join(root, "books", "other", "story", "target.md");
+    await Promise.all([
+      mkdir(aliasDir, { recursive: true }),
+      mkdir(join(bookDir, "story", "rails"), { recursive: true }),
+      mkdir(join(root, "books", "other", "story"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(planPath, "rail-plan-protected", "utf-8"),
+      writeFile(outsidePath, "outside-protected", "utf-8"),
+      writeFile(otherPath, "other-book-protected", "utf-8"),
+    ]);
+    const tool = createWriteTruthFileTool({} as never, root, "harbor");
+
+    for (const [target, expected] of [
+      ["../../rails/plan.json", "rail-plan-protected"],
+      ["../../../../../outside.md", "outside-protected"],
+      ["../../../../other/story/target.md", "other-book-protected"],
+    ] as const) {
+      await symlink(target, aliasPath);
+      const result = await tool.execute("tool-truth-symlink", {
+        fileName: "roles/major/Alias.md",
+        content: "must-not-overwrite",
+      });
+      expect(result.content[0]).toMatchObject({
+        type: "text",
+        text: expect.stringMatching(/symbolic-link/i),
+      });
+      await expect(readFile(aliasPath, "utf-8")).resolves.toBe(expected);
+      await unlink(aliasPath);
+    }
+    await expect(readFile(join(bookDir, ".write.lock"), "utf-8")).rejects.toThrow();
+  });
+
+  it("does not touch a symlinked control-document sibling during a narrow truth-file write", async () => {
+    const bookDir = state.bookDir("harbor");
+    const styleGuidePath = join(bookDir, "story", "style_guide.md");
+    const normalTargetPath = join(bookDir, "story", "roles", "major", "Safe.md");
+    const planPath = join(bookDir, "story", "rails", "plan.json");
+    const outsidePath = join(root, "outside-style.md");
+    const otherPath = join(root, "books", "other", "story", "target-style.md");
+    await Promise.all([
+      mkdir(join(bookDir, "story", "rails"), { recursive: true }),
+      mkdir(join(root, "books", "other", "story"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(planPath, "rail-plan-protected", "utf-8"),
+      writeFile(outsidePath, "outside-protected", "utf-8"),
+      writeFile(otherPath, "other-book-protected", "utf-8"),
+    ]);
+    const tool = createWriteTruthFileTool({} as never, root, "harbor");
+
+    for (const [target, protectedPath, expected] of [
+      ["rails/plan.json", planPath, "rail-plan-protected"],
+      ["../../../outside-style.md", outsidePath, "outside-protected"],
+      ["../../other/story/target-style.md", otherPath, "other-book-protected"],
+    ] as const) {
+      await symlink(target, styleGuidePath);
+      const result = await tool.execute("tool-truth-safe-sibling", {
+        fileName: "roles/major/Safe.md",
+        content: "# Safe\n\nNarrow truth update.\n",
+      });
+      expect(result.content[0]).toMatchObject({ type: "text" });
+      await expect(readFile(protectedPath, "utf-8")).resolves.toBe(expected);
+      await unlink(styleGuidePath);
+    }
+    await expect(readFile(normalTargetPath, "utf-8")).resolves.toContain("Narrow truth update");
   });
 
   it("renames entities through the deterministic edit controller", async () => {

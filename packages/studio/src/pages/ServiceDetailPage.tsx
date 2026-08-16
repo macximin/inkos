@@ -44,6 +44,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
 
   const svc = services.find((s) => s.service === serviceId);
   const isCustom = serviceId === "custom" || serviceId.startsWith("custom:");
+  const isCodexSubscription = serviceId === "codex" || svc?.authMode === "local-subscription";
   const persistedCustomName = serviceId.startsWith("custom:") ? decodeURIComponent(serviceId.slice("custom:".length)) : "";
 
   // -- Local form state --
@@ -82,7 +83,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
 
   const resolvedCustomName = persistedCustomName || customName.trim() || "Custom";
   const effectiveServiceId = isCustom ? `custom:${resolvedCustomName}` : serviceId;
-  const label = isCustom ? (customName || persistedCustomName || tr("自定义服务", "Custom service")) : (svc?.label ?? serviceId);
+  const label = isCustom ? (customName || persistedCustomName || tr("自定义服务", "Custom service", "사용자 지정 서비스")) : (svc?.label ?? serviceId);
   const storeModels = useServiceStore((s) => s.modelsByService[effectiveServiceId]);
 
   useEffect(() => {
@@ -132,11 +133,11 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
   const handleTest = async () => {
     const trimmedKey = apiKey.trim();
     if (!trimmedKey && !isCustom && !apiKeyOptional) {
-      setStatus({ state: "error", message: tr("请先输入 API Key", "Enter an API key first") });
+      setStatus({ state: "error", message: tr("请先输入 API Key", "Enter an API key first", "API 키를 먼저 입력해 주세요") });
       return;
     }
     if (isCustom && !baseUrl.trim()) {
-      setStatus({ state: "error", message: tr("请先填写 Base URL", "Enter a base URL first") });
+      setStatus({ state: "error", message: tr("请先填写 Base URL", "Enter a base URL first", "Base URL을 먼저 입력해 주세요") });
       return;
     }
     setApiKey(trimmedKey);
@@ -171,17 +172,17 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         setStoreModels(effectiveServiceId, models); // Write to global store
       } else {
         setVerifiedProbe(null);
-        setStatus({ state: "error", message: result.error ?? tr("连接失败", "Connection failed") });
+        setStatus({ state: "error", message: result.error ?? tr("连接失败", "Connection failed", "연결 실패") });
         clearStoreModels(effectiveServiceId);
       }
     } catch (e) {
       setVerifiedProbe(null);
-      setStatus({ state: "error", message: e instanceof Error ? e.message : tr("连接失败", "Connection failed") });
+      setStatus({ state: "error", message: e instanceof Error ? e.message : tr("连接失败", "Connection failed", "연결 실패") });
     }
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(tr(`删除“${label}”的配置和密钥？`, `Delete the config and key for “${label}”?`))) return;
+    if (!window.confirm(tr(`删除“${label}”的配置和密钥？`, `Delete the config and key for “${label}”?`, `“${label}” 설정을 삭제할까요?`))) return;
     setStatus({ state: "saving" });
     try {
       await deleteServiceConfig(effectiveServiceId);
@@ -189,7 +190,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
       await refreshServices();
       nav.toServices();
     } catch (e) {
-      setStatus({ state: "error", message: e instanceof Error ? e.message : tr("删除失败", "Delete failed") });
+      setStatus({ state: "error", message: e instanceof Error ? e.message : tr("删除失败", "Delete failed", "삭제 실패") });
     }
   };
 
@@ -197,7 +198,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
     const trimmedKey = apiKey.trim();
     setApiKey(trimmedKey);
     if (isCustom && !baseUrl.trim()) {
-      setStatus({ state: "error", message: tr("请先填写 Base URL", "Enter a base URL first") });
+      setStatus({ state: "error", message: tr("请先填写 Base URL", "Enter a base URL first", "Base URL을 먼저 입력해 주세요") });
       return;
     }
     setStatus({ state: "saving" });
@@ -231,7 +232,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
       await refreshServices();
       nav.toServices();
     } catch (e) {
-      setStatus({ state: "error", message: e instanceof Error ? e.message : tr("保存失败", "Save failed") });
+      setStatus({ state: "error", message: e instanceof Error ? e.message : tr("保存失败", "Save failed", "저장 실패") });
     }
   };
 
@@ -243,7 +244,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-sm font-medium text-foreground hover:bg-secondary/50 transition-colors"
       >
         <ArrowLeft size={14} />
-        {tr("返回服务商管理", "Back to providers")}
+        {tr("返回服务商管理", "Back to providers", "모델 설정으로 돌아가기")}
       </button>
 
       {/* Title + status */}
@@ -251,7 +252,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         <h1 className="font-serif text-2xl">{label}</h1>
         {isConnected && (
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
-            {tr("已连接", "Connected")}
+            {tr("已连接", "Connected", "연결됨")}
           </span>
         )}
       </div>
@@ -261,9 +262,9 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
         {/* Custom fields */}
         {isCustom && (
         <div className="grid grid-cols-2 gap-4">
-            <Field label={tr("服务名称", "Service name")}>
+            <Field label={tr("服务名称", "Service name", "서비스 이름")}>
               <input type="text" value={customName} onChange={(e) => setCustomName(e.target.value)}
-                placeholder={tr("例如：本地 Ollama", "e.g. local Ollama")} className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
+                placeholder={tr("例如：本地 Ollama", "e.g. local Ollama", "예: 로컬 Ollama")} className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-sm" />
             </Field>
             <Field label="Base URL">
               <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
@@ -272,48 +273,66 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
           </div>
         )}
 
-        {/* API Key */}
-        <Field label={apiKeyOptional ? tr("API Key（可选）", "API key (optional)") : "API Key"}>
-          <div className="relative">
-            <input
-              type={showKey ? "text" : "password"} value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)} placeholder={apiKeyOptional ? tr("本地服务可留空", "Optional for local service") : "sk-..."}
-              className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-10 text-sm font-mono"
-            />
-            <button type="button" onClick={() => setShowKey((v) => !v)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors">
-              {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
+        {/* Authentication */}
+        {isCodexSubscription ? (
+          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3">
+            <p className="text-sm font-medium">
+              {tr("使用本机 Codex 登录", "Uses this Mac's Codex sign-in", "이 Mac의 Codex 로그인 사용")}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground/70">
+              {tr(
+                "不保存 API Key。连接测试只确认 Codex CLI 已安装并已登录 ChatGPT。",
+                "No API key is stored. The connection test only checks that Codex CLI is installed and signed in to ChatGPT.",
+                "API 키를 저장하지 않아. 연결 테스트는 Codex 설치와 ChatGPT 로그인만 확인해.",
+              )}
+            </p>
           </div>
-        </Field>
+        ) : (
+          <Field label={apiKeyOptional ? tr("API Key（可选）", "API key (optional)", "API 키(선택)") : "API Key"}>
+            <div className="relative">
+              <input
+                type={showKey ? "text" : "password"} value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)} placeholder={apiKeyOptional ? tr("本地服务可留空", "Optional for local service", "로컬 서비스는 비워도 됨") : "sk-..."}
+                className="w-full rounded-lg border border-border/60 bg-background px-3 py-2 pr-10 text-sm font-mono"
+              />
+              <button type="button" onClick={() => setShowKey((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors">
+                {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </Field>
+        )}
 
         {/* Actions + feedback */}
         <div className="flex items-center gap-2">
           <button onClick={handleTest} disabled={isBusy}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs rounded-lg border border-border/60 hover:bg-secondary/50 transition-colors disabled:opacity-50">
             {status.state === "testing" && <Loader2 size={12} className="animate-spin" />}
-            {tr("测试连接", "Test connection")}
+            {tr("测试连接", "Test connection", "연결 테스트")}
           </button>
           <button onClick={handleSave} disabled={isBusy}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50">
             {status.state === "saving" && <Loader2 size={12} className="animate-spin" />}
-            {tr("保存", "Save")}
+            {tr("保存", "Save", "저장")}
           </button>
           {(isConnected || isCustom) && (
             <button onClick={handleDelete} disabled={isBusy}
               className="flex items-center gap-1.5 px-3.5 py-2 text-xs rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50">
               <Trash2 size={12} />
-              {tr("删除配置", "Delete config")}
+              {tr("删除配置", "Delete config", "설정 삭제")}
             </button>
           )}
           {/* Status feedback */}
           {status.state === "connected" && (
             <span className="text-xs text-emerald-500">
-              {tr(`连接成功，${models.length} 个模型`, `Connected, ${models.length} models`)}
-              {detectedModel
+              {isCodexSubscription
+                ? tr("Codex 订阅登录已连接", "Codex subscription sign-in connected", "Codex 구독 로그인 연결됨")
+                : tr(`连接成功，${models.length} 个模型`, `Connected, ${models.length} models`, `연결 성공 · 모델 ${models.length}개`)}
+              {!isCodexSubscription && detectedModel
                 ? tr(
                     `，已自动匹配 ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : "Chat"} / ${detectedConfig.stream ? "流式" : "非流式"}` : ""}`,
                     `, auto-matched ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : "Chat"} / ${detectedConfig.stream ? "streaming" : "non-streaming"}` : ""}`,
+                    ` · 자동 선택 ${detectedModel}${detectedConfig ? ` / ${detectedConfig.apiFormat === "responses" ? "Responses" : "Chat"} / ${detectedConfig.stream ? "스트리밍" : "비스트리밍"}` : ""}`,
                   )
                 : ""}
             </span>
@@ -322,12 +341,12 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             <span className="text-xs text-destructive">{status.message}</span>
           )}
           {status.state === "saved" && (
-            <span className="text-xs text-emerald-500">{tr("已保存", "Saved")}</span>
+            <span className="text-xs text-emerald-500">{tr("已保存", "Saved", "저장됨")}</span>
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <Field label={tr("协议类型", "Protocol")}>
+        {!isCodexSubscription && <div className="grid grid-cols-2 gap-4">
+          <Field label={tr("协议类型", "Protocol", "프로토콜")}>
             <select
               value={apiFormat}
               onChange={(e) => setApiFormat(e.target.value as "chat" | "responses")}
@@ -338,23 +357,23 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
             </select>
           </Field>
 
-          <Field label={tr("流式响应", "Streaming")}>
+          <Field label={tr("流式响应", "Streaming", "스트리밍 응답")}>
             <label className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-background px-3 text-sm">
               <input
                 type="checkbox"
                 checked={stream}
                 onChange={(e) => setStream(e.target.checked)}
               />
-              <span>{stream ? tr("开启", "On") : tr("关闭", "Off")}</span>
+              <span>{stream ? tr("开启", "On", "켜짐") : tr("关闭", "Off", "꺼짐")}</span>
             </label>
           </Field>
-        </div>
+        </div>}
 
         {/* Models */}
         {isConnected && (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground/70 font-medium uppercase tracking-wider">
-              {tr(`可用模型（${models.length}）`, `Available models (${models.length})`)}
+              {tr(`可用模型（${models.length}）`, `Available models (${models.length})`, `사용 가능한 모델 (${models.length})`)}
             </p>
             {models.length > 0 ? (
               <div className="flex gap-1.5 flex-wrap">
@@ -365,15 +384,15 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground/60">{tr("点击“测试连接”查看可用模型", "Click “Test connection” to list available models")}</p>
+              <p className="text-xs text-muted-foreground/60">{tr("点击“测试连接”查看可用模型", "Click “Test connection” to list available models", "‘연결 테스트’를 눌러 모델을 확인하세요")}</p>
             )}
           </div>
         )}
 
         {/* Advanced params */}
-        <details className="group pt-2 border-t border-border/20">
+        {!isCodexSubscription && <details className="group pt-2 border-t border-border/20">
           <summary className="text-xs text-muted-foreground/60 cursor-pointer select-none hover:text-muted-foreground transition-colors py-2">
-            {tr("高级参数", "Advanced")}
+            {tr("高级参数", "Advanced", "고급 설정")}
           </summary>
           <div className="space-y-4 pt-2">
             <Field label="temperature">
@@ -385,7 +404,7 @@ export function ServiceDetailPage({ serviceId, nav }: { serviceId: string; nav: 
               </div>
             </Field>
           </div>
-        </details>
+        </details>}
       </div>
     </div>
   );

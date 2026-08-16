@@ -76,9 +76,11 @@ export async function rehydrateServiceConnectionStatus(args: {
   readonly detectedConfig: ServiceDetailDetectedConfig | null;
 }> {
   const fetchJsonImpl = args.fetchJsonImpl ?? fetchJson;
-  const secret = await fetchJsonImpl<{ apiKey?: string }>(
-    `/services/${encodeURIComponent(args.effectiveServiceId)}/secret`,
-  );
+  const secret = args.effectiveServiceId === "codex"
+    ? { apiKey: "" }
+    : await fetchJsonImpl<{ apiKey?: string }>(
+        `/services/${encodeURIComponent(args.effectiveServiceId)}/secret`,
+      );
   const apiKey = String(secret.apiKey ?? "");
 
   return {
@@ -190,11 +192,13 @@ export async function saveServiceConfig(args: {
   const savedStream = typeof detectedConfig?.stream === "boolean" ? detectedConfig.stream : args.stream;
   const savedBaseUrl = args.isCustom ? (detectedConfig?.baseUrl ?? trimmedBaseUrl) : undefined;
 
-  await fetchJsonImpl(`/services/${encodeURIComponent(args.effectiveServiceId)}/secret`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apiKey: trimmedKey }),
-  });
+  if (args.effectiveServiceId !== "codex") {
+    await fetchJsonImpl(`/services/${encodeURIComponent(args.effectiveServiceId)}/secret`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: trimmedKey }),
+    });
+  }
 
   await fetchJsonImpl("/services/config", {
     method: "PUT",

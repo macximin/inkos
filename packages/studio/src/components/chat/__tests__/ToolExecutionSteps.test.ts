@@ -164,6 +164,68 @@ describe("groupChronologically", () => {
     expect(groups[3].type === "pipeline" ? groups[3].exec.tool : "").toBe("select_narrative_branch");
   });
 
+  it("renders Story Rail tools as pipeline cards and hides duplicate raw JSON", () => {
+    const railExec = makeExec({
+      id: "story-rails-1",
+      tool: "get_story_rails",
+      label: "Get Story Rails",
+      result: "RAW_STORY_RAIL_JSON_SHOULD_NOT_RENDER",
+      details: {
+        kind: "story_rails",
+        bookId: "demo-book",
+        plan: null,
+      },
+    });
+
+    const groups = groupToolExecutionsChronologically([railExec]);
+    expect(groups[0].type).toBe("pipeline");
+
+    const html = renderToStaticMarkup(React.createElement(ToolExecutionSteps, { executions: [railExec] }));
+    expect(html).toContain("A/B 故事轨道");
+    expect(html).toContain("尚未建立 Rail 规划");
+    expect(html).not.toContain("RAW_STORY_RAIL_JSON_SHOULD_NOT_RENDER");
+    expect(html).not.toContain("查看操作结果");
+
+    const discardExec = makeExec({
+      id: "story-rails-discard-1",
+      tool: "discard_story_rail_reflow",
+      label: "Discard Story Rail Reflow",
+      details: {
+        kind: "story_rail_reflow_discarded",
+        bookId: "demo-book",
+        plan: null,
+        pendingReflow: null,
+        receipt: { receiptId: "reflow-one" },
+      },
+    });
+    expect(groupToolExecutionsChronologically([discardExec])[0].type).toBe("pipeline");
+  });
+
+  it("keeps a protected ready-B activation warning visible while hiding the duplicate selection result", () => {
+    const railWarning = "Ready active B B001 remains bound to arc-live; arc-new was saved but not activated.";
+    const selectionExec = makeExec({
+      id: "forecast-selection-protected-1",
+      tool: "select_narrative_branch",
+      label: "采用候选分支",
+      result: "RAW_SELECTION_RESULT_SHOULD_NOT_RENDER",
+      details: {
+        kind: "narrative_branch_selected",
+        stale: false,
+        branchId: "branch-2",
+        planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+        arcActivated: false,
+        arc: { id: "arc-new", chapterNumbers: [4] },
+        railWarning,
+      },
+    });
+
+    const html = renderToStaticMarkup(React.createElement(ToolExecutionSteps, { executions: [selectionExec] }));
+    expect(html).toContain("为保护 ready B 的现有连接");
+    expect(html).toContain(railWarning);
+    expect(html).not.toContain("RAW_SELECTION_RESULT_SHOULD_NOT_RENDER");
+    expect(html).not.toContain("查看操作结果");
+  });
+
   it("renders generic pipeline result text in an expandable details block", () => {
     const exec = makeExec({
       id: "writer-1",

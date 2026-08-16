@@ -34,6 +34,22 @@ describe("rehydrateServiceConnectionStatus", () => {
       status: { state: "idle" },
     });
   });
+
+  it("does not read a secret for the local Codex subscription service", async () => {
+    const fetchJsonImpl = vi.fn();
+    const result = await rehydrateServiceConnectionStatus({
+      effectiveServiceId: "codex",
+      shouldVerify: true,
+      isCustom: false,
+      baseUrl: "",
+      apiFormat: "responses",
+      stream: false,
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(fetchJsonImpl).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ apiKey: "", status: { state: "idle" } });
+  });
 });
 
 describe("matchServiceConfigEntryForDetail", () => {
@@ -114,6 +130,44 @@ describe("saveServiceConfig", () => {
     expect(result).toMatchObject({
       status: { state: "connected", models: [{ id: "qwen3-30b" }] },
       detectedModel: "qwen3-30b",
+    });
+  });
+
+  it("saves Codex subscription configuration without writing an API-key secret", async () => {
+    const calls: string[] = [];
+    const fetchJsonImpl = vi.fn(async (path: string) => {
+      calls.push(path);
+      if (path === "/services/codex/test") {
+        return {
+          ok: true,
+          models: [{ id: "codex-default", name: "구독 기본 모델" }],
+          selectedModel: "codex-default",
+          detected: { apiFormat: "responses", stream: false },
+        };
+      }
+      if (path === "/services/config") return { ok: true };
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const result = await saveServiceConfig({
+      effectiveServiceId: "codex",
+      serviceId: "codex",
+      isCustom: false,
+      apiKeyOptional: true,
+      resolvedCustomName: "",
+      apiKey: "",
+      baseUrl: "",
+      apiFormat: "responses",
+      stream: false,
+      temperature: "0.7",
+      detectedModel: "",
+      fetchJsonImpl: fetchJsonImpl as never,
+    });
+
+    expect(calls).toEqual(["/services/codex/test", "/services/config"]);
+    expect(result).toMatchObject({
+      status: { state: "connected" },
+      detectedModel: "codex-default",
     });
   });
 

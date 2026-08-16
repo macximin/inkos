@@ -21,6 +21,10 @@ import {
   NarrativeForecastPreview,
   getNarrativeForecastPreviewDetails,
 } from "./NarrativeForecastPreview";
+import {
+  StoryRailsPreview,
+  getStoryRailsPreviewDetails,
+} from "./StoryRailsPreview";
 
 // -- Status rendering helpers --
 
@@ -30,31 +34,56 @@ function ExecStatusBadge({ status }: { status: ToolExecution["status"] }) {
       return (
         <span className="inline-flex items-center gap-1 text-xs text-primary">
           <Loader2 size={12} className="animate-spin" />
-          <span>{tr("执行中", "Running")}</span>
+          <span>{tr("执行中", "Running", "실행 중")}</span>
         </span>
       );
     case "processing":
       return (
         <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
           <Loader2 size={12} className="animate-spin" style={{ animationDuration: "2s" }} />
-          <span>{tr("处理结果", "Processing result")}</span>
+          <span>{tr("处理结果", "Processing result", "결과 처리 중")}</span>
         </span>
       );
     case "completed":
       return (
         <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
           <CheckCircle2 size={12} />
-          <span>{tr("已完成", "Completed")}</span>
+          <span>{tr("已完成", "Completed", "완료")}</span>
         </span>
       );
     case "error":
       return (
         <span className="inline-flex items-center gap-1 text-xs text-destructive">
           <XCircle size={12} />
-          <span>{tr("失败", "Failed")}</span>
+          <span>{tr("失败", "Failed", "실패")}</span>
         </span>
       );
   }
+}
+
+function displayExecutionLabel(exec: ToolExecution): string {
+  const koreanByTool: Record<string, string> = {
+    propose_action: "작업 확인",
+    sub_agent: "제작 에이전트",
+    context_compression: "대화 정리",
+    short_fiction_run: "단편 제작",
+    generate_cover: "표지 생성",
+    script_create: "대본 제작",
+    storyboard_create: "스토리보드 제작",
+    interactive_film_create: "인터랙티브 영상",
+    play_edit: "인터랙티브 세계 편집",
+    play_start: "인터랙티브 세계 시작",
+    play_revise: "인터랙티브 턴 다시 만들기",
+    play_step: "인터랙티브 세계 진행",
+    create_narrative_forecast: "서사 분기 예측",
+    get_narrative_forecast: "서사 예측 확인",
+    select_narrative_branch: "후보 분기 선택",
+    get_story_rails: "A/B Story Rail 확인",
+    replace_story_rails: "A/B Story Rail 수정",
+    apply_story_rail_reflow: "A/B Story Rail Reflow 적용",
+    discard_story_rail_reflow: "A/B Story Rail Reflow 폐기",
+  };
+  return tr(exec.label, exec.label, koreanByTool[exec.tool] ?? exec.label);
 }
 
 function StageIcon({ status }: { status: PipelineStage["status"] }) {
@@ -70,7 +99,7 @@ function StageIcon({ status }: { status: PipelineStage["status"] }) {
 
 function formatProgress(progress: NonNullable<PipelineStage["progress"]>): string {
   const secs = Math.round(progress.elapsedMs / 1000);
-  const statusLabel = progress.status === "thinking" ? tr("思考中", "Thinking") : progress.status ?? "";
+  const statusLabel = progress.status === "thinking" ? tr("思考中", "Thinking", "생각 중") : progress.status ?? "";
   const chars = progress.totalChars > 0
     ? progress.chineseChars > 0 ? `${progress.totalChars}字` : `${progress.totalChars} chars`
     : "";
@@ -529,7 +558,7 @@ function ProposedActionPreview({
   const contractRows = getProposedActionContractRows(details);
   return (
     <div className="mx-3 mb-3 mt-1 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3.5">
-      <div className="text-[17px] leading-6 font-semibold text-foreground">{details.title ?? tr("确认执行", "Confirm action")}</div>
+      <div className="text-[17px] leading-6 font-semibold text-foreground">{details.title ?? tr("确认执行", "Confirm action", "작업 확인")}</div>
       {details.summary && (
         <div className="mt-1.5 whitespace-pre-wrap break-words text-[15px] leading-7 text-muted-foreground">{details.summary}</div>
       )}
@@ -549,10 +578,10 @@ function ProposedActionPreview({
       {resolution === "confirmed" ? (
         <div className="mt-3 flex items-center gap-1.5 text-[15px] leading-6 font-medium text-primary">
           <Check size={15} className="shrink-0" />
-          {details.targetRoute ? tr("已打开", "Opened") : tr("已执行", "Executed")}
+          {details.targetRoute ? tr("已打开", "Opened", "열림") : tr("已执行", "Executed", "실행됨")}
         </div>
       ) : resolution === "rejected" ? (
-        <div className="mt-3 text-[15px] leading-6 font-medium text-muted-foreground">{tr("已取消", "Cancelled")}</div>
+        <div className="mt-3 text-[15px] leading-6 font-medium text-muted-foreground">{tr("已取消", "Cancelled", "취소됨")}</div>
       ) : (
         <div className="mt-3 flex flex-wrap gap-2">
           <button
@@ -562,7 +591,7 @@ function ProposedActionPreview({
             disabled={!onProposedAction || streaming || locked}
             className="rounded-lg bg-primary px-3.5 py-2 text-[15px] leading-6 font-medium text-primary-foreground disabled:opacity-50"
           >
-            {streaming ? tr("执行中…", "Running…") : details.targetRoute ? tr("打开入口", "Open entry") : tr("继续执行", "Continue")}
+            {streaming ? tr("执行中…", "Running…", "실행 중…") : details.targetRoute ? tr("打开入口", "Open entry", "화면 열기") : tr("继续执行", "Continue", "계속 실행")}
           </button>
           <button
             type="button"
@@ -570,7 +599,7 @@ function ProposedActionPreview({
             disabled={!onRejectProposedAction || streaming || locked}
             className="rounded-lg border border-border/60 bg-background/80 px-3.5 py-2 text-[15px] leading-6 font-medium text-muted-foreground disabled:opacity-50"
           >
-            {tr("取消", "Cancel")}
+            {tr("取消", "Cancel", "취소")}
           </button>
         </div>
       )}
@@ -637,7 +666,11 @@ function isPipelineTool(tool: string): boolean {
     || tool === "play_step"
     || tool === "create_narrative_forecast"
     || tool === "get_narrative_forecast"
-    || tool === "select_narrative_branch";
+    || tool === "select_narrative_branch"
+    || tool === "get_story_rails"
+    || tool === "replace_story_rails"
+    || tool === "apply_story_rail_reflow"
+    || tool === "discard_story_rail_reflow";
 }
 
 // -- Live elapsed timer hook --
@@ -669,7 +702,7 @@ export function PipelineResultDetails({ result, defaultOpen }: { result: string;
       className="mx-3 mb-3 mt-1 rounded-lg border border-border/40 bg-background/60 px-2.5 py-2 text-xs"
     >
       <summary className="cursor-pointer select-none font-medium text-muted-foreground hover:text-foreground">
-        {tr("查看操作结果", "View result")}
+        {tr("查看操作结果", "View result", "작업 결과 보기")}
       </summary>
       <div className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words leading-5 text-foreground">
         {result}
@@ -708,13 +741,14 @@ function PipelineExecution({
 
   const bookId = exec.args?.bookId as string | undefined;
   const forecastDetails = getNarrativeForecastPreviewDetails(exec);
+  const storyRailsDetails = getStoryRailsPreviewDetails(exec);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-xl border border-border/40 bg-card/60">
       <CollapsibleTrigger className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl hover:bg-card/80 transition-colors cursor-pointer">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[16px] leading-6 font-medium text-foreground truncate">
-            {exec.label}
+            {displayExecutionLabel(exec)}
             {bookId && <span className="text-muted-foreground font-normal"> · {bookId}</span>}
           </span>
         </div>
@@ -742,7 +776,8 @@ function PipelineExecution({
         onSelectBranch={onSelectNarrativeBranch}
         onRecheck={onRecheckNarrativeForecast}
       />
-      {!forecastDetails && typeof exec.result === "string" && exec.result.trim() && (
+      <StoryRailsPreview exec={exec} />
+      {!forecastDetails && !storyRailsDetails && typeof exec.result === "string" && exec.result.trim() && (
         <PipelineResultDetails result={exec.result} defaultOpen={toolDetailsDefaultOpen} />
       )}
       <CollapsibleContent>

@@ -3,7 +3,7 @@ import type { LLMClient, OnStreamProgress } from "../llm/provider.js";
 import { chatCompletion, createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, FanficMode, RevisionGate } from "../models/book.js";
-import type { ChapterMeta } from "../models/chapter.js";
+import { ChapterMetaSchema, type ChapterArcProvenance, type ChapterMeta } from "../models/chapter.js";
 import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { ArchitectAgent, type ArchitectOutput } from "../agents/architect.js";
@@ -23,6 +23,18 @@ import { analyzeAITells } from "../agents/ai-tells.js";
 import { analyzeSensitiveWords } from "../agents/sensitive-words.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
+import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
+import { ArcStore } from "../arc/store.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import {
+  matchesActiveStoryRailChapterEvidence,
+  StoryRailReflowStore,
+} from "../arc/reflow-store.js";
+import {
+  loadOptionalActiveArcContext,
+  renderChapterArcProvenance,
+} from "../arc/forecast.js";
+import { inspectStoryRailRuntimeEligibility } from "../arc/rail-context.js";
 import { MemoryDB, type Fact } from "../state/memory-db.js";
 import { dispatchNotification, dispatchWebhookEvent } from "../notify/dispatcher.js";
 import type { WebhookEvent } from "../notify/webhook.js";
@@ -64,6 +76,16 @@ const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Ending Pattern Repetition", "结尾同构",
 ]);
 
+export class StoryRailProductionGateError extends Error {
+  constructor(
+    readonly kind: "pending-reflow" | "active-arc-endpoint",
+    message: string,
+  ) {
+    super(message);
+    this.name = "StoryRailProductionGateError";
+  }
+}
+
 function isSequenceLevelCategory(category: string): boolean {
   return SEQUENCE_LEVEL_CATEGORIES.has(category);
 }
@@ -83,6 +105,14 @@ function mergeChapterRevisionInstructions(
     "## Current revision instruction",
     current,
   ].join("\n");
+}
+
+function sameArcProvenance(
+  left?: ChapterArcProvenance,
+  right?: ChapterArcProvenance,
+): boolean {
+  if (!left || !right) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 interface ImportFoundationSourceOptions {
@@ -1096,6 +1126,7 @@ export class PipelineRunner {
   async writeDraft(bookId: string, context?: string, wordCount?: number): Promise<DraftResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
+      await this.assertChapterProductionReadyWithinBookLock(bookId);
       await this.state.ensureControlDocuments(bookId);
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
@@ -1194,6 +1225,7 @@ export class PipelineRunner {
         auditIssues: [],
         lengthWarnings,
         lengthTelemetry,
+        ...(draftOutput.arcProvenance ? { arcProvenance: draftOutput.arcProvenance } : {}),
         ...(draftOutput.tokenUsage ? { tokenUsage: draftOutput.tokenUsage } : {}),
       };
       const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
@@ -1207,6 +1239,7 @@ export class PipelineRunner {
       this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" });
       await this.state.snapshotState(bookId, chapterNumber);
       await this.syncCurrentStateFactHistory(bookId, chapterNumber);
+      await this.persistStoryRailTruthReceipt(bookId, newEntry);
 
       await this.emitWebhook("chapter-complete", bookId, chapterNumber, {
         title: draftOutput.title,
@@ -1278,8 +1311,18 @@ export class PipelineRunner {
     };
   }
 
-  /** Audit the latest (or specified) chapter. Read-only, no lock needed. */
+  /** Audit the latest (or specified) chapter and persist its review status. */
   async auditDraft(bookId: string, chapterNumber?: number): Promise<AuditResult & { readonly chapterNumber: number }> {
+    const releaseLock = await this.state.acquireBookLock(bookId);
+    try {
+      return await this._auditDraftLocked(bookId, chapterNumber);
+    } finally {
+      await releaseLock();
+    }
+  }
+
+  /** Audit while the caller owns StateManager.acquireBookLock(bookId). */
+  private async _auditDraftLocked(bookId: string, chapterNumber?: number): Promise<AuditResult & { readonly chapterNumber: number }> {
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
     const targetChapter = chapterNumber ?? (await this.state.getNextChapterNumber(bookId)) - 1;
@@ -1288,6 +1331,8 @@ export class PipelineRunner {
     }
 
     const content = await this.readChapterContent(bookDir, targetChapter);
+    const index = await this.state.loadChapterIndex(bookId);
+    const chapterMeta = index.find((chapter) => chapter.number === targetChapter);
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const language = book.language ?? gp.language;
@@ -1302,11 +1347,13 @@ export class PipelineRunner {
       chapterContent: content,
       chapterNumber: targetChapter,
       language,
+      auditOptions: chapterMeta?.arcProvenance
+        ? { arcContext: renderChapterArcProvenance(chapterMeta.arcProvenance) }
+        : undefined,
     });
     const result = evaluation.auditResult;
 
     // Update index with audit result
-    const index = await this.state.loadChapterIndex(bookId);
     const updated = index.map((ch) =>
       ch.number === targetChapter
         ? {
@@ -1372,18 +1419,25 @@ export class PipelineRunner {
       const language = book.language ?? gp.language;
       const countingMode = resolveLengthCountingMode(language);
       const persistedChapterBrief = await readChapterUserBrief(bookDir, targetChapter);
-      const effectiveExternalContext = mergeChapterRevisionInstructions(
+      const requestedRevisionContext = mergeChapterRevisionInstructions(
         persistedChapterBrief,
         externalContext ?? this.config.externalContext,
       );
+      const arcProvenanceContext = chapterMeta.arcProvenance
+        ? renderChapterArcProvenance(chapterMeta.arcProvenance)
+        : undefined;
       const reviseControlInput = (this.config.inputGovernanceMode ?? "v2") === "legacy"
         ? undefined
         : await this.createGovernedArtifacts(
           book,
           bookDir,
           targetChapter,
-          effectiveExternalContext,
-          { reuseExistingIntentWhenContextMissing: true },
+          requestedRevisionContext,
+          {
+            reuseExistingIntentWhenContextMissing: true,
+            includeActiveArc: false,
+            arcProvenance: chapterMeta.arcProvenance,
+          },
         );
       const preRevision = await this.evaluateMergedAudit({
         auditor,
@@ -1396,13 +1450,14 @@ export class PipelineRunner {
           ? {
               chapterIntent: reviseControlInput.plan.intentMarkdown,
               chapterMemo: reviseControlInput.plan.memo,
+              arcContext: arcProvenanceContext,
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
             }
-          : undefined,
+          : arcProvenanceContext ? { arcContext: arcProvenanceContext } : undefined,
       });
 
-      const explicitRevisionRequested = Boolean(effectiveExternalContext?.trim())
+      const explicitRevisionRequested = Boolean(requestedRevisionContext?.trim())
         || mode === "rewrite"
         || mode === "rework";
       if (
@@ -1449,8 +1504,9 @@ export class PipelineRunner {
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
               lengthSpec,
+              arcProvenanceContext,
             }
-          : { lengthSpec },
+          : { lengthSpec, arcProvenanceContext },
       );
 
       if (reviseOutput.revisedContent.length === 0) {
@@ -1474,6 +1530,7 @@ export class PipelineRunner {
               temperature: 0,
               chapterIntent: reviseControlInput.plan.intentMarkdown,
               chapterMemo: reviseControlInput.plan.memo,
+              arcContext: arcProvenanceContext,
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
               truthFileOverrides: {
@@ -1484,6 +1541,7 @@ export class PipelineRunner {
             }
           : {
               temperature: 0,
+              arcContext: arcProvenanceContext,
               truthFileOverrides: {
                 currentState: reviseOutput.updatedState !== "(状态卡未更新)" ? reviseOutput.updatedState : undefined,
                 ledger: reviseOutput.updatedLedger !== "(账本未更新)" ? reviseOutput.updatedLedger : undefined,
@@ -1571,7 +1629,14 @@ export class PipelineRunner {
       if (!existingFile) {
         throw new Error(`Chapter ${targetChapter} file not found in ${chaptersDir} (expected filename starting with ${paddedNum})`);
       }
-      await archiveChapterVersion(bookDir, targetChapter, content, "revision");
+      await archiveChapterVersion(
+        bookDir,
+        targetChapter,
+        content,
+        "revision",
+        new Date(),
+        { arcProvenance: chapterMeta.arcProvenance },
+      );
       const reviseLang = book.language ?? gp.language;
       const reviseHeading = reviseLang === "en"
         ? `# Chapter ${targetChapter}: ${chapterMeta.title}`
@@ -1650,6 +1715,8 @@ export class PipelineRunner {
       await this.syncNarrativeMemoryIndex(bookId);
       if (isLatestChapter) {
         await this.syncCurrentStateFactHistory(bookId, targetChapter);
+        const revisedEntry = updatedIndex.find((chapter) => chapter.number === targetChapter);
+        if (revisedEntry) await this.persistStoryRailTruthReceipt(bookId, revisedEntry);
       }
 
       await this.emitWebhook("revision-complete", bookId, targetChapter, {
@@ -1731,10 +1798,29 @@ export class PipelineRunner {
     this.throwIfOperationAborted();
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
-      return await this._writeNextChapterLocked(bookId, wordCount, temperatureOverride, this.config.externalContext);
+      return await this.writeNextChapterWithinBookLock(bookId, wordCount, temperatureOverride);
     } finally {
       await releaseLock();
     }
+  }
+
+  /**
+   * Write while the caller owns StateManager.acquireBookLock(bookId).
+   * This exists for compound operations such as CLI rewrite, where trimming
+   * old Chapters and regenerating the replacement must share one Book lock.
+   */
+  async writeNextChapterWithinBookLock(
+    bookId: string,
+    wordCount?: number,
+    temperatureOverride?: number,
+  ): Promise<ChapterPipelineResult> {
+    this.throwIfOperationAborted();
+    return this._writeNextChapterLocked(
+      bookId,
+      wordCount,
+      temperatureOverride,
+      this.config.externalContext,
+    );
   }
 
   async writeChapters(
@@ -1752,12 +1838,25 @@ export class PipelineRunner {
       const results: ChapterPipelineResult[] = [];
       for (let index = 0; index < chapterCount; index += 1) {
         this.throwIfOperationAborted();
-        const result = await this._writeNextChapterLocked(
-          bookId,
-          options.wordCount,
-          options.temperatureOverride,
-          this.config.externalContext,
-        );
+        let result: ChapterPipelineResult;
+        try {
+          result = await this._writeNextChapterLocked(
+            bookId,
+            options.wordCount,
+            options.temperatureOverride,
+            this.config.externalContext,
+          );
+        } catch (error) {
+          // A batch that just persisted the active Arc endpoint has completed
+          // useful work. Stop cleanly there so the owner can review/close the
+          // B, while a gate present before the batch still surfaces normally.
+          if (
+            results.length > 0
+            && error instanceof StoryRailProductionGateError
+            && error.kind === "active-arc-endpoint"
+          ) break;
+          throw error;
+        }
         results.push(result);
         options.onChapterComplete?.(result, results.length, chapterCount);
         if (result.status !== "ready-for-review") break;
@@ -1793,6 +1892,7 @@ export class PipelineRunner {
     externalContext?: string,
   ): Promise<ChapterPipelineResult> {
     this.throwIfOperationAborted();
+    await this.assertChapterProductionReadyWithinBookLock(bookId);
     await this.state.ensureControlDocuments(bookId);
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
@@ -1881,6 +1981,9 @@ export class PipelineRunner {
         chapterNumber,
         initialOutput: output,
         reducedControlInput,
+        arcProvenanceContext: output.arcProvenance
+          ? renderChapterArcProvenance(output.arcProvenance)
+          : undefined,
         lengthSpec,
         initialUsage: totalUsage,
         createReviser: () => new ReviserAgent(this.agentCtxFor("reviser", bookId)),
@@ -2116,7 +2219,7 @@ export class PipelineRunner {
     }
 
     const resolvedStatus = chapterStatus ?? (auditResult.passed ? "ready-for-review" : "audit-failed");
-    await persistChapterArtifacts({
+    const persistedArtifacts = await persistChapterArtifacts({
       chapterNumber,
       chapterTitle: persistenceOutput.title,
       status: resolvedStatus,
@@ -2125,6 +2228,7 @@ export class PipelineRunner {
       lengthWarnings,
       lengthTelemetry,
       degradedIssues,
+      arcProvenance: persistenceOutput.arcProvenance,
       tokenUsage: totalUsage,
       loadChapterIndex: () => this.state.loadChapterIndex(bookId),
       saveChapter: () => writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang),
@@ -2147,6 +2251,7 @@ export class PipelineRunner {
       logSnapshotStage: () =>
         this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" }),
     });
+    await this.persistStoryRailTruthReceipt(bookId, persistedArtifacts.entry);
 
     // 6. Send notification
     if (this.config.notifyChannels && this.config.notifyChannels.length > 0) {
@@ -2293,6 +2398,7 @@ export class PipelineRunner {
       reviewNote: undefined,
     };
     await this.state.saveChapterIndex(bookId, index);
+    await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
 
     const repairedPassesAudit = baseStatus !== "audit-failed";
     return {
@@ -2442,6 +2548,7 @@ export class PipelineRunner {
       };
     }
     await this.state.saveChapterIndex(bookId, index);
+    await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
     return {
       chapterNumber: targetChapter,
       title: targetMeta.title,
@@ -2826,6 +2933,7 @@ ${matrix}`,
     this.throwIfOperationAborted();
     const releaseLock = await this.state.acquireBookLock(input.bookId);
     try {
+      await this.assertChapterProductionReadyWithinBookLock(input.bookId);
       const book = await this.state.loadBookConfig(input.bookId);
       const bookDir = this.state.bookDir(input.bookId);
       const { profile: gp } = await this.loadGenreProfile(book.genre);
@@ -2891,12 +2999,31 @@ ${matrix}`,
       const countingMode = resolveLengthCountingMode(book.language ?? gp.language);
       let totalWords = 0;
       let importedCount = 0;
+      let lastImportedChapter = startFrom - 1;
 
       for (let i = startFrom - 1; i < input.chapters.length; i++) {
         this.throwIfOperationAborted();
+        try {
+          await this.assertChapterProductionReadyWithinBookLock(input.bookId);
+        } catch (error) {
+          if (
+            importedCount > 0
+            && error instanceof StoryRailProductionGateError
+            && error.kind === "active-arc-endpoint"
+          ) break;
+          throw error;
+        }
         const ch = input.chapters[i]!;
         const chapterNumber = i + 1;
         const governedInput = await this.prepareWriteInput(book, bookDir, chapterNumber);
+        const arcProvenance = governedInput.arcProvenance ?? (await loadOptionalActiveArcContext({
+          store: new ArcStore(bookDir),
+          railStore: new StoryRailStore(bookDir),
+          bookId: book.id,
+          chapterNumber,
+          targetChapters: book.targetChapters,
+          onWarning: (message) => this.config.logger?.warn(message),
+        }))?.provenance;
 
         log?.info(this.localize(resolvedLanguage, {
           zh: `分析章节 ${chapterNumber}/${input.chapters.length}：${ch.title}...`,
@@ -2923,6 +3050,7 @@ ${matrix}`,
           wordCount: chapterWordCount,
           postWriteErrors: [],
           postWriteWarnings: [],
+          ...(arcProvenance ? { arcProvenance } : {}),
         };
 
         // Save chapter file + core truth files (state, ledger, hooks)
@@ -2949,6 +3077,7 @@ ${matrix}`,
           updatedAt: now,
           auditIssues: [],
           lengthWarnings: [],
+          ...(arcProvenance ? { arcProvenance } : {}),
         };
         // Replace if exists (resume case), otherwise append
         const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
@@ -2959,17 +3088,19 @@ ${matrix}`,
 
         // Snapshot state after each chapter for rollback + resume support
         await this.state.snapshotState(input.bookId, chapterNumber);
+        await this.persistStoryRailTruthReceipt(input.bookId, newEntry);
 
         importedCount++;
+        lastImportedChapter = chapterNumber;
         totalWords += chapterWordCount;
       }
 
-      if (input.chapters.length > 0) {
+      if (importedCount > 0) {
         await this.markBookActiveIfNeeded(input.bookId);
-        await this.syncCurrentStateFactHistory(input.bookId, input.chapters.length);
+        await this.syncCurrentStateFactHistory(input.bookId, lastImportedChapter);
       }
 
-      const nextChapter = input.chapters.length + 1;
+      const nextChapter = await this.state.getNextChapterNumber(input.bookId);
       log?.info(this.localize(resolvedLanguage, {
         zh: `完成。已导入 ${importedCount} 章，共 ${formatLengthCount(totalWords, countingMode)}。下一章：${nextChapter}`,
         en: `Done. ${importedCount} chapters imported, ${formatLengthCount(totalWords, countingMode)}. Next chapter: ${nextChapter}`,
@@ -3035,6 +3166,7 @@ ${matrix}`,
       postWriteErrors: [],
       postWriteWarnings: [],
       hookHealthIssues: output.hookHealthIssues,
+      arcProvenance: output.arcProvenance,
       tokenUsage: output.tokenUsage,
     };
   }
@@ -3051,6 +3183,154 @@ ${matrix}`,
     );
   }
 
+  /**
+   * Production preflight for callers that already own the Book write lock.
+   * A valid pending reflow is an intentional owner-decision gate. Missing or
+   * damaged optional Rail state remains fail-open so Book -> Chapter keeps
+   * working when the planning overlay is unavailable.
+   */
+  async assertChapterProductionReadyWithinBookLock(bookId: string): Promise<void> {
+    let pending;
+    try {
+      pending = await new StoryRailReflowStore(this.state.bookDir(bookId)).getPending(bookId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.config.logger?.warn(
+        `[story-rails] Pending reflow could not be read and was ignored; `
+        + `continuing through Book -> Chapter: ${detail}`,
+      );
+      return;
+    }
+
+    if (pending) {
+      throw new StoryRailProductionGateError(
+        "pending-reflow",
+        `Story Rail reflow ${JSON.stringify(pending.pendingId)} is pending after Chapter `
+        + `${pending.endpointChapterNumber}. Apply it before producing the next Chapter, `
+        + `or explicitly discard it to continue through Book -> Chapter without Rail reflow.`,
+      );
+    }
+
+    const reachedEndpoint = await this.findReachedActiveStoryRailEndpoint(bookId);
+    if (!reachedEndpoint) return;
+    throw new StoryRailProductionGateError(
+      "active-arc-endpoint",
+      `Ready Story Rail B ${JSON.stringify(reachedEndpoint.bId)} and Arc `
+      + `${JSON.stringify(reachedEndpoint.arcId)} reached endpoint Chapter ${reachedEndpoint.chapterNumber}. `
+      + "Review and approve/reject that Chapter before producing the next one, then explicitly apply its "
+      + "close/reflow. To continue through Book -> Chapter without Rail closeout, first change the Rail "
+      + "to draft/opt-out with the Story Rail tool.",
+    );
+  }
+
+  /**
+   * Return an endpoint only when the persisted Chapter proves the exact
+   * current active Arc + active-B identity. Compatible edits to future B/A
+   * details stay valid, while every identity mismatch remains fail-open for
+   * the legacy Book -> Chapter path. A coincidental legacy/imported Chapter
+   * number must never create a false production gate.
+   */
+  private async findReachedActiveStoryRailEndpoint(bookId: string): Promise<{
+    readonly bId: string;
+    readonly arcId: string;
+    readonly chapterNumber: number;
+  } | null> {
+    const book = await this.state.loadBookConfig(bookId);
+    const bookDir = this.state.bookDir(bookId);
+    const warn = (message: string) => this.config.logger?.warn(message);
+    const plan = await new StoryRailStore(bookDir).loadOptional(bookId, warn);
+    if (!plan) return null;
+
+    let activeArc;
+    try {
+      activeArc = await new ArcStore(bookDir).getActive();
+    } catch (error) {
+      warn(
+        `[story-rails] Active Arc endpoint could not be checked and was ignored; `
+        + `continuing through Book -> Chapter: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+    if (!activeArc) return null;
+    if (activeArc.bookId !== bookId) {
+      warn(
+        `[story-rails] Active Arc belongs to book ${JSON.stringify(activeArc.bookId)}, not `
+        + `${JSON.stringify(bookId)}; endpoint gate was ignored.`,
+      );
+      return null;
+    }
+    if (activeArc.status === "completed") {
+      warn("[story-rails] Completed active Arc was ignored by the endpoint production gate.");
+      return null;
+    }
+
+    const eligibility = inspectStoryRailRuntimeEligibility(
+      plan,
+      activeArc.id,
+      book.targetChapters,
+    );
+    if (eligibility.status !== "bound") return null;
+
+    const chapterNumber = activeArc.chapterNumbers.at(-1);
+    if (chapterNumber === undefined) return null;
+    const activeB = plan.arcRouteRail.entries.find((entry) => entry.status === "active");
+    if (!activeB) return null;
+
+    let index: ReadonlyArray<ChapterMeta>;
+    try {
+      const raw = JSON.parse(await readFile(join(bookDir, "chapters", "index.json"), "utf-8"));
+      const parsed = ChapterMetaSchema.array().safeParse(raw);
+      if (!parsed.success) {
+        warn("[story-rails] Chapter index could not prove the active Arc endpoint; endpoint gate was ignored.");
+        return null;
+      }
+      index = parsed.data;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+        warn(
+          `[story-rails] Chapter index could not be read for endpoint proof; endpoint gate was ignored: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return null;
+    }
+
+    const endpointRows = index.filter((chapter) => chapter.number === chapterNumber);
+    const endpoint = endpointRows[0];
+    const evidencePlanUpdatedAt = endpoint?.arcProvenance?.storyRail?.planUpdatedAt;
+    if (
+      endpointRows.length !== 1
+      || !endpoint
+      || !evidencePlanUpdatedAt
+      || !matchesActiveStoryRailChapterEvidence(
+        endpoint.arcProvenance,
+        chapterNumber,
+        bookId,
+        activeArc,
+        activeB,
+        evidencePlanUpdatedAt,
+      )
+    ) return null;
+
+    try {
+      const padded = String(chapterNumber).padStart(4, "0");
+      const files = await readdir(join(bookDir, "chapters"));
+      if (!files.some((file) => file.startsWith(padded) && file.endsWith(".md"))) return null;
+    } catch (error) {
+      warn(
+        `[story-rails] Chapter file could not prove the active Arc endpoint; endpoint gate was ignored: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+
+    return {
+      bId: eligibility.bId!,
+      arcId: activeArc.id,
+      chapterNumber,
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -3060,7 +3340,7 @@ ${matrix}`,
     bookDir: string,
     chapterNumber: number,
     externalContext?: string,
-  ): Promise<Pick<WriteChapterInput, "externalContext" | "chapterIntent" | "chapterMemo" | "chapterIntentData" | "contextPackage" | "ruleStack">> {
+  ): Promise<Pick<WriteChapterInput, "externalContext" | "chapterIntent" | "chapterMemo" | "chapterIntentData" | "contextPackage" | "ruleStack" | "arcProvenance">> {
     if ((this.config.inputGovernanceMode ?? "v2") === "legacy") {
       return { externalContext };
     }
@@ -3080,6 +3360,7 @@ ${matrix}`,
       chapterIntentData: plan.intent,
       contextPackage: composed.contextPackage,
       ruleStack: composed.ruleStack,
+      arcProvenance: plan.arcProvenance,
     };
   }
 
@@ -3262,6 +3543,17 @@ ${matrix}`,
         zh: `状态事实同步已跳过：${String(error)}`,
         en: `State fact sync skipped: ${String(error)}`,
       });
+    }
+  }
+
+  private async persistStoryRailTruthReceipt(bookId: string, chapter: ChapterMeta): Promise<void> {
+    if (!chapter.arcProvenance?.storyRail || chapter.status === "state-degraded") return;
+    try {
+      await writeChapterTruthReceipt(this.state.bookDir(bookId), bookId, chapter);
+    } catch (error) {
+      this.config.logger?.warn(
+        `[story-rail] Chapter ${chapter.number} truth receipt was not written; optional automatic reflow remains disabled: ${String(error)}`,
+      );
     }
   }
 
@@ -3643,6 +3935,7 @@ ${matrix}`,
       temperature?: number;
       chapterIntent?: string;
       chapterMemo?: ChapterMemo;
+      arcContext?: string;
       contextPackage?: ContextPackage;
       ruleStack?: RuleStack;
       truthFileOverrides?: {
@@ -3715,6 +4008,8 @@ ${matrix}`,
     externalContext?: string,
     options?: {
       readonly reuseExistingIntentWhenContextMissing?: boolean;
+      readonly includeActiveArc?: boolean;
+      readonly arcProvenance?: ChapterArcProvenance;
     },
   ): Promise<{
     plan: PlanChapterOutput;
@@ -3743,23 +4038,48 @@ ${matrix}`,
     externalContext?: string,
     options?: {
       readonly reuseExistingIntentWhenContextMissing?: boolean;
+      readonly includeActiveArc?: boolean;
+      readonly arcProvenance?: ChapterArcProvenance;
     },
   ): Promise<PlanChapterOutput> {
+    const arcChapterContext = options?.arcProvenance
+      ? {
+          markdown: renderChapterArcProvenance(options.arcProvenance),
+          provenance: options.arcProvenance,
+        }
+      : options?.includeActiveArc === false
+        ? null
+        : await loadOptionalActiveArcContext({
+          store: new ArcStore(bookDir),
+          railStore: new StoryRailStore(bookDir),
+          bookId: book.id,
+          chapterNumber,
+          targetChapters: book.targetChapters,
+          onWarning: (message) => this.config.logger?.warn(message),
+        });
     if (
       options?.reuseExistingIntentWhenContextMissing &&
       (!externalContext || externalContext.trim().length === 0)
     ) {
       const persisted = await loadPersistedPlan(bookDir, chapterNumber);
-      if (persisted) return persisted;
+      if (
+        persisted
+        && sameArcProvenance(persisted.arcProvenance, arcChapterContext?.provenance)
+      ) return persisted;
     }
 
     const planner = new PlannerAgent(this.agentCtxFor("planner", book.id));
-    const plan = await planner.planChapter({
+    const planned = await planner.planChapter({
       book,
       bookDir,
       chapterNumber,
       externalContext,
+      arcContext: arcChapterContext?.markdown,
     });
+    const plan: PlanChapterOutput = {
+      ...planned,
+      ...(arcChapterContext ? { arcProvenance: arcChapterContext.provenance } : {}),
+    };
     // Persist in the new memo format so subsequent compose/write phases can
     // skip the planner LLM call when no new context is supplied.
     await savePersistedPlan(bookDir, plan);

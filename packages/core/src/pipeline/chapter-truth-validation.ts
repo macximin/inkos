@@ -117,7 +117,11 @@ export async function validateChapterTruthPersistence(params: {
     });
 
     if (recovery.kind === "recovered") {
-      persistenceOutput = recovery.output;
+      const arcProvenance = persistenceOutput.arcProvenance;
+      persistenceOutput = {
+        ...recovery.output,
+        ...(arcProvenance ? { arcProvenance } : {}),
+      };
       validation = recovery.validation;
     } else {
       chapterStatus = "state-degraded";

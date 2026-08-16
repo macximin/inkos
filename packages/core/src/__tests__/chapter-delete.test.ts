@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
 import { StateManager } from "../state/manager.js";
 import { deleteLatestChapter } from "../state/chapter-delete.js";
 
@@ -17,6 +17,36 @@ function chapterEntry(number: number, title: string): ChapterMeta {
     updatedAt: now,
     auditIssues: [],
     lengthWarnings: [],
+  };
+}
+
+function arcProvenance(bookId: string, chapterNumber: number): ChapterArcProvenance {
+  return {
+    version: 1,
+    bookId,
+    arcId: "arc-before-delete",
+    arcUpdatedAt: "2026-08-09T10:00:00.000Z",
+    arcTitle: "삭제 전 Arc",
+    chapterNumber,
+    episodeRole: "payoff",
+    openingState: "시작 상태",
+    promise: "삭제될 회차의 약속",
+    goal: "삭제 전 목표",
+    obstacle: "장애물",
+    pressure: "압박",
+    turn: "전환",
+    payoff: "결산",
+    irreversibleChange: "변화",
+    nextHook: "다음 훅",
+    beats: ["삭제 전 비트"],
+    endingHook: "삭제 전 엔딩 훅",
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
   };
 }
 
@@ -223,5 +253,32 @@ describe("deleteLatestChapter", () => {
     expect(result.deletedChapter).toBe(2);
     const trashEntries = await readdir(join(bookDir, "chapters", ".trash"));
     expect(trashEntries.sort()).toEqual(["0002_落雨.md", "0009_幽灵.md"]);
+  });
+
+  it("removes deleted chapter current provenance so a reused number cannot inherit it", async () => {
+    const { root, bookDir } = await setupBook({
+      bookId: "provenance-delete-book",
+      chapters: [
+        { number: 1, title: "起风", content: "第一章。" },
+        { number: 2, title: "旧章", content: "旧的第二章。" },
+      ],
+      snapshotChapters: [1, 2],
+    });
+    const state = new StateManager(root);
+    const current = await state.loadChapterIndex("provenance-delete-book");
+    await state.saveChapterIndex("provenance-delete-book", current.map((chapter) =>
+      chapter.number === 2
+        ? { ...chapter, arcProvenance: arcProvenance("provenance-delete-book", 2) }
+        : chapter));
+    const sidecarPath = join(bookDir, "chapters", ".current-metadata", "000002.json");
+    await expect(exists(sidecarPath)).resolves.toBe(true);
+
+    await deleteLatestChapter(state, "provenance-delete-book");
+    await expect(exists(sidecarPath)).resolves.toBe(false);
+
+    await writeFile(join(bookDir, "chapters", "0002_新章.md"), "新的第二章。", "utf-8");
+    await writeFile(join(bookDir, "chapters", "index.json"), "{ force rebuild", "utf-8");
+    const rebuilt = await state.loadChapterIndex("provenance-delete-book");
+    expect(rebuilt.find((chapter) => chapter.number === 2)?.arcProvenance).toBeUndefined();
   });
 });

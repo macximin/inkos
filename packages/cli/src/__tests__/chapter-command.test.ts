@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { StateManager } from "@actalk/inkos-core";
 
 const logMock = vi.fn();
 const logErrorMock = vi.fn();
@@ -71,6 +72,11 @@ async function setupBook(params: {
   return bookDir;
 }
 
+async function expectBookLockAvailable(bookId: string): Promise<void> {
+  const releaseLock = await new StateManager(projectRoot).acquireBookLock(bookId);
+  await releaseLock();
+}
+
 describe("inkos chapter sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -99,6 +105,7 @@ describe("inkos chapter sync", () => {
 
     const savedIndex = JSON.parse(await readFile(join(bookDir, "chapters", "index.json"), "utf-8")) as ChapterEntry[];
     expect(savedIndex[0]?.wordCount).toBe(9);
+    await expectBookLockAvailable("driftbook");
   });
 
   it("prints a bilingual summary when the index is already in sync", async () => {
@@ -114,6 +121,57 @@ describe("inkos chapter sync", () => {
     expect(logErrorMock).not.toHaveBeenCalled();
     const printed = logMock.mock.calls.map((call) => call[0] as string).join("\n");
     expect(printed).toContain("无需修正");
+  });
+
+  it("releases the Book lock and preserves the index when sync fails", async () => {
+    const bookDir = await setupBook({
+      bookId: "broken-sync-book",
+      chapters: [{ file: "0001_起风.md", content: "# 第1章 起风\n\n风从码头吹进巷子。" }],
+      index: [chapterEntry(1, "起风", 3000)],
+    });
+    const indexPath = join(bookDir, "chapters", "index.json");
+    const chapterPath = join(bookDir, "chapters", "0001_起风.md");
+    await rm(chapterPath);
+    await mkdir(chapterPath);
+    const indexBefore = await readFile(indexPath, "utf-8");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    try {
+      const { chapterCommand } = await import("../commands/chapter.js");
+      await chapterCommand.parseAsync(["node", "chapter", "sync", "broken-sync-book"], { from: "node" });
+
+      expect(logErrorMock).toHaveBeenCalledWith(expect.stringContaining("Failed to sync chapter word counts"));
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      await expect(readFile(indexPath, "utf-8")).resolves.toBe(indexBefore);
+      await expectBookLockAvailable("broken-sync-book");
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("leaves the chapter index unchanged when sync finds the Book lock busy", async () => {
+    const bookDir = await setupBook({
+      bookId: "busy-sync-book",
+      chapters: [{ file: "0001_起风.md", content: "# 第1章 起风\n\n风从码头吹进巷子。" }],
+      index: [chapterEntry(1, "起风", 3000)],
+    });
+    const indexPath = join(bookDir, "chapters", "index.json");
+    const indexBefore = await readFile(indexPath, "utf-8");
+    const releaseCompetingLock = await new StateManager(projectRoot).acquireBookLock("busy-sync-book");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    try {
+      const { chapterCommand } = await import("../commands/chapter.js");
+      await chapterCommand.parseAsync(["node", "chapter", "sync", "busy-sync-book"], { from: "node" });
+
+      expect(logErrorMock).toHaveBeenCalledWith(expect.stringContaining("locked by an active InkOS write"));
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      await expect(readFile(indexPath, "utf-8")).resolves.toBe(indexBefore);
+    } finally {
+      exitSpy.mockRestore();
+      await releaseCompetingLock();
+    }
+    await expectBookLockAvailable("busy-sync-book");
   });
 });
 

@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve, basename } from "node:path";
 import { deriveBookIdFromTitle, normalizePlatformOrOther, PipelineRunner, type BookConfig, type FanficMode } from "@actalk/inkos-core";
 import { loadConfig, buildPipelineConfig, findProjectRoot, resolveBookId, log, logError } from "../utils.js";
+import { resolveCliLanguage } from "../localization.js";
 import {
   formatFanficCanonMissingError,
   formatFanficInvalidModeError,
@@ -32,7 +33,7 @@ fanficCommand
 
       const mode = opts.mode as FanficMode;
       if (!["canon", "au", "ooc", "cp"].includes(mode)) {
-        throw new Error(formatFanficInvalidModeError(mode));
+        throw new Error(formatFanficInvalidModeError(mode, resolveCliLanguage(opts.lang)));
       }
 
       // Read source material
@@ -41,7 +42,7 @@ fanficCommand
       const sourceName = basename(sourcePath);
 
       if (!sourceText || sourceText.length < 100) {
-        throw new Error(formatFanficSourceTooShortError(sourceText.length));
+        throw new Error(formatFanficSourceTooShortError(sourceText.length, resolveCliLanguage(opts.lang)));
       }
 
       const bookId = deriveBookIdFromTitle(opts.title) || `book-${Date.now().toString(36)}`;
@@ -113,7 +114,7 @@ fanficCommand
       try {
         canon = await readFile(join(bookDir, "story/fanfic_canon.md"), "utf-8");
       } catch {
-        throw new Error(formatFanficCanonMissingError());
+        throw new Error(formatFanficCanonMissingError(resolveCliLanguage()));
       }
 
       if (opts.json) {
@@ -178,7 +179,7 @@ async function readSourceMaterial(sourcePath: string): Promise<string> {
     const files = await readdir(sourcePath);
     const textFiles = files.filter((f) => f.endsWith(".txt") || f.endsWith(".md"));
     if (textFiles.length === 0) {
-      throw new Error(formatFanficSourceDirEmptyError(sourcePath));
+      throw new Error(formatFanficSourceDirEmptyError(sourcePath, resolveCliLanguage()));
     }
     const contents = await Promise.all(
       textFiles.sort().map((f) => readFile(join(sourcePath, f), "utf-8")),

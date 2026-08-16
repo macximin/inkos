@@ -176,77 +176,85 @@ writeCommand
       const chaptersDir = join(bookDir, "chapters");
       const restoreFrom = chapter - 1;
       const restoreSnapshotDir = join(bookDir, "story", "snapshots", String(restoreFrom));
-      await stat(restoreSnapshotDir).catch(() => {
-        throw new Error(`Cannot rewrite chapter ${chapter}: missing snapshot for chapter ${restoreFrom}`);
-      });
-      const migrationHint = await getLegacyMigrationHint(root, bookId);
-      if (migrationHint && !opts.json) {
-        log(`[migration] ${migrationHint}`);
-      }
-
-      // Remove existing chapter file
-      const files = await readdir(chaptersDir);
-      const paddedNum = String(chapter).padStart(4, "0");
-      const existing = files.filter((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
-      for (const f of existing) {
-        await unlink(join(chaptersDir, f));
-        if (!opts.json) log(`Removed: ${f}`);
-      }
-
-      // Remove from index (and all chapters after it)
-      const index = await state.loadChapterIndex(bookId);
-      const trimmed = index.filter((ch) => ch.number < chapter);
-      await state.saveChapterIndex(bookId, trimmed);
-
-      // Also remove later chapter files since state will be rolled back
-      const laterFiles = files.filter((f) => {
-        const num = parseInt(f.slice(0, 4), 10);
-        return num > chapter && f.endsWith(".md");
-      });
-      for (const f of laterFiles) {
-        await unlink(join(chaptersDir, f));
-        if (!opts.json) log(`Removed later chapter: ${f}`);
-      }
-
-      // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
-      const restored = await state.restoreState(bookId, restoreFrom);
-      if (!restored) {
-        throw new Error(`Cannot rewrite chapter ${chapter}: failed to restore snapshot for chapter ${restoreFrom}`);
-      }
-      if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
-
-      const nextChapter = await state.getNextChapterNumber(bookId);
-      if (nextChapter !== chapter) {
-        throw new Error(`Cannot rewrite chapter ${chapter}: expected next chapter to be ${chapter}, but resolved to ${nextChapter}`);
-      }
-
-      if (!opts.json) log(`Regenerating chapter ${chapter}...`);
-
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
-
       const config = await loadConfig();
       const pipeline = new PipelineRunner(buildPipelineConfig(config, root, {
         externalContext: opts.brief,
         chapterReviewMode: resolveChapterReviewMode(book, config.writing),
       }));
 
-      const result = await pipeline.writeNextChapter(bookId, wordCount);
-      const language = resolveCliLanguage(book.language);
-
-      if (opts.json) {
-        log(JSON.stringify(result, null, 2));
-      } else {
-        for (const line of formatWriteNextResultLines(language, {
-          chapterNumber: result.chapterNumber,
-          title: result.title,
-          wordCount: result.wordCount,
-          auditPassed: result.auditResult.passed,
-          revised: result.revised,
-          status: result.status,
-          issues: result.auditResult.issues,
-        })) {
-          log(line);
+      // Rewriting is one compound Book mutation: pending-gate preflight,
+      // destructive trim, state restore, and replacement generation all share
+      // the same lock so reflow/apply and external edits cannot interleave.
+      const releaseLock = await state.acquireBookLock(bookId);
+      try {
+        await pipeline.assertChapterProductionReadyWithinBookLock(bookId);
+        await stat(restoreSnapshotDir).catch(() => {
+          throw new Error(`Cannot rewrite chapter ${chapter}: missing snapshot for chapter ${restoreFrom}`);
+        });
+        const migrationHint = await getLegacyMigrationHint(root, bookId);
+        if (migrationHint && !opts.json) {
+          log(`[migration] ${migrationHint}`);
         }
+
+        // Remove existing chapter file
+        const files = await readdir(chaptersDir);
+        const paddedNum = String(chapter).padStart(4, "0");
+        const existing = files.filter((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
+        for (const f of existing) {
+          await unlink(join(chaptersDir, f));
+          if (!opts.json) log(`Removed: ${f}`);
+        }
+
+        // Remove from index (and all chapters after it)
+        const index = await state.loadChapterIndex(bookId);
+        const trimmed = index.filter((ch) => ch.number < chapter);
+        await state.saveChapterIndex(bookId, trimmed);
+
+        // Also remove later chapter files since state will be rolled back
+        const laterFiles = files.filter((f) => {
+          const num = parseInt(f.slice(0, 4), 10);
+          return num > chapter && f.endsWith(".md");
+        });
+        for (const f of laterFiles) {
+          await unlink(join(chaptersDir, f));
+          if (!opts.json) log(`Removed later chapter: ${f}`);
+        }
+
+        // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
+        const restored = await state.restoreState(bookId, restoreFrom);
+        if (!restored) {
+          throw new Error(`Cannot rewrite chapter ${chapter}: failed to restore snapshot for chapter ${restoreFrom}`);
+        }
+        if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
+
+        const nextChapter = await state.getNextChapterNumber(bookId);
+        if (nextChapter !== chapter) {
+          throw new Error(`Cannot rewrite chapter ${chapter}: expected next chapter to be ${chapter}, but resolved to ${nextChapter}`);
+        }
+
+        if (!opts.json) log(`Regenerating chapter ${chapter}...`);
+
+        const result = await pipeline.writeNextChapterWithinBookLock(bookId, wordCount);
+        const language = resolveCliLanguage(book.language);
+
+        if (opts.json) {
+          log(JSON.stringify(result, null, 2));
+        } else {
+          for (const line of formatWriteNextResultLines(language, {
+            chapterNumber: result.chapterNumber,
+            title: result.title,
+            wordCount: result.wordCount,
+            auditPassed: result.auditResult.passed,
+            revised: result.revised,
+            status: result.status,
+            issues: result.auditResult.issues,
+          })) {
+            log(line);
+          }
+        }
+      } finally {
+        await releaseLock();
       }
 
       // Success notification intentionally skipped: the pipeline already sent

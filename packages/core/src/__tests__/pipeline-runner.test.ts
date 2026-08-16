@@ -6,6 +6,12 @@ import { join } from "node:path";
 import { buildImportFoundationSource, PipelineRunner } from "../pipeline/runner.js";
 import * as llmProvider from "../llm/provider.js";
 import { StateManager } from "../state/manager.js";
+import { ArcStore } from "../arc/store.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import { StoryRailReflowStore } from "../arc/reflow-store.js";
+import type { ArcPacket } from "../arc/schema.js";
+import type { StoryRailPlanInput } from "../arc/rail-schema.js";
+import { loadOptionalActiveArcContext } from "../arc/forecast.js";
 import { ArchitectAgent } from "../agents/architect.js";
 import { PlannerAgent } from "../agents/planner.js";
 import * as ComposerModule from "../agents/composer.js";
@@ -141,6 +147,112 @@ function createAnalyzedOutput(overrides: Partial<WriteChapterOutput> = {}): Writ
     updatedCharacterMatrix: "analyzed matrix",
     ...overrides,
   });
+}
+
+function makeEndpointArc(
+  bookId: string,
+  chapterNumbers: ReadonlyArray<number>,
+  id = "arc-endpoint-gate",
+): ArcPacket {
+  return {
+    version: 1,
+    id,
+    bookId,
+    title: "Endpoint Gate Arc",
+    status: "ready",
+    episodeCount: chapterNumbers.length as 1 | 2 | 3,
+    chapterNumbers: [...chapterNumbers],
+    openingState: "The harbor ledger is still sealed.",
+    promise: "Open the ledger before the debt comes due.",
+    goal: "Secure the ledger.",
+    obstacle: "The guild controls the vault.",
+    pressure: "The deadline is tonight.",
+    turn: "The witness changes sides.",
+    payoff: "The ledger is recovered.",
+    irreversibleChange: "The guild learns who took it.",
+    nextHook: "Who forged the final page?",
+    episodeBeats: chapterNumbers.map((chapterNumber, index) => ({
+      chapterNumber,
+      role: index === chapterNumbers.length - 1 ? "payoff" as const : index === 0 ? "promise" as const : "pressure" as const,
+      beats: [`Arc beat for Chapter ${chapterNumber}`],
+      endingHook: `Hook ${chapterNumber}`,
+    })),
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+    createdAt: "2026-08-09T10:00:00.000Z",
+    updatedAt: "2026-08-09T10:00:00.000Z",
+  };
+}
+
+function makeReadyEndpointRail(boundArcId: string): StoryRailPlanInput {
+  return {
+    anchorRail: {
+      status: "ready",
+      anchors: Array.from({ length: 6 }, (_, index) => ({
+        id: `A${String(index + 1).padStart(2, "0")}`,
+        routeOrder: (index + 1) * 100,
+        title: `Long destination ${index + 1}`,
+        detailLevel: index < 2 ? "compound" as const : "sparse" as const,
+        state: "planned" as const,
+        entryState: `Entry ${index + 1}`,
+        trigger: `Trigger ${index + 1}`,
+        irreversibleChange: `Change ${index + 1}`,
+        humanAftermath: `Aftermath ${index + 1}`,
+        readerDebt: `Debt ${index + 1}`,
+        payoffAxis: `Payoff ${index + 1}`,
+        nextPressure: `Pressure ${index + 1}`,
+      })),
+    },
+    arcRouteRail: {
+      status: "ready",
+      entries: Array.from({ length: 6 }, (_, index) => ({
+        bId: `B${String(index + 1).padStart(3, "0")}`,
+        routeOrder: (index + 1) * 100,
+        status: index === 0 ? "active" as const
+          : index === 1 ? "provisional" as const
+            : "hypothesis" as const,
+        targetAnchorId: `A${String(index + 1).padStart(2, "0")}`,
+        ...(index === 0 ? { arcId: boundArcId } : {}),
+        narrativeFunction: `Durable function ${index + 1}`,
+        payoffAxis: `Durable payoff ${index + 1}`,
+        carriedReaderDebt: `Carried debt ${index + 1}`,
+        contrastRequirement: `Contrast ${index + 1}`,
+      })),
+    },
+  };
+}
+
+async function installReadyEndpointArc(
+  state: StateManager,
+  bookId: string,
+  chapterNumbers: ReadonlyArray<number>,
+): Promise<{
+  readonly arc: ArcPacket;
+  readonly endpointProvenance: NonNullable<WriteChapterOutput["arcProvenance"]>;
+}> {
+  const bookDir = state.bookDir(bookId);
+  const arcStore = new ArcStore(bookDir);
+  const arc = await arcStore.save(makeEndpointArc(bookId, chapterNumbers));
+  await arcStore.setActive(arc.id);
+  await new StoryRailStore(bookDir, {
+    now: () => new Date("2026-08-09T11:00:00.000Z"),
+  }).replace(bookId, makeReadyEndpointRail(arc.id));
+  const endpoint = chapterNumbers.at(-1);
+  if (endpoint === undefined) throw new Error("Endpoint fixture requires at least one chapter.");
+  const context = await loadOptionalActiveArcContext({
+    store: arcStore,
+    railStore: new StoryRailStore(bookDir),
+    bookId,
+    chapterNumber: endpoint,
+    targetChapters: (await state.loadBookConfig(bookId)).targetChapters,
+  });
+  if (!context) throw new Error("Endpoint fixture did not resolve exact Arc context.");
+  return { arc, endpointProvenance: context.provenance };
 }
 
 function createStateCard(params: {
@@ -317,6 +429,58 @@ describe("PipelineRunner", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("holds the Book lock while auditing and persisting the Chapter verdict", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const now = "2026-08-09T10:00:00.000Z";
+    await Promise.all([
+      writeFile(
+        join(state.bookDir(bookId), "chapters", "0001_Locked_Audit.md"),
+        "# Chapter 1: Locked Audit\n\nThe harbor bell rang once.",
+        "utf-8",
+      ),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Locked Audit",
+        status: "drafted",
+        wordCount: 6,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      }]),
+    ]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, summary: "clean" }),
+    );
+
+    const originalAcquire = StateManager.prototype.acquireBookLock;
+    const releases: string[] = [];
+    const acquire = vi.spyOn(StateManager.prototype, "acquireBookLock").mockImplementation(
+      async function (this: StateManager, targetBookId: string) {
+        const release = await originalAcquire.call(this, targetBookId);
+        return async () => {
+          releases.push(targetBookId);
+          await release();
+        };
+      },
+    );
+
+    try {
+      await expect(runner.auditDraft(bookId, 1)).resolves.toMatchObject({
+        passed: true,
+        chapterNumber: 1,
+      });
+      expect(acquire).toHaveBeenCalledWith(bookId);
+      expect(releases).toEqual([bookId]);
+      const releaseAgain = await state.acquireBookLock(bookId);
+      await releaseAgain();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("does not reuse override clients when credential sources differ", () => {
@@ -2950,6 +3114,223 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("blocks next-Chapter production at a valid pending Story Rail reflow gate", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const now = "2026-08-09T10:00:00.000Z";
+    const reflowsDir = join(state.bookDir(bookId), "story", "rails", "reflows");
+    const sha = "a".repeat(64);
+    await mkdir(reflowsDir, { recursive: true });
+    await writeFile(join(reflowsDir, "pending.json"), JSON.stringify({
+      version: 1,
+      pendingId: "reflow-gate",
+      status: "pending",
+      bookId,
+      createdAt: now,
+      expectedPlanUpdatedAt: now,
+      activeB: {
+        bId: "B001",
+        routeOrder: 100,
+        targetAnchorId: "A01",
+        arcId: "arc-active",
+      },
+      arc: {
+        id: "arc-active",
+        updatedAt: now,
+        chapterNumbers: [1],
+        plannedEpisodeCount: 1,
+      },
+      endpointChapterNumber: 1,
+      actualEpisodeCount: 1,
+      approvedChapters: [{
+        number: 1,
+        status: "approved",
+        updatedAt: now,
+        arcUpdatedAt: now,
+        railPlanUpdatedAt: now,
+        chapterContentSha256: sha,
+        stateSnapshotSha256: sha,
+        truthReceiptSha256: sha,
+      }],
+      stateEvidence: {
+        lastAppliedChapter: 1,
+        projectionVersion: 1,
+        stateProjectionSha256: sha,
+      },
+    }), "utf8");
+    const writeChapter = vi.spyOn(WriterAgent.prototype, "writeChapter");
+
+    await expect(runner.writeNextChapter(bookId)).rejects.toThrow(/apply it|discard it/i);
+    expect(writeChapter).not.toHaveBeenCalled();
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps Book-to-Chapter production available when optional pending Rail data is damaged", async () => {
+    const { root, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const { logger, warnings } = createCaptureLogger();
+    const reflowsDir = join(state.bookDir(bookId), "story", "rails", "reflows");
+    await mkdir(reflowsDir, { recursive: true });
+    await writeFile(join(reflowsDir, "pending.json"), "{ damaged", "utf8");
+    const runnerWithLogger = new PipelineRunner({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0 },
+      } as ConstructorParameters<typeof PipelineRunner>[0]["client"],
+      model: "test-model",
+      projectRoot: root,
+      inputGovernanceMode: "legacy",
+      logger,
+    });
+    const releaseLock = await state.acquireBookLock(bookId);
+    try {
+      await expect(
+        runnerWithLogger.assertChapterProductionReadyWithinBookLock(bookId),
+      ).resolves.toBeUndefined();
+    } finally {
+      await releaseLock();
+    }
+    expect(warnings).toContainEqual(expect.stringContaining("continuing through Book -> Chapter"));
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("gates an exact active Arc endpoint after compatible future Rail edits without trapping legacy Chapters", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const now = "2026-08-09T12:00:00.000Z";
+    const bookDir = state.bookDir(bookId);
+    const { endpointProvenance } = await installReadyEndpointArc(state, bookId, [1]);
+    const chapterPath = join(bookDir, "chapters", "0001_Endpoint.md");
+    await writeFile(chapterPath, "# Chapter 1: Endpoint\n\nThe ledger is open.", "utf-8");
+    const baseMeta: ChapterMeta = {
+      number: 1,
+      title: "Endpoint",
+      status: "ready-for-review",
+      wordCount: 4,
+      createdAt: now,
+      updatedAt: now,
+      auditIssues: [],
+      lengthWarnings: [],
+    };
+
+    try {
+      // A same-number legacy/imported Chapter is not sufficient evidence for
+      // a Rail gate when it lacks the exact Arc/B provenance.
+      await state.saveChapterIndex(bookId, [baseMeta]);
+      let release = await state.acquireBookLock(bookId);
+      try {
+        await expect(runner.assertChapterProductionReadyWithinBookLock(bookId))
+          .resolves.toBeUndefined();
+      } finally {
+        await release();
+      }
+
+      await state.saveChapterIndex(bookId, [{ ...baseMeta, arcProvenance: endpointProvenance }]);
+      const railStore = new StoryRailStore(bookDir);
+      const plan = await railStore.load();
+      if (!plan) throw new Error("Expected installed endpoint Rail plan.");
+      await railStore.save({
+        ...plan,
+        anchorRail: {
+          ...plan.anchorRail,
+          anchors: plan.anchorRail.anchors.map((anchor, index) =>
+            index === 5 ? { ...anchor, title: "Compatible future destination edit" } : anchor),
+        },
+        arcRouteRail: {
+          ...plan.arcRouteRail,
+          entries: plan.arcRouteRail.entries.map((entry, index) =>
+            index === 5 ? { ...entry, narrativeFunction: "Compatible future hypothesis edit" } : entry),
+        },
+        updatedAt: "2026-08-09T12:30:00.000Z",
+      });
+
+      const writeChapter = vi.spyOn(WriterAgent.prototype, "writeChapter");
+      await expect(runner.writeNextChapter(bookId)).rejects.toThrow(/reached endpoint Chapter 1/i);
+      await expect(runner.writeDraft(bookId)).rejects.toThrow(/reached endpoint Chapter 1/i);
+      expect(writeChapter).not.toHaveBeenCalled();
+      await expect(stat(join(bookDir, "story", "author_intent.md"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks fresh and resumed imports at a valid pending Story Rail reflow gate", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const now = "2026-08-09T10:00:00.000Z";
+    const sha = "b".repeat(64);
+    const storyDir = join(state.bookDir(bookId), "story");
+    const reflowsDir = join(storyDir, "rails", "reflows");
+    await mkdir(reflowsDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), "sentinel state", "utf-8"),
+      writeFile(join(reflowsDir, "pending.json"), JSON.stringify({
+        version: 1,
+        pendingId: "reflow-import-gate",
+        status: "pending",
+        bookId,
+        createdAt: now,
+        expectedPlanUpdatedAt: now,
+        activeB: {
+          bId: "B001",
+          routeOrder: 100,
+          targetAnchorId: "A01",
+          arcId: "arc-active",
+        },
+        arc: {
+          id: "arc-active",
+          updatedAt: now,
+          chapterNumbers: [1],
+          plannedEpisodeCount: 1,
+        },
+        endpointChapterNumber: 1,
+        actualEpisodeCount: 1,
+        approvedChapters: [{
+          number: 1,
+          status: "approved",
+          updatedAt: now,
+          arcUpdatedAt: now,
+          railPlanUpdatedAt: now,
+          chapterContentSha256: sha,
+          stateSnapshotSha256: sha,
+          truthReceiptSha256: sha,
+        }],
+        stateEvidence: {
+          lastAppliedChapter: 1,
+          projectionVersion: 1,
+          stateProjectionSha256: sha,
+        },
+      }), "utf-8"),
+    ]);
+    const generateFoundation = vi.spyOn(ArchitectAgent.prototype, "generateFoundationFromImport");
+
+    try {
+      for (const resumeFrom of [undefined, 2] as const) {
+        await expect(runner.importChapters({
+          bookId,
+          ...(resumeFrom === undefined ? {} : { resumeFrom }),
+          chapters: [
+            { title: "One", content: "first imported body" },
+            { title: "Two", content: "second imported body" },
+          ],
+        })).rejects.toThrow(/apply it|discard it/i);
+      }
+      expect(generateFoundation).not.toHaveBeenCalled();
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8"))
+        .resolves.toBe("sentinel state");
+      await expect(stat(join(state.bookDir(bookId), "chapters", "index.json"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("repairs the latest state-degraded chapter from persisted body without rewriting it", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
@@ -3298,6 +3679,84 @@ describe("PipelineRunner", () => {
     expect(result.nextChapter).toBe(5);
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("stops a resumed import at the active Arc endpoint and leaves closeout evidence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    await installReadyEndpointArc(state, bookId, [2]);
+    const now = "2026-08-09T10:00:00.000Z";
+    await Promise.all([
+      writeFile(join(bookDir, "chapters", "0001_Existing.md"), "# Chapter 1\n\nExisting body.", "utf-8"),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Existing",
+        status: "imported",
+        wordCount: 2,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      }]),
+    ]);
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockImplementation(async (input) =>
+      createAnalyzedOutput({
+        chapterNumber: input.chapterNumber,
+        title: input.chapterTitle ?? `Chapter ${input.chapterNumber}`,
+        content: input.chapterContent,
+        wordCount: input.chapterContent.length,
+        updatedState: createStateCard({
+          chapter: input.chapterNumber,
+          location: "Harbor archive",
+          protagonistState: "The ledger is secured.",
+          goal: "Read the forged page.",
+          conflict: "The guild is closing in.",
+        }),
+        updatedHooks: "# Pending Hooks\n\n- Who forged the final page?\n",
+      }),
+    );
+
+    try {
+      const result = await runner.importChapters({
+        bookId,
+        resumeFrom: 2,
+        chapters: [
+          { title: "Existing", content: "Existing body." },
+          { title: "Arc Endpoint", content: "The ledger opens at last." },
+          { title: "Must Not Import", content: "This body crosses the endpoint." },
+        ],
+      });
+
+      expect(result).toMatchObject({ importedCount: 1, nextChapter: 3 });
+      const index = await state.loadChapterIndex(bookId);
+      expect(index.map((chapter) => chapter.number)).toEqual([1, 2]);
+      expect(index[1]?.arcProvenance).toMatchObject({
+        bookId,
+        arcId: "arc-endpoint-gate",
+        chapterNumber: 2,
+        storyRail: { activeB: { bId: "B001" } },
+      });
+      await expect(stat(join(bookDir, "story", "runtime", "chapter-0002.truth-receipt.json")))
+        .resolves.toBeDefined();
+      expect((await readdir(join(bookDir, "chapters"))).some((file) => file.startsWith("0003")))
+        .toBe(false);
+
+      const approved = index.map((chapter) => chapter.number === 2
+        ? { ...chapter, status: "approved" as const }
+        : chapter);
+      await state.saveChapterIndex(bookId, approved);
+      await expect(new StoryRailReflowStore(bookDir, {
+        now: () => new Date("2026-08-09T12:00:00.000Z"),
+        idFactory: () => "reflow-import-endpoint",
+      }).prepare(bookId, approved)).resolves.toMatchObject({
+        status: "pending",
+        pending: { endpointChapterNumber: 2, actualEpisodeCount: 1 },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("preserves imported chapter body when the analyzer only returns truth-file updates", async () => {

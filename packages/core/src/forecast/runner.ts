@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentContext } from "../agents/base.js";
 import { assertSafeBookId } from "../utils/book-id.js";
@@ -16,6 +16,14 @@ import {
   type NarrativeForecast,
 } from "./schema.js";
 import { ForecastStore, type ForecastStoreOptions } from "./store.js";
+import { ArcStore } from "../arc/store.js";
+import { createArcDraftFromForecast } from "../arc/forecast.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import { inspectStoryRailRuntimeEligibility } from "../arc/rail-context.js";
+import { ActiveArcSchema, type ArcPacket } from "../arc/schema.js";
+import type { StoryRailPlan } from "../arc/rail-schema.js";
+import { StateManager } from "../state/manager.js";
+import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
 
 // The three v1 operations from RFC #342: create / get / select. All artifacts
 // stay under story/runtime/narrative-forecasts/<forecastId>/ — no operation
@@ -139,12 +147,20 @@ export interface NarrativeForecastSelectResult {
   readonly branch: ForecastBranch;
   readonly stale: boolean;
   readonly planPath: string;
+  /** Fresh selections become an author-editable, active 1–3 chapter Arc. */
+  readonly arc?: ArcPacket;
+  /** False when a draft was saved but a ready active B protects another Arc. */
+  readonly arcActivated: boolean;
+  /** Optional active B slot bound without changing B-Rail order or status. */
+  readonly railBinding?: { readonly bId: string; readonly changed: boolean };
+  /** Explains an optional Rail binding warning or why Arc activation was withheld. */
+  readonly railWarning?: string;
 }
 
 /**
- * Select one branch: writes ONLY selected-branch-plan.md. Applying the plan
- * to the outline / chapter intents / canonical state is a separate,
- * user-confirmed operation outside v1.
+ * Select one branch: writes a reviewable plan and, when still fresh, an active
+ * editable Arc draft. Neither operation changes canonical prose, outline, or
+ * runtime state; the Arc is an author-controlled planning packet.
  */
 export async function selectNarrativeBranch(
   options: SelectNarrativeBranchOptions,
@@ -162,18 +178,112 @@ export async function selectNarrativeBranch(
     );
   }
 
-  const stale = await isForecastStale(bookDir, bookId, forecast);
-  const planPath = await store.writeSelectedPlan(
-    forecast.forecastId,
-    renderSelectedBranchPlanMarkdown({
+  const state = new StateManager(options.projectRoot);
+  const releaseLock = await state.acquireBookLock(bookId);
+  try {
+    // Canonical context may have changed while the author was reviewing the
+    // forecast. Recheck only after obtaining the same Book write lock used by
+    // chapter and Rail mutations, then keep the lock through Arc activation.
+    const stale = await isForecastStale(bookDir, bookId, forecast);
+    const planPath = await store.writeSelectedPlan(
+      forecast.forecastId,
+      renderSelectedBranchPlanMarkdown({
+        forecast,
+        branch,
+        selectedAt: store.now().toISOString(),
+        stale,
+      }),
+    );
+
+    if (stale) return { forecast, branch, stale, planPath, arcActivated: false };
+    const arcStore = new ArcStore(bookDir, options.determinism);
+    const arc = await createArcDraftFromForecast({ store: arcStore, forecast, branch });
+    const railStore = new StoryRailStore(bookDir, options.determinism);
+    const targetChapters = await readBookTargetChapters(bookDir);
+    let railBinding: NarrativeForecastSelectResult["railBinding"];
+    let preparedRailPlan: StoryRailPlan | undefined;
+    let railWarning: string | undefined;
+    try {
+      const plan = await railStore.load();
+      if (plan) {
+        if (plan.bookId !== bookId) {
+          throw new Error(
+            `Story rail plan belongs to book ${JSON.stringify(plan.bookId)}, not ${JSON.stringify(bookId)}.`,
+          );
+        }
+        const eligibility = inspectStoryRailRuntimeEligibility(plan, arc.id, targetChapters);
+        if (eligibility.status === "active-b-conflict") {
+          return {
+            forecast,
+            branch,
+            stale,
+            planPath,
+            arc,
+            arcActivated: false,
+            railWarning: `Ready active B ${eligibility.bId} is already bound to Arc ${eligibility.boundArcId}; `
+              + `the new Arc draft ${arc.id} was saved but story/arcs/active.json was not changed.`,
+          };
+        }
+      }
+
+      const binding = await railStore.prepareActiveArcBinding(bookId, arc.id);
+      if (binding.status === "bound") {
+        railBinding = { bId: binding.bId, changed: binding.changed };
+        if (binding.changed) preparedRailPlan = binding.plan;
+      } else if (binding.status === "missing-active") {
+        railWarning = "A/B Rail plan has no active B; the Arc was activated without a Rail binding.";
+      } else if (binding.status === "conflict") {
+        return {
+          forecast,
+          branch,
+          stale,
+          planPath,
+          arc,
+          arcActivated: false,
+          railWarning: binding.reason === "active_b_already_bound"
+            ? `Active B ${binding.bId} is already bound to Arc ${binding.existingArcId}; `
+              + `the new Arc draft ${arc.id} was saved but story/arcs/active.json was not changed.`
+            : `Arc ${binding.requestedArcId} is already bound to B ${binding.bId}; `
+              + "the new Arc draft was saved but story/arcs/active.json was not changed.",
+        };
+      }
+    } catch (error) {
+      railWarning = `Optional A/B Rail binding failed and was ignored: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (preparedRailPlan) {
+      const active = ActiveArcSchema.parse({
+        arcId: arc.id,
+        updatedAt: arcStore.now().toISOString(),
+      });
+      await commitAtomicFileSet({
+        rootDir: bookDir,
+        writes: [
+          {
+            relativePath: join("story", "rails", "plan.json"),
+            content: `${JSON.stringify(preparedRailPlan, null, 2)}\n`,
+          },
+          {
+            relativePath: join("story", "arcs", "active.json"),
+            content: `${JSON.stringify(active, null, 2)}\n`,
+          },
+        ],
+      });
+    } else {
+      await arcStore.setActive(arc.id);
+    }
+    return {
       forecast,
       branch,
-      selectedAt: store.now().toISOString(),
       stale,
-    }),
-  );
-
-  return { forecast, branch, stale, planPath };
+      planPath,
+      arc,
+      arcActivated: true,
+      ...(railBinding ? { railBinding } : {}),
+      ...(railWarning ? { railWarning } : {}),
+    };
+  } finally {
+    await releaseLock();
+  }
 }
 
 async function isForecastStale(
@@ -194,6 +304,19 @@ async function resolveBookDir(projectRoot: string, bookId: string): Promise<stri
     throw new Error(`Book "${bookId}" not found under ${join(projectRoot, "books")}.`);
   }
   return bookDir;
+}
+
+async function readBookTargetChapters(bookDir: string): Promise<number> {
+  try {
+    const parsed = JSON.parse(await readFile(join(bookDir, "book.json"), "utf8")) as {
+      readonly targetChapters?: unknown;
+    };
+    return Number.isInteger(parsed.targetChapters) && Number(parsed.targetChapters) >= 1
+      ? Number(parsed.targetChapters)
+      : 200;
+  } catch {
+    return 200;
+  }
 }
 
 function boundedInteger(value: number | undefined, fallback: number, name: string, min: number, max: number): number {

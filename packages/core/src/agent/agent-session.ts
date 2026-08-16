@@ -49,6 +49,12 @@ import {
   createNarrativeForecastGetTool,
   createNarrativeForecastSelectTool,
 } from "./forecast-tools.js";
+import {
+  createApplyStoryRailReflowTool,
+  createDiscardStoryRailReflowTool,
+  createGetStoryRailsTool,
+  createReplaceStoryRailsTool,
+} from "./story-rail-tools.js";
 import { createBookContextTransform } from "./context-transform.js";
 import {
   appendTranscriptEvents,
@@ -73,6 +79,7 @@ import {
   createUseSkillTool,
   sanitizeSkillTurnMessage,
 } from "./skill-tool.js";
+import { CODEX_MAX_TOOL_ROUNDS, codexCliAgentStream } from "../llm/codex-cli.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -177,6 +184,7 @@ interface CachedAgent {
   allowSystemFileRead: boolean;
   backgroundTaskContext: string | undefined;
   suppressProductionTools: boolean;
+  codexRequestState: { calls: number };
   lastCommittedSeq: number;
   lastActive: number;
 }
@@ -395,7 +403,11 @@ export function isTerminalProductionToolName(toolName: unknown): boolean {
     || toolName === "play_step"
     || toolName === "create_narrative_forecast"
     || toolName === "get_narrative_forecast"
-    || toolName === "select_narrative_branch";
+    || toolName === "select_narrative_branch"
+    || toolName === "get_story_rails"
+    || toolName === "replace_story_rails"
+    || toolName === "apply_story_rail_reflow"
+    || toolName === "discard_story_rail_reflow";
 }
 
 function hasUnansweredTerminalToolResult(messages: AgentMessage[]): boolean {
@@ -794,6 +806,9 @@ const PRODUCTION_MUTATION_TOOL_NAMES = new Set([
   "replace_chapter_text",
   "delete_latest_chapter",
   "import_chapters",
+  "replace_story_rails",
+  "apply_story_rail_reflow",
+  "discard_story_rail_reflow",
 ]);
 
 type CreateAgentToolsForModeParams = {
@@ -930,6 +945,10 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
     subAgentTool,
     createGenerateCoverTool(params.projectRoot, { actionPayload: params.actionPayload }),
     createReadTool(params.projectRoot, { allowSystemPaths: params.allowSystemFileRead }),
+    createGetStoryRailsTool(params.bookId, params.projectRoot),
+    createReplaceStoryRailsTool(params.bookId, params.projectRoot),
+    createApplyStoryRailReflowTool(params.bookId, params.projectRoot),
+    createDiscardStoryRailReflowTool(params.bookId, params.projectRoot),
     createWriteTruthFileTool(params.pipeline, params.projectRoot, params.bookId),
     createRenameEntityTool(params.pipeline, params.projectRoot, params.bookId),
     createPatchChapterTextTool(params.pipeline, params.projectRoot, params.bookId),
@@ -957,6 +976,9 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
       "create_narrative_forecast",
       "get_narrative_forecast",
       "select_narrative_branch",
+      "replace_story_rails",
+      "apply_story_rail_reflow",
+      "discard_story_rail_reflow",
     ].includes(tool.name));
   }
 
@@ -1122,6 +1144,7 @@ async function runAgentSessionUnlocked(
       intentSkillTool,
       requestedSkillIds: () => [...turnSkillIds],
     });
+    const codexRequestState = { calls: 0 };
     const agent = new Agent({
       initialState: {
         model,
@@ -1144,6 +1167,15 @@ async function runAgentSessionUnlocked(
           return localAssistantStopStream(streamModel);
         }
         if (isLlmStubEnabled()) return stubAgentStream(streamModel, context);
+        if (streamModel.provider === "codex-cli") {
+          codexRequestState.calls += 1;
+          if (codexRequestState.calls > CODEX_MAX_TOOL_ROUNDS) {
+            throw new Error(
+              `Codex stopped after ${CODEX_MAX_TOOL_ROUNDS} model/tool rounds in one InkOS request`,
+            );
+          }
+          return codexCliAgentStream(streamModel, context, options);
+        }
         return guardedStreamSimple(streamModel, context, options);
       },
       getApiKey: (provider: string) => {
@@ -1170,6 +1202,7 @@ async function runAgentSessionUnlocked(
       allowSystemFileRead,
       backgroundTaskContext: config.backgroundTaskContext,
       suppressProductionTools,
+      codexRequestState,
       lastCommittedSeq: currentCommittedSeq ?? await latestCommittedSeq(projectRoot, sessionId),
       lastActive: Date.now(),
     };
@@ -1183,6 +1216,7 @@ async function runAgentSessionUnlocked(
     cached.turnSkillIds.add(skillId);
   }
   const { agent } = cached;
+  cached.codexRequestState.calls = 0;
   const attachmentBlock = buildAttachmentUserBlock(config.attachments, language);
   const promptMessage = attachmentBlock ? `${userMessage}${attachmentBlock}` : userMessage;
   const promptImages = attachmentImages(config.attachments);

@@ -278,6 +278,22 @@ describe("buildPartsFromEvents", () => {
     expect(parts[2].type === "tool" ? parts[2].execution.label : "").toBe("采用候选分支");
   });
 
+  it("labels A/B Story Rail reads and replacements as first-class planning actions", () => {
+    const parts = buildPartsFromEvents([
+      { type: "tool:start", id: "r1", tool: "get_story_rails" },
+      { type: "tool:end", id: "r1", result: "loaded" },
+      { type: "tool:start", id: "r2", tool: "replace_story_rails" },
+      { type: "tool:end", id: "r2", result: "saved" },
+      { type: "tool:start", id: "r3", tool: "apply_story_rail_reflow" },
+      { type: "tool:end", id: "r3", result: "applied" },
+      { type: "tool:start", id: "r4", tool: "discard_story_rail_reflow" },
+      { type: "tool:end", id: "r4", result: "discarded" },
+    ]);
+
+    expect(parts[0].type === "tool" ? parts[0].execution.label : "").toBe("查看 A/B 故事轨道");
+    expect(parts[1].type === "tool" ? parts[1].execution.label : "").toBe("更新 A/B 故事轨道");
+  });
+
   it("does not render model narration after a completed play tool as authoritative text", () => {
     const parts = buildPartsFromEvents([
       { type: "tool:start", id: "p1", tool: "play_step" },
@@ -415,5 +431,30 @@ describe("buildPartsFromEvents in English app language", () => {
         "Latest chapter 1 is state-degraded. Repair state or rewrite that chapter before continuing.",
       );
     }
+  });
+});
+
+describe("buildPartsFromEvents in Korean app language", () => {
+  afterEach(() => {
+    setAppLanguage("zh");
+  });
+
+  it("uses readable Korean labels for A/B Story Rail tools", () => {
+    setAppLanguage("ko");
+    const parts = buildPartsFromEvents([
+      { type: "tool:start", id: "r1", tool: "get_story_rails" },
+      { type: "tool:end", id: "r1", result: "loaded" },
+      { type: "tool:start", id: "r2", tool: "replace_story_rails" },
+      { type: "tool:end", id: "r2", result: "saved" },
+      { type: "tool:start", id: "r3", tool: "apply_story_rail_reflow" },
+      { type: "tool:end", id: "r3", result: "applied" },
+      { type: "tool:start", id: "r4", tool: "discard_story_rail_reflow" },
+      { type: "tool:end", id: "r4", result: "discarded" },
+    ]);
+
+    expect(parts[0].type === "tool" ? parts[0].execution.label : "").toBe("A/B Story Rail 확인");
+    expect(parts[1].type === "tool" ? parts[1].execution.label : "").toBe("A/B Story Rail 수정");
+    expect(parts[2].type === "tool" ? parts[2].execution.label : "").toBe("A/B Story Rail Reflow 적용");
+    expect(parts[3].type === "tool" ? parts[3].execution.label : "").toBe("대기 A/B Story Rail Reflow 폐기");
   });
 });

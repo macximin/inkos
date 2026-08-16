@@ -1,5 +1,13 @@
 import { Command } from "commander";
-import { StateManager, formatLengthCount, readGenreProfile, resolveLengthCountingMode } from "@actalk/inkos-core";
+import {
+  StateManager,
+  StoryRailReflowStore,
+  formatLengthCount,
+  readGenreProfile,
+  resolveLengthCountingMode,
+  type ChapterMeta,
+  type StoryRailReflowPrepareResult,
+} from "@actalk/inkos-core";
 import { findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 
 export const reviewCommand = new Command("review")
@@ -104,6 +112,61 @@ function parseBookAndChapter(
   throw new Error("Usage: inkos review approve [book-id] <chapter>");
 }
 
+async function withBookReviewLock<T>(
+  state: StateManager,
+  bookId: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const releaseLock = await state.acquireBookLock(bookId);
+  try {
+    return await action();
+  } finally {
+    await releaseLock();
+  }
+}
+
+interface OptionalStoryRailReflowResult {
+  readonly railReflow?: StoryRailReflowPrepareResult;
+  readonly railReflowWarning?: string;
+}
+
+async function prepareOptionalStoryRailReflow(
+  state: StateManager,
+  bookId: string,
+  chapters: ReadonlyArray<ChapterMeta>,
+): Promise<OptionalStoryRailReflowResult> {
+  try {
+    return {
+      railReflow: await new StoryRailReflowStore(state.bookDir(bookId)).prepare(bookId, chapters),
+    };
+  } catch (error) {
+    return {
+      railReflowWarning: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function logOptionalStoryRailReflow(result: OptionalStoryRailReflowResult): void {
+  if (result.railReflow?.status === "pending" || result.railReflow?.status === "already-pending") {
+    const pending = result.railReflow.pending;
+    log(
+      `Story Rail reflow ${result.railReflow.status}: ${pending.pendingId} closes `
+      + `${pending.activeB.bId}/${pending.activeB.arcId} through chapter ${pending.endpointChapterNumber} `
+      + `(${pending.actualEpisodeCount} chapter(s)).`,
+    );
+    return;
+  }
+  if (result.railReflow?.status === "not-eligible") {
+    log(
+      `Story Rail reflow not prepared (${result.railReflow.reason}): ${result.railReflow.message}`,
+    );
+    return;
+  }
+  if (result.railReflowWarning) {
+    log(`[warning] Story Rail reflow preparation failed: ${result.railReflowWarning}`);
+  }
+}
+
 reviewCommand
   .command("approve")
   .description("Approve a chapter and commit its state: approve [book-id] <chapter>")
@@ -116,24 +179,33 @@ reviewCommand
       const bookId = await resolveBookId(bookIdArg, root);
 
       const state = new StateManager(root);
-      const index = [...(await state.loadChapterIndex(bookId))];
-      const idx = index.findIndex((ch) => ch.number === chapterNum);
-      if (idx === -1) {
-        throw new Error(`Chapter ${chapterNum} not found in "${bookId}"`);
-      }
+      await withBookReviewLock(state, bookId, async () => {
+        const index = [...(await state.loadChapterIndex(bookId))];
+        const idx = index.findIndex((ch) => ch.number === chapterNum);
+        if (idx === -1) {
+          throw new Error(`Chapter ${chapterNum} not found in "${bookId}"`);
+        }
 
-      index[idx] = {
-        ...index[idx]!,
-        status: "approved",
-        updatedAt: new Date().toISOString(),
-      };
-      await state.saveChapterIndex(bookId, index);
+        index[idx] = {
+          ...index[idx]!,
+          status: "approved",
+          updatedAt: new Date().toISOString(),
+        };
+        await state.saveChapterIndex(bookId, index);
+        const railReflow = await prepareOptionalStoryRailReflow(state, bookId, index);
 
-      if (opts.json) {
-        log(JSON.stringify({ bookId, chapter: chapterNum, status: "approved" }));
-      } else {
-        log(`Chapter ${chapterNum} approved (state committed).`);
-      }
+        if (opts.json) {
+          log(JSON.stringify({
+            bookId,
+            chapter: chapterNum,
+            status: "approved",
+            ...railReflow,
+          }));
+        } else {
+          log(`Chapter ${chapterNum} approved (state committed).`);
+          logOptionalStoryRailReflow(railReflow);
+        }
+      });
     } catch (e) {
       if (opts.json) {
         log(JSON.stringify({ error: String(e) }));
@@ -154,26 +226,29 @@ reviewCommand
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
+      await withBookReviewLock(state, bookId, async () => {
+        const index = [...(await state.loadChapterIndex(bookId))];
+        let count = 0;
+        const now = new Date().toISOString();
 
-      const index = [...(await state.loadChapterIndex(bookId))];
-      let count = 0;
-      const now = new Date().toISOString();
+        const updated = index.map((ch) => {
+          if (ch.status === "ready-for-review" || ch.status === "audit-failed") {
+            count++;
+            return { ...ch, status: "approved" as const, updatedAt: now };
+          }
+          return ch;
+        });
 
-      const updated = index.map((ch) => {
-        if (ch.status === "ready-for-review" || ch.status === "audit-failed") {
-          count++;
-          return { ...ch, status: "approved" as const, updatedAt: now };
+        await state.saveChapterIndex(bookId, updated);
+        const railReflow = await prepareOptionalStoryRailReflow(state, bookId, updated);
+
+        if (opts.json) {
+          log(JSON.stringify({ bookId, approvedCount: count, ...railReflow }));
+        } else {
+          log(`${count} chapter(s) approved.`);
+          logOptionalStoryRailReflow(railReflow);
         }
-        return ch;
       });
-
-      await state.saveChapterIndex(bookId, updated);
-
-      if (opts.json) {
-        log(JSON.stringify({ bookId, approvedCount: count }));
-      } else {
-        log(`${count} chapter(s) approved.`);
-      }
     } catch (e) {
       if (opts.json) {
         log(JSON.stringify({ error: String(e) }));
@@ -198,50 +273,52 @@ reviewCommand
       const bookId = await resolveBookId(bookIdArg, root);
 
       const state = new StateManager(root);
-      const index = await state.loadChapterIndex(bookId);
-      const idx = index.findIndex((ch) => ch.number === chapterNum);
-      if (idx === -1) {
-        throw new Error(`Chapter ${chapterNum} not found in "${bookId}"`);
-      }
+      await withBookReviewLock(state, bookId, async () => {
+        const index = await state.loadChapterIndex(bookId);
+        const idx = index.findIndex((ch) => ch.number === chapterNum);
+        if (idx === -1) {
+          throw new Error(`Chapter ${chapterNum} not found in "${bookId}"`);
+        }
 
-      if (opts.keepSubsequent) {
-        // Legacy behavior: only mark as rejected, no state rollback
-        const updated = [...index];
-        updated[idx] = {
-          ...updated[idx]!,
-          status: "rejected",
-          reviewNote: opts.reason ?? "Rejected without reason",
-          updatedAt: new Date().toISOString(),
-        };
-        await state.saveChapterIndex(bookId, updated);
+        if (opts.keepSubsequent) {
+          // Legacy behavior: only mark as rejected, no state rollback
+          const updated = [...index];
+          updated[idx] = {
+            ...updated[idx]!,
+            status: "rejected",
+            reviewNote: opts.reason ?? "Rejected without reason",
+            updatedAt: new Date().toISOString(),
+          };
+          await state.saveChapterIndex(bookId, updated);
+
+          if (opts.json) {
+            log(JSON.stringify({ bookId, chapter: chapterNum, status: "rejected", discarded: [] }));
+          } else {
+            log(`Chapter ${chapterNum} rejected (state not rolled back).`);
+          }
+          return;
+        }
+
+        // Default: roll back state to before the rejected chapter and discard
+        // it along with all subsequent chapters that depend on its state.
+        const rollbackTarget = chapterNum - 1;
+        const discarded = await state.rollbackToChapter(bookId, rollbackTarget);
 
         if (opts.json) {
-          log(JSON.stringify({ bookId, chapter: chapterNum, status: "rejected", discarded: [] }));
+          log(JSON.stringify({
+            bookId,
+            chapter: chapterNum,
+            status: "rejected",
+            rolledBackTo: rollbackTarget,
+            discarded,
+          }));
         } else {
-          log(`Chapter ${chapterNum} rejected (state not rolled back).`);
+          log(`Chapter ${chapterNum} rejected. State rolled back to chapter ${rollbackTarget}.`);
+          if (discarded.length > 1) {
+            log(`  Also discarded ${discarded.length - 1} subsequent chapter(s): ${discarded.filter((n) => n !== chapterNum).join(", ")}`);
+          }
         }
-        return;
-      }
-
-      // Default: roll back state to before the rejected chapter and discard
-      // it along with all subsequent chapters that depend on its state.
-      const rollbackTarget = chapterNum - 1;
-      const discarded = await state.rollbackToChapter(bookId, rollbackTarget);
-
-      if (opts.json) {
-        log(JSON.stringify({
-          bookId,
-          chapter: chapterNum,
-          status: "rejected",
-          rolledBackTo: rollbackTarget,
-          discarded,
-        }));
-      } else {
-        log(`Chapter ${chapterNum} rejected. State rolled back to chapter ${rollbackTarget}.`);
-        if (discarded.length > 1) {
-          log(`  Also discarded ${discarded.length - 1} subsequent chapter(s): ${discarded.filter((n) => n !== chapterNum).join(", ")}`);
-        }
-      }
+      });
     } catch (e) {
       if (opts.json) {
         log(JSON.stringify({ error: String(e) }));

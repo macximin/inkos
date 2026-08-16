@@ -3,6 +3,7 @@ import type { AuditIssue, AuditResult } from "../agents/continuity.js";
 import type { ValidationResult } from "../agents/state-validator.js";
 import type { WriteChapterOutput } from "../agents/writer.js";
 import type { BookConfig } from "../models/book.js";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 import { validateChapterTruthPersistence } from "../pipeline/chapter-truth-validation.js";
 
 const ZERO_USAGE = {
@@ -63,6 +64,34 @@ const BOOK: BookConfig = {
   updatedAt: "2026-04-01T00:00:00.000Z",
 };
 
+const ARC_PROVENANCE: ChapterArcProvenance = {
+  version: 1,
+  bookId: "book-1",
+  arcId: "arc-copper-token",
+  arcUpdatedAt: "2026-04-01T00:00:00.000Z",
+  arcTitle: "Copper Token",
+  chapterNumber: 3,
+  episodeRole: "turn",
+  openingState: "The token is hidden.",
+  promise: "Use the token to find the witness.",
+  goal: "Reach the witness.",
+  obstacle: "The gate is watched.",
+  pressure: "The witness leaves tonight.",
+  turn: "The token opens a second gate.",
+  payoff: "The witness is found.",
+  irreversibleChange: "The guards identify the protagonist.",
+  nextHook: "Who forged the token?",
+  beats: ["Show the copper token at the gate."],
+  endingHook: "The token carries a false crest.",
+  characterChanges: [],
+  relationshipChanges: [],
+  worldChanges: [],
+  hookOperations: [],
+  mustKeep: [],
+  mustAvoid: [],
+  styleEmphasis: [],
+};
+
 describe("validateChapterTruthPersistence", () => {
   it("uses recovered settlement output when retry succeeds", async () => {
     const validator = {
@@ -100,6 +129,7 @@ describe("validateChapterTruthPersistence", () => {
         updatedState: "broken state",
         updatedHooks: "broken hooks",
         updatedLedger: "broken ledger",
+        arcProvenance: ARC_PROVENANCE,
       }),
       auditResult: createAuditResult(),
       previousTruth: {
@@ -121,6 +151,7 @@ describe("validateChapterTruthPersistence", () => {
     expect(result.chapterStatus).toBeNull();
     expect(result.persistenceOutput.updatedState).toBe("fixed state");
     expect(result.persistenceOutput.updatedHooks).toBe("fixed hooks");
+    expect(result.persistenceOutput.arcProvenance).toEqual(ARC_PROVENANCE);
     expect(result.auditResult.issues).toEqual([]);
     expect(logger.warn).toHaveBeenCalledWith("  [unsupported_change] 正文写铜牌在怀里，但 state 说未携带。");
   });

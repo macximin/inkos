@@ -9,6 +9,8 @@ import {
   formatImportChaptersComplete,
   formatImportChaptersDiscovery,
   formatImportChaptersResume,
+  formatImportNoFiles,
+  formatImportNoChapters,
   resolveCliLanguage,
 } from "../localization.js";
 
@@ -96,7 +98,7 @@ importCommand
           .sort();
 
         if (textFiles.length === 0) {
-          throw new Error(`No .md or .txt files found in ${fromPath}`);
+          throw new Error(formatImportNoFiles(language, fromPath));
         }
 
         chapters = await Promise.all(
@@ -112,10 +114,7 @@ importCommand
         chapters = [...splitChapters(text, opts.split)];
 
         if (chapters.length === 0) {
-          throw new Error(
-            `No chapters found in ${fromPath}. ` +
-            `Default pattern matches "第X章" and "Chapter X". Use --split to provide a custom regex.`,
-          );
+          throw new Error(formatImportNoChapters(language, fromPath));
         }
       }
 

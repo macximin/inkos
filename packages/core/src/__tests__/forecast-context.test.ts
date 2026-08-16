@@ -7,6 +7,8 @@ import {
   computeContextFingerprint,
   renderForecastContextMarkdown,
 } from "../forecast/context-builder.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import type { StoryRailPlanInput } from "../arc/rail-schema.js";
 
 async function writeFixtureBook(bookDir: string): Promise<void> {
   await mkdir(join(bookDir, "chapters"), { recursive: true });
@@ -14,7 +16,18 @@ async function writeFixtureBook(bookDir: string): Promise<void> {
   await mkdir(join(bookDir, "story", "outline"), { recursive: true });
   await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
 
-  await writeFile(join(bookDir, "book.json"), JSON.stringify({ id: "demo", title: "示例书", language: "zh" }), "utf-8");
+  await writeFile(join(bookDir, "book.json"), JSON.stringify({
+    id: "demo",
+    title: "示例书",
+    platform: "other",
+    genre: "urban",
+    status: "active",
+    targetChapters: 18,
+    chapterWordCount: 3000,
+    language: "zh",
+    createdAt: "2026-08-09T00:00:00.000Z",
+    updatedAt: "2026-08-09T00:00:00.000Z",
+  }), "utf-8");
   await writeFile(join(bookDir, "chapters", "0001_开局.md"), "第一章正文", "utf-8");
   await writeFile(join(bookDir, "chapters", "0002_升级.md"), "第二章正文", "utf-8");
   await writeFile(join(bookDir, "story", "state", "current_state.json"), JSON.stringify({ facts: ["主角在东城"] }), "utf-8");
@@ -97,6 +110,34 @@ describe("buildForecastContext", () => {
     await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "# 故事框架\n都市复仇改为悬疑探案", "utf-8");
     const after = await buildForecastContext({ bookDir, bookId: "demo" });
     expect(after.contextFingerprint).not.toBe(before.contextFingerprint);
+  });
+
+  it("includes editable A/B Rails in Forecast context and fingerprints plan changes", async () => {
+    const railStore = new StoryRailStore(bookDir, {
+      now: () => new Date("2026-08-09T10:00:00.000Z"),
+    });
+    await railStore.replace("demo", makeForecastRailInput("첫 장기 도착점"));
+
+    const before = await buildForecastContext({ bookDir, bookId: "demo" });
+    expect(before.sections.storyRails).toContain("A01 · 첫 장기 도착점");
+    expect(before.sections.storyRails).toContain("채무 장부를 공개한다");
+    expect(renderForecastContextMarkdown(before)).toContain("Editable Story Rails");
+
+    await railStore.replace("demo", makeForecastRailInput("수정된 장기 도착점"));
+    const after = await buildForecastContext({ bookDir, bookId: "demo" });
+    expect(after.sections.storyRails).toContain("수정된 장기 도착점");
+    expect(after.contextFingerprint).not.toBe(before.contextFingerprint);
+  });
+
+  it("leaves the Rail section empty instead of crashing when plan.json is corrupt", async () => {
+    const railStore = new StoryRailStore(bookDir);
+    await mkdir(railStore.railsDir, { recursive: true });
+    await writeFile(railStore.planPath, "{ corrupt-story-rail", "utf-8");
+
+    const context = await buildForecastContext({ bookDir, bookId: "demo" });
+
+    expect(context.sections.storyRails).toBe("");
+    expect(context.contextFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("changes the fingerprint when the volume map changes", async () => {
@@ -208,3 +249,38 @@ describe("renderForecastContextMarkdown", () => {
     }
   });
 });
+
+function makeForecastRailInput(anchorTitle: string): StoryRailPlanInput {
+  return {
+    anchorRail: {
+      status: "draft",
+      anchors: [{
+        id: "A01",
+        routeOrder: 100,
+        title: anchorTitle,
+        detailLevel: "compound",
+        state: "planned",
+        entryState: "主角仍未掌握债务来源",
+        trigger: "发现伪造账本",
+        irreversibleChange: "港口公会得知调查已经开始",
+        humanAftermath: "盟友必须公开选择立场",
+        readerDebt: "债务背后的受益者是谁",
+        payoffAxis: "证据与公信力",
+        nextPressure: "公会抢先寻找证人",
+      }],
+    },
+    arcRouteRail: {
+      status: "draft",
+      entries: [{
+        bId: "B001",
+        routeOrder: 100,
+        status: "active",
+        targetAnchorId: "A01",
+        narrativeFunction: "채무 장부를 공개한다",
+        payoffAxis: "证据 확보",
+        carriedReaderDebt: "导师债务",
+        contrastRequirement: "不再重复秘密潜入",
+      }],
+    },
+  };
+}

@@ -116,7 +116,7 @@ bookCommand
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
-      const book = await state.loadBookConfig(bookId);
+      let book = await state.loadBookConfig(bookId);
 
       const updates: Record<string, unknown> = {};
       if (opts.chapterWords) updates.chapterWordCount = parseInt(opts.chapterWords, 10);
@@ -137,12 +137,21 @@ bookCommand
         return;
       }
 
-      const updated: BookConfig = {
-        ...book,
-        ...updates,
-        updatedAt: new Date().toISOString(),
-      };
-      await state.saveBookConfig(bookId, updated);
+      const releaseLock = await state.acquireBookLock(bookId);
+      let updated: BookConfig;
+      try {
+        // Reload inside the lock so concurrent status/target updates cannot
+        // overwrite each other or race Story Rail capacity validation.
+        book = await state.loadBookConfig(bookId);
+        updated = {
+          ...book,
+          ...updates,
+          updatedAt: new Date().toISOString(),
+        };
+        await state.saveBookConfig(bookId, updated);
+      } finally {
+        await releaseLock();
+      }
 
       if (opts.json) {
         log(JSON.stringify(updated, null, 2));

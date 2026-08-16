@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 import { readBookRules as readAuthoritativeBookRules } from "./rules-reader.js";
 import {
   ChapterIntentSchema,
@@ -42,6 +43,7 @@ export interface PlanChapterInput {
   readonly bookDir: string;
   readonly chapterNumber: number;
   readonly externalContext?: string;
+  readonly arcContext?: string;
 }
 
 export interface PlanChapterOutput {
@@ -50,6 +52,7 @@ export interface PlanChapterOutput {
   readonly intentMarkdown: string;
   readonly plannerInputs: ReadonlyArray<string>;
   readonly runtimePath: string;
+  readonly arcProvenance?: ChapterArcProvenance;
 }
 
 const MEMO_RETRY_LIMIT = 3;
@@ -140,6 +143,7 @@ export class PlannerAgent extends BaseAgent {
       previousEndingExcerpt: seedMaterials.previousEndingExcerpt,
       brief: seedMaterials.brief,
       chapterContext: input.externalContext,
+      arcContext: input.arcContext,
       recyclableHooks: memorySelection.recyclableHooks,
       // Phase hotfix 4: thread book language through so the planner uses
       // English prompts (system + user template + golden opening guidance)
@@ -187,6 +191,7 @@ export class PlannerAgent extends BaseAgent {
     readonly previousEndingExcerpt?: string;
     readonly brief?: string;
     readonly chapterContext?: string;
+    readonly arcContext?: string;
     readonly recyclableHooks?: ReadonlyArray<StoredHook>;
     readonly language?: "zh" | "en";
   }): Promise<ChapterMemo> {
@@ -232,6 +237,7 @@ export class PlannerAgent extends BaseAgent {
       bookRulesRelevant: bookRulesRaw.trim().length > 0 ? bookRulesRaw.trim() : noBookRules,
       brief: input.brief ?? "",
       chapterContext: input.chapterContext ?? "",
+      arcContext: input.arcContext ?? "",
       language,
     });
 

@@ -213,6 +213,7 @@ export const PLANNER_MEMO_USER_TEMPLATE_EN = `# Chapter {{chapterNumber}} memo r
 
 {{brief_block}}
 {{chapter_context_block}}
+{{arc_context_block}}
 
 ## Last screen of previous chapter (excerpt)
 {{previous_chapter_ending_excerpt}}
@@ -262,6 +263,7 @@ export const PLANNER_MEMO_USER_TEMPLATE = `# 第 {{chapterNumber}} 章 memo 请�
 
 {{brief_block}}
 {{chapter_context_block}}
+{{arc_context_block}}
 
 ## 上一章最后一屏（原文节选）
 {{previous_chapter_ending_excerpt}}
@@ -308,6 +310,7 @@ export interface PlannerUserMessageInput {
   readonly bookRulesRelevant: string;
   readonly brief?: string;
   readonly chapterContext?: string;
+  readonly arcContext?: string;
   readonly language?: "zh" | "en";
 }
 
@@ -319,11 +322,13 @@ export function buildPlannerUserMessage(input: PlannerUserMessageInput): string 
 
   const briefBlock = buildBriefBlock(input.brief ?? "", language);
   const chapterContextBlock = buildChapterContextBlock(input.chapterContext ?? "", language);
+  const arcContextBlock = buildArcContextBlock(input.arcContext ?? "", language);
 
   const filled = template
     .replaceAll("{{chapterNumber}}", String(input.chapterNumber))
     .replaceAll("{{brief_block}}", briefBlock)
     .replaceAll("{{chapter_context_block}}", chapterContextBlock)
+    .replaceAll("{{arc_context_block}}", arcContextBlock)
     .replaceAll("{{previous_chapter_ending_excerpt}}", input.previousChapterEndingExcerpt)
     .replaceAll("{{recent_summaries}}", input.recentSummaries)
     .replaceAll("{{current_arc_prose}}", input.currentArcProse)
@@ -374,6 +379,21 @@ This is the user's direct instruction for the current chapter. The memo must obe
 ${trimmed}
 
 这是用户对当前章节的直接指令。memo 必须优先遵守它，再参考卷纲兜底。如果用户指定了章节标题，必须在 memo 中原样保留该标题，供写手作为 CHAPTER_TITLE 使用。若它与卷纲不完全一致，保持连续性，但以本章用户指令为准。`;
+}
+
+function buildArcContextBlock(arcContext: string, language: "zh" | "en"): string {
+  const trimmed = arcContext.trim();
+  if (!trimmed) return "";
+  if (language === "en") {
+    return `## Active Arc production plan (subordinate authority)
+${trimmed}
+
+Use this plan to shape the chapter memo, but never let it override the creative brief, Book canon, hard rules, or an explicit per-chapter user instruction.`;
+  }
+  return `## 当前 Arc 制作计划（从属权威）
+${trimmed}
+
+用这份计划组织本章 memo，但不得覆盖创作 brief、作品正典、硬性规则或用户对本章的明确指令。`;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import type { ChatDepth } from "./chat-depth.js";
 
-export type TuiLocale = "zh-CN" | "en";
+export type TuiLocale = "zh-CN" | "ko" | "en";
 
 export interface TuiCopy {
   readonly locale: TuiLocale;
@@ -195,6 +195,63 @@ const EN: TuiCopy = {
   },
 };
 
+const KO: TuiCopy = {
+  locale: "ko",
+  labels: {
+    project: "프로젝트",
+    book: "작품",
+    depth: "깊이",
+    session: "세션",
+    messageCount: (count) => `${count}개 메시지`,
+    stage: "단계",
+    mode: "모드",
+    model: "모델",
+    error: "오류",
+    recent: "최근",
+    pending: "확인 대기",
+    draft: "초안",
+    ready: "준비됨",
+    none: "없음",
+    notConfigured: "설정되지 않음",
+    unknown: "알 수 없음",
+  },
+  modeLabels: { auto: "자동", semi: "반자동", manual: "수동" },
+  composer: {
+    placeholder: "InkOS에 작성·수정·설명을 요청하세요…",
+    emptyConversation: "InkOS에 무엇을 할지 먼저 말해 주세요.",
+    helper: "Enter 전송 • /new 아이디어 입력 • /write • /rewrite • /truth • /export • /depth • /help",
+    submitting: "처리 중…",
+    failed: "마지막 요청 실패",
+    ready: "준비됨",
+  },
+  notes: {
+    help: "명령: /new(아이디어 입력), /write, /books, /rewrite, /focus, /truth, /rename, /replace, /export, /status, /clear, /depth, /quit. 그 밖의 글쓰기와 프로젝트 작업은 자연어로 에이전트에 요청하세요.",
+    status: (stage, mode) => `현재 상태: ${stage} (${mode}).`,
+    config: "Ink 대시보드에서는 대화형 /config를 아직 지원하지 않습니다. inkos config set-global을 사용하세요.",
+    depthSet: (depthLabel) => `사고 깊이를 ${depthLabel}(으)로 설정했습니다.`,
+    newBookGuide: "새 책을 구상합니다. 장르·세계관·주인공·핵심 갈등 등 아이디어를 설명하세요. 정보가 충분해지면 AI가 책 생성 기능을 호출합니다.",
+    noLlmConfig: "LLM 설정을 찾지 못했습니다.",
+    setupProvider: "먼저 API 제공자를 설정해 주세요.",
+  },
+  roles: { user: "나", assistant: "InkOS", system: "시스템" },
+  activity: {
+    thinking: "생각 중",
+    checking: "확인 중",
+    writing: "작성 중",
+    reviewing: "검토 중",
+    updating: "업데이트 중",
+  },
+  stageLabels: {
+    completed: "완료",
+    failed: "실패",
+    blocked: "차단됨",
+    waitingHuman: "사용자 결정 대기",
+    pausedByUser: "사용자가 일시 중지",
+    readyToContinue: "계속 진행 가능",
+  },
+  depthLabels: { light: "가볍게", normal: "표준", deep: "깊게" },
+};
+
 export function resolveTuiLocale(
   env: NodeJS.ProcessEnv = process.env,
   preferredLanguage?: string,
@@ -214,7 +271,7 @@ export function resolveTuiLocale(
 }
 
 export function getTuiCopy(locale: TuiLocale): TuiCopy {
-  return locale === "en" ? EN : ZH_CN;
+  return locale === "en" ? EN : locale === "ko" ? KO : ZH_CN;
 }
 
 export function normalizeStageLabel(label: string, copy: TuiCopy): string {
@@ -268,6 +325,10 @@ function normalizeLocale(value: string | undefined): TuiLocale | undefined {
 
   if (normalized.startsWith("zh")) {
     return "zh-CN";
+  }
+
+  if (normalized.startsWith("ko")) {
+    return "ko";
   }
 
   if (normalized.startsWith("en")) {

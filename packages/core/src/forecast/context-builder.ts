@@ -3,6 +3,8 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { formatRecentSummaries, readSubplotBoard } from "../agents/planner-context.js";
 import { readCharacterContext, readStoryFrame, readVolumeMap } from "../utils/outline-paths.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import { renderStoryRailPlan } from "../arc/rail-context.js";
 
 // Read-only view of the canonical book used as forecast input. Everything in
 // here MUST stay side-effect free: building a forecast context never creates
@@ -21,6 +23,7 @@ export interface ForecastContextSections {
   readonly recentChapterSummaries: string;
   readonly characterContext: string;
   readonly subplotBoard: string;
+  readonly storyRails: string;
 }
 
 export interface ForecastContext {
@@ -52,12 +55,13 @@ export async function buildForecastContext(params: {
     readOrEmpty(join(storyDir, "pending_hooks.md")),
   ]);
 
-  const [storyFrame, volumeMap, characterContext, subplotBoard, chapterSummariesRaw] = await Promise.all([
+  const [storyFrame, volumeMap, characterContext, subplotBoard, chapterSummariesRaw, storyRailPlan] = await Promise.all([
     readStoryFrame(bookDir),
     readVolumeMap(bookDir),
     readCharacterContext(bookDir),
     readSubplotBoard(storyDir),
     readOrEmpty(join(storyDir, "chapter_summaries.md")),
+    new StoryRailStore(bookDir).loadOptional(bookId),
   ]);
 
   const contextFingerprint = computeContextFingerprint({
@@ -83,6 +87,7 @@ export async function buildForecastContext(params: {
         : "",
       characterContext,
       subplotBoard,
+      storyRails: storyRailPlan ? renderStoryRailPlan(storyRailPlan) : "",
     },
   };
 }
@@ -119,6 +124,7 @@ const FINGERPRINT_FIXED_INPUTS: ReadonlyArray<string> = [
   "story/outline/story_frame.md",
   "story/outline/volume_map.md",
   "story/pending_hooks.md",
+  "story/rails/plan.json",
   "story/story_bible.md",
   "story/subplot_board.md",
   "story/volume_outline.md",
@@ -184,6 +190,7 @@ export function renderForecastContextMarkdown(context: ForecastContext): string 
     [zh ? "近期章节摘要" : "Recent chapter summaries", context.sections.recentChapterSummaries],
     [zh ? "人物与关系" : "Characters and relationships", context.sections.characterContext],
     [zh ? "支线看板" : "Subplot board", context.sections.subplotBoard],
+    [zh ? "A-Rail / B-Rail 长期路线" : "A-Rail / B-Rail long-horizon route", context.sections.storyRails],
   ];
 
   const blocks = [

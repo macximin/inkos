@@ -87,6 +87,7 @@ export function resolveServiceProviderFamily(service: string): "openai" | "anthr
 }
 
 export function resolveServicePiProvider(service: string): string | undefined {
+  if (service === "codex") return "codex-cli";
   if (service === "google") return "google";
   const preset = resolveServicePreset(service);
   if (!preset) return undefined;
@@ -172,7 +173,7 @@ export async function listModelsForService(
   const probeBaseUrl = liveBaseUrl || provider?.modelsBaseUrl || provider?.baseUrl || resolveServiceModelsBaseUrl(service);
   const providerFamily = preset?.providerFamily ?? (provider?.api.startsWith("anthropic") ? "anthropic" : "openai");
   const canProbeWithoutApiKey = isApiKeyOptionalForEndpoint({ provider: providerFamily, baseUrl: probeBaseUrl });
-  if ((apiKey || canProbeWithoutApiKey) && probeBaseUrl) {
+  if (service !== "codex" && (apiKey || canProbeWithoutApiKey) && probeBaseUrl) {
     const probed = await probeModelsFromUpstream(probeBaseUrl, apiKey ?? "", 10_000);
     if (probed.length > 0) {
       const { lookupModel } = await import("./providers/lookup.js");

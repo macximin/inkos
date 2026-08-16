@@ -1,5 +1,6 @@
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
@@ -51,6 +52,12 @@ import {
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { commitAtomicFileSet, type AtomicFileWrite } from "../utils/atomic-file-set.js";
+import { ArcStore } from "../arc/store.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import {
+  loadOptionalActiveArcContext,
+  renderChapterArcProvenance,
+} from "../arc/forecast.js";
 
 const LEGACY_WRITER_CONTEXT_BUDGET = {
   storyBible: 14_000,
@@ -84,6 +91,12 @@ export interface WriteChapterInput {
   readonly lengthSpec?: LengthSpec;
   readonly wordCountOverride?: number;
   readonly temperatureOverride?: number;
+  /**
+   * Exact planning snapshot resolved by the runner. When present, Writer must
+   * not re-read active.json and risk observing a different Arc than Planner.
+   * Direct Writer callers may omit it and retain the legacy fail-open lookup.
+   */
+  readonly arcProvenance?: ChapterArcProvenance;
 }
 
 export interface SettleChapterStateInput {
@@ -130,6 +143,7 @@ export interface WriteChapterOutput {
     readonly description: string;
     readonly suggestion: string;
   }>;
+  readonly arcProvenance?: ChapterArcProvenance;
   readonly tokenUsage?: TokenUsage;
 }
 
@@ -199,6 +213,21 @@ export class WriterAgent extends BaseAgent {
     const resolvedLanguage = book.language ?? genreProfile.language;
     const targetWords = input.lengthSpec?.target ?? input.wordCountOverride ?? book.chapterWordCount;
     const resolvedLengthSpec = input.lengthSpec ?? buildLengthSpec(targetWords, resolvedLanguage);
+    // Arc is author-controlled planning context, not canonical state. It is
+    // injected only when its active packet explicitly owns this chapter.
+    const arcChapterContext = input.arcProvenance
+      ? {
+          markdown: renderChapterArcProvenance(input.arcProvenance),
+          provenance: input.arcProvenance,
+        }
+      : await loadOptionalActiveArcContext({
+          store: new ArcStore(bookDir),
+          railStore: new StoryRailStore(bookDir),
+          bookId: book.id,
+          chapterNumber,
+          targetChapters: book.targetChapters,
+          onWarning: (message) => this.ctx.logger?.warn(message),
+        });
     const governedMemoryBlocks = input.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
       : undefined;
@@ -234,6 +263,7 @@ export class WriterAgent extends BaseAgent {
           contextPackage: input.contextPackage,
           ruleStack: input.ruleStack,
           externalContext: input.externalContext,
+          arcContext: arcChapterContext?.markdown,
           lengthSpec: resolvedLengthSpec,
           language: book.language ?? genreProfile.language,
           varianceBrief: englishVarianceBrief?.text,
@@ -265,6 +295,7 @@ export class WriterAgent extends BaseAgent {
             recentChapters,
             lengthSpec: resolvedLengthSpec,
             externalContext: input.externalContext,
+            arcContext: arcChapterContext?.markdown,
             chapterSummaries: filteredSummaries,
             subplotBoard: filteredSubplots,
             emotionalArcs: filteredArcs,
@@ -450,6 +481,7 @@ export class WriterAgent extends BaseAgent {
       postWriteErrors,
       postWriteWarnings,
       hookHealthIssues,
+      ...(arcChapterContext ? { arcProvenance: arcChapterContext.provenance } : {}),
       tokenUsage,
     };
   }
@@ -780,6 +812,7 @@ export class WriterAgent extends BaseAgent {
     readonly recentChapters: string;
     readonly lengthSpec: LengthSpec;
     readonly externalContext?: string;
+    readonly arcContext?: string;
     readonly chapterSummaries: string;
     readonly subplotBoard: string;
     readonly emotionalArcs: string;
@@ -809,8 +842,14 @@ export class WriterAgent extends BaseAgent {
       ? this.capLegacyContext("parent_canon", params.parentCanon, LEGACY_WRITER_CONTEXT_BUDGET.parentCanon)
       : undefined;
     const contextBlock = params.externalContext
-      ? `\n## 外部指令\n以下是来自外部系统的创作指令，请在本章中融入：\n\n${params.externalContext}\n`
+      ? params.language === "en"
+        ? `\n## Per-chapter user instruction (highest priority)\n${params.externalContext}\n\nObey this direct instruction for the current chapter before optional planning guidance.\n`
+        : `\n## 本章用户指令（最高优先级）\n${params.externalContext}\n\n这是用户对当前章节的直接指令，必须优先于可选规划提示。\n`
       : "";
+    const arcGuidanceBlock = this.buildArcGuidanceBlock(
+      params.arcContext,
+      params.language ?? "zh",
+    );
 
     const ledgerBlock = ledger
       ? `\n## 资源账本\n${ledger}\n`
@@ -849,7 +888,7 @@ ${parentCanon}\n`
 
     if (params.language === "en") {
       return `Write chapter ${params.chapterNumber}.
-${contextBlock}
+${contextBlock}${arcGuidanceBlock}
 ## Current State
 ${currentState}
 ${ledgerBlock}
@@ -868,7 +907,7 @@ ${lengthRequirementBlock}
     }
 
     return `请续写第${params.chapterNumber}章。
-${contextBlock}
+${contextBlock}${arcGuidanceBlock}
 ## 当前状态卡
 ${currentState}
 ${ledgerBlock}
@@ -897,6 +936,7 @@ ${lengthRequirementBlock}
     readonly contextPackage: ContextPackage;
     readonly ruleStack: RuleStack;
     readonly externalContext?: string;
+    readonly arcContext?: string;
     readonly lengthSpec: LengthSpec;
     readonly language?: "zh" | "en";
     readonly varianceBrief?: string;
@@ -932,12 +972,14 @@ ${lengthRequirementBlock}
       ? `\n${sanitizeNarrativeEvidenceBlock(params.selectedEvidenceBlock, language)}\n`
       : "";
     const chapterContextBlock = this.buildChapterContextBlock(params.externalContext, language);
+    const arcGuidanceBlock = this.buildArcGuidanceBlock(params.arcContext, language);
     const briefNarrative = renderMemoAsNarrativeBlock(params.chapterMemo, params.chapterIntentData, language);
 
     if (params.language === "en") {
       return `Write chapter ${params.chapterNumber}.
 
 ${chapterContextBlock}
+${arcGuidanceBlock}
 
 ${userDirectionBlock}
 ${briefNarrative}
@@ -960,6 +1002,7 @@ ${lengthRequirementBlock}
     return `请续写第${params.chapterNumber}章。
 
 ${chapterContextBlock}
+${arcGuidanceBlock}
 
 ${userDirectionBlock}
 ${briefNarrative}
@@ -992,6 +1035,21 @@ Obey this direct instruction for the current chapter. If it specifies a chapter 
 ${trimmed}
 
 这是用户对当前章节的直接指令。若其中指定章节标题，CHAPTER_TITLE 必须原样使用该标题。保持连续性，但不要用卷纲兜底替换这条指令。`;
+  }
+
+  private buildArcGuidanceBlock(arcContext: string | undefined, language: "zh" | "en"): string {
+    const trimmed = arcContext?.trim();
+    if (!trimmed) return "";
+    if (language === "en") {
+      return `## Active Arc planning guidance (subordinate authority)
+${trimmed}
+
+Use this optional production plan for the current chapter. It never overrides Book canon, hard rules, or an explicit per-chapter user instruction; follow those higher authorities if they conflict.`;
+    }
+    return `## 当前 Arc 规划提示（从属权威）
+${trimmed}
+
+这是本章可选的制作计划。它不能覆盖作品正典、硬性规则或用户对本章的明确指令；若有冲突，必须服从这些更高权威。`;
   }
 
   private joinGovernedEvidenceBlocks(blocks: ReturnType<typeof buildGovernedMemoryEvidenceBlocks> | undefined): string | undefined {

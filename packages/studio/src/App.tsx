@@ -57,7 +57,7 @@ export function App() {
   const { route, setRoute } = useHashRoute();
   const sse = useSSE();
   const { theme, setTheme } = useTheme();
-  const { t, lang: currentLang } = useI18n();
+  const { t, lang: currentLang, setUiLanguage } = useI18n();
   const { data: project, error: projectError, refetch: refetchProject } = useApi<{ language: string; languageExplicit: boolean }>("/project");
   const [showLanguageSelector, setShowLanguageSelector] = useState(false);
   const [ready, setReady] = useState(false);
@@ -199,6 +199,7 @@ export function App() {
               <button
                 onClick={async () => {
                   await putApi("/project", { language: "zh" });
+                  setUiLanguage("zh");
                   refetchProject();
                 }}
                 className={`px-2.5 py-1 text-[16px] font-medium rounded-md ${currentLang === "zh" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
@@ -206,8 +207,16 @@ export function App() {
                 中
               </button>
               <button
+                onClick={() => setUiLanguage("ko")}
+                className={`px-2.5 py-1 text-[16px] font-medium rounded-md ${currentLang === "ko" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+                title="한국어 UI"
+              >
+                한
+              </button>
+              <button
                 onClick={async () => {
                   await putApi("/project", { language: "en" });
+                  setUiLanguage("en");
                   refetchProject();
                 }}
                 className={`px-2.5 py-1 text-[16px] font-medium rounded-md ${currentLang === "en" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
@@ -239,6 +248,7 @@ export function App() {
                 nav={nav}
                 theme={theme}
                 t={t}
+                uiLanguage={currentLang}
                 sse={sse}
               />
             </div>
@@ -250,6 +260,7 @@ export function App() {
                 nav={nav}
                 theme={theme}
                 t={t}
+                uiLanguage={currentLang}
                 sse={sse}
               />
             </div>
@@ -262,6 +273,7 @@ export function App() {
                 nav={nav}
                 theme={theme}
                 t={t}
+                uiLanguage={currentLang}
                 sse={sse}
               />
               <BookSidebar bookId={route.bookId} theme={theme} t={t} sse={sse} />
@@ -361,6 +373,7 @@ export function App() {
                 nav={nav}
                 theme={theme}
                 t={t}
+                uiLanguage={currentLang}
                 sse={sse}
               />
             </div>

@@ -53,3 +53,9 @@ export {
   createNarrativeForecastGetTool,
   createNarrativeForecastSelectTool,
 } from "./forecast-tools.js";
+export {
+  createApplyStoryRailReflowTool,
+  createDiscardStoryRailReflowTool,
+  createGetStoryRailsTool,
+  createReplaceStoryRailsTool,
+} from "./story-rail-tools.js";

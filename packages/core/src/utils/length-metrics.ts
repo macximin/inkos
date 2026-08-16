@@ -11,9 +11,12 @@ const HARD_RANGE_DELTA = 600;
 // 3000 read as English words runs ~50% long, and the hard-range guard then force-expands correct chapters.
 export const DEFAULT_CHAPTER_LENGTH_ZH = 3000;
 export const DEFAULT_CHAPTER_LENGTH_EN = 2000;
+// Korean webnovel platforms conventionally measure the visible Korean text in
+// characters (공백 포함), rather than English-style words.
 
-export function defaultChapterLength(language: LengthLanguage = "zh"): number {
-  return language === "en" ? DEFAULT_CHAPTER_LENGTH_EN : DEFAULT_CHAPTER_LENGTH_ZH;
+export function defaultChapterLength(language: LengthLanguage | "ko" = "zh"): number {
+  if (language === "en") return DEFAULT_CHAPTER_LENGTH_EN;
+  return language === "ko" ? 5000 : DEFAULT_CHAPTER_LENGTH_ZH;
 }
 
 export function countChapterLength(

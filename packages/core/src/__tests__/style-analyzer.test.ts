@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import { analyzeStyle } from "../agents/style-analyzer.js";
 
 describe("analyzeStyle", () => {
+  it("analyzes Korean sentences and eojeol diversity", () => {
+    const profile = analyzeStyle("민서는 문을 열었다. 민서는 숨을 골랐다. 설마 지금이야?", "한국어 견본", "ko");
+    expect(profile.avgSentenceLength).toBeGreaterThan(0);
+    expect(profile.vocabularyDiversity).toBeGreaterThan(0);
+  });
   const sampleText = [
     "陈风一脚踩碎了脚下的石板。碎石飞溅，打在旁边的墙壁上发出清脆的声响。他低头看了一眼，嘴角微微上扬。",
     "",

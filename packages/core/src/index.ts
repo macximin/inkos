@@ -1,12 +1,111 @@
 // Models
 export { type BookConfig, type Platform, type Genre, type BookStatus, type FanficMode, type ChapterReviewMode, type RevisionGate, BookConfigSchema, PlatformSchema, GenreSchema, BookStatusSchema, FanficModeSchema, normalizePlatformId, normalizePlatformOrOther, resolveChapterReviewMode, resolveRevisionGate } from "./models/book.js";
-export { type ChapterMeta, type ChapterStatus, ChapterMetaSchema, ChapterStatusSchema } from "./models/chapter.js";
+export {
+  type ChapterArcProvenance,
+  type ChapterStoryRailProvenance,
+  type ChapterMeta,
+  type ChapterStatus,
+  ChapterArcProvenanceSchema,
+  ChapterStoryRailProvenanceSchema,
+  ChapterMetaSchema,
+  ChapterStatusSchema,
+} from "./models/chapter.js";
 export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema } from "./models/project.js";
 export { type CurrentState, type ParticleLedger, type PendingHooks, type PendingHook, type LedgerEntry } from "./models/state.js";
 export { type GenreProfile, type ParsedGenreProfile, GenreProfileSchema, parseGenreProfile } from "./models/genre-profile.js";
 export { type BookRules, type ParsedBookRules, BookRulesSchema, parseBookRules, tryParseBookRulesFrontmatter } from "./models/book-rules.js";
 export { type DetectionHistoryEntry, type DetectionStats } from "./models/detection.js";
 export { type StyleProfile } from "./models/style-profile.js";
+export {
+  type ArcStatus,
+  type ArcEpisodeRole,
+  type ArcEpisodeBeat,
+  type ArcPacket,
+  type ActiveArc,
+  ArcStatusSchema,
+  ArcEpisodeRoleSchema,
+  ArcEpisodeBeatSchema,
+  ArcPacketSchema,
+  ActiveArcSchema,
+} from "./arc/schema.js";
+export { ArcStore, assertSafeArcId, type ArcStoreOptions } from "./arc/store.js";
+export {
+  type AnchorDetailLevel,
+  type AnchorState,
+  type StoryAnchor,
+  type AnchorRail,
+  type ArcActualEpisodeCount,
+  type ArcRouteEntryStatus,
+  type ArcRouteEntry,
+  type ArcRouteRail,
+  type StoryRailReadiness,
+  type StoryRailRouteCapacity,
+  type StoryRailPlanInput,
+  type StoryRailPlan,
+  StableRailIdSchema,
+  ArcActualEpisodeCountSchema,
+  AnchorDetailLevelSchema,
+  AnchorStateSchema,
+  StoryAnchorSchema,
+  AnchorRailSchema,
+  ArcRouteEntryStatusSchema,
+  ArcRouteEntrySchema,
+  ArcRouteRailSchema,
+  StoryRailReadinessSchema,
+  StoryRailRouteCapacitySchema,
+  StoryRailPlanInputSchema,
+  StoryRailPlanSchema,
+} from "./arc/rail-schema.js";
+export {
+  StoryRailStore,
+  type StoryRailStoreOptions,
+  type BindActiveArcResult,
+} from "./arc/rail-store.js";
+export {
+  type StoryRailReflowPending,
+  type StoryRailReflowCloseout,
+  type StoryRailDurableRevision,
+  type StoryRailReflowDecision,
+  type StoryRailReflowApplyInput,
+  type StoryRailReflowDiscardInput,
+  type StoryRailReflowDiscardReceipt,
+  type StoryRailReflowReceipt,
+  StoryRailReflowPendingSchema,
+  StoryRailReflowCloseoutSchema,
+  StoryRailDurableRevisionSchema,
+  StoryRailReflowDecisionSchema,
+  StoryRailReflowApplyInputSchema,
+  StoryRailReflowDiscardInputSchema,
+  StoryRailReflowDiscardReceiptSchema,
+  StoryRailReflowReceiptSchema,
+} from "./arc/reflow-schema.js";
+export {
+  StoryRailReflowStore,
+  type StoryRailReflowStoreOptions,
+  type StoryRailReflowNotEligibleReason,
+  type StoryRailReflowPrepareResult,
+  type StoryRailReflowApplyResult,
+  type StoryRailReflowDiscardResult,
+} from "./arc/reflow-store.js";
+export {
+  inspectStoryRailBinding,
+  inspectStoryRailRuntimeEligibility,
+  resolveActiveStoryRailProvenance,
+  renderStoryRailProvenance,
+  renderStoryRailPlan,
+  type StoryRailBindingStatus,
+  type StoryRailBindingInspection,
+  type StoryRailRuntimeStatus,
+  type StoryRailRuntimeInspection,
+} from "./arc/rail-context.js";
+export {
+  createArcDraftFromForecast,
+  loadOptionalActiveArcContext,
+  renderChapterArcProvenance,
+  renderArcContext,
+  resolveArcChapterContext,
+  type ArcChapterContext,
+} from "./arc/forecast.js";
 export { type LengthCountingMode, type LengthNormalizeMode, type LengthSpec, type LengthTelemetry, type LengthWarning, LengthCountingModeSchema, LengthNormalizeModeSchema, LengthSpecSchema, LengthTelemetrySchema, LengthWarningSchema } from "./models/length-governance.js";
 export {
   type RuntimeStateLanguage,
@@ -36,6 +135,15 @@ export {
   NewHookCandidateSchema,
   RuntimeStateDeltaSchema,
 } from "./models/runtime-state.js";
+export {
+  ChapterTruthReceiptSchema,
+  chapterTruthReceiptRelativePath,
+  hashLiveStoryStateProjection,
+  verifyChapterTruthReceipt,
+  writeChapterTruthReceipt,
+  type ChapterTruthReceipt,
+  type VerifiedChapterTruthReceipt,
+} from "./state/chapter-truth-receipt.js";
 export {
   type PlayActionKind,
   type PlayActionIntentInput,
@@ -193,7 +301,7 @@ export {
   resolveProxyUrl,
 } from "./utils/proxy-fetch.js";
 export { assertSafeBookId, deriveBookIdFromTitle, isSafeBookId } from "./utils/book-id.js";
-export { safeChildPath } from "./utils/path-safety.js";
+export { safeChildPath, safeNonSymlinkChildPath } from "./utils/path-safety.js";
 export { toPosixPath } from "./utils/posix-path.js";
 export {
   AutomationModeSchema,
@@ -437,6 +545,18 @@ export * from "./agent/index.js";
 // LLM
 export { createLLMClient, chatCompletion, createStreamMonitor, PartialResponseError, type LLMClient, type LLMResponse, type LLMMessage, type StreamProgress, type OnStreamProgress } from "./llm/provider.js";
 export {
+  CODEX_SERVICE_ID,
+  CODEX_DEFAULT_MODEL,
+  CODEX_MAX_TOOL_ROUNDS,
+  probeCodexCli,
+  runCodexCliCompletion,
+  buildCodexCliPrompt,
+  buildCodexChildEnvironment,
+  parseCodexJsonl,
+  type CodexCliStatus,
+  type CodexCliResult,
+} from "./llm/codex-cli.js";
+export {
   SERVICE_PRESETS,
   SERVICE_TO_PI_PROVIDER,
   resolveServicePreset,
@@ -536,7 +656,7 @@ export { arbitrateRuntimeStateDeltaHooks, type HookArbiterDecision } from "./uti
 export { analyzeHookHealth } from "./utils/hook-health.js";
 
 // Pipeline
-export { PipelineRunner, type PipelineConfig, type ChapterPipelineResult, type WriteChaptersOptions, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";
+export { PipelineRunner, StoryRailProductionGateError, type PipelineConfig, type ChapterPipelineResult, type WriteChaptersOptions, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";
 export { Scheduler, type SchedulerConfig } from "./pipeline/scheduler.js";
 export { detectChapter, detectAndRewrite, loadDetectionHistory, type DetectChapterResult, type DetectAndRewriteResult } from "./pipeline/detection-runner.js";
 export { runScriptCreation, runStoryboardCreation, runInteractiveFilmCreation, createStoryboardAssetsManifest, type ScriptCreationRunOptions, type ScriptCreationRunResult, type StoryboardAssetsManifest, type StoryboardCreationRunOptions, type StoryboardCreationRunResult, type InteractiveFilmCreationRunOptions, type InteractiveFilmCreationRunResult, type StoryboardImageAsset, type StoryboardImageAssetVariant } from "./pipeline/script-storyboard-runner.js";
@@ -552,8 +672,10 @@ export {
   readChapterPlanDocument,
   readChapterUserBrief,
   readChapterVersion,
+  readChapterVersionMetadata,
   saveChapterUserBrief,
   type ChapterVersion,
+  type ChapterVersionMetadata,
   type ChapterVersionSource,
 } from "./state/chapter-workspace.js";
 export { bootstrapStructuredStateFromMarkdown } from "./state/state-bootstrap.js";

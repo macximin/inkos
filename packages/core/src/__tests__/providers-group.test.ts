@@ -20,7 +20,7 @@ describe("InkosEndpoint.group", () => {
     expect(byGroup("aggregator")).toEqual([
       "kkaiapi", "newapi", "openrouter", "siliconcloud",
     ].sort());
-    expect(byGroup("local")).toEqual(["githubCopilot", "lmstudio", "ollama"].sort());
+    expect(byGroup("local")).toEqual(["codex", "githubCopilot", "lmstudio", "ollama"].sort());
     expect(byGroup("codingPlan")).toEqual([
       "astronCodingPlan", "bailianCodingPlan", "glmCodingPlan", "kimiCodingPlan", "kimicode",
       "minimaxCodingPlan", "opencodeCodingPlan", "volcengineCodingPlan",

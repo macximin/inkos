@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AuditIssue, AuditResult } from "../agents/continuity.js";
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
 import { persistChapterArtifacts } from "../pipeline/chapter-persistence.js";
 
 const ZERO_USAGE = {
@@ -8,6 +8,34 @@ const ZERO_USAGE = {
   completionTokens: 0,
   totalTokens: 0,
 } as const;
+
+const ARC_PROVENANCE: ChapterArcProvenance = {
+  version: 1,
+  bookId: "book-a",
+  arcId: "arc-opening",
+  arcUpdatedAt: "2026-04-01T00:00:00.000Z",
+  arcTitle: "Opening",
+  chapterNumber: 3,
+  episodeRole: "turn",
+  openingState: "The safe is locked.",
+  promise: "Find the hidden ledger.",
+  goal: "Open the safe.",
+  obstacle: "The code is missing.",
+  pressure: "The owner is returning.",
+  turn: "The safe is already empty.",
+  payoff: "A hidden note remains.",
+  irreversibleChange: "The break-in is discovered.",
+  nextHook: "Who emptied the safe?",
+  beats: ["Open the safe."],
+  endingHook: "The ledger is blank.",
+  characterChanges: [],
+  relationshipChanges: [],
+  worldChanges: [],
+  hookOperations: [],
+  mustKeep: [],
+  mustAvoid: [],
+  styleEmphasis: [],
+};
 
 function createIssue(overrides?: Partial<AuditIssue>): AuditIssue {
   return {
@@ -53,6 +81,7 @@ describe("persistChapterArtifacts", () => {
       finalWordCount: 888,
       lengthWarnings: ["warn"],
       degradedIssues: [],
+      arcProvenance: ARC_PROVENANCE,
       tokenUsage: ZERO_USAGE,
       loadChapterIndex: async () => [] satisfies ReadonlyArray<ChapterMeta>,
       saveChapter,
@@ -80,6 +109,7 @@ describe("persistChapterArtifacts", () => {
           "[critical] keep me too",
         ],
         reviewNote: undefined,
+        arcProvenance: ARC_PROVENANCE,
         tokenUsage: ZERO_USAGE,
       }),
     ]);

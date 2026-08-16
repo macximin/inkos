@@ -7,6 +7,7 @@ import {
   savePersistedPlan,
 } from "../pipeline/persisted-governed-plan.js";
 import type { PlanChapterOutput } from "../agents/planner.js";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 
 const MEMO_BODY = `## 当前任务
 林越必须趁守夜人换班的空档，从母亲遗物里取回账册并悄悄离开旧港。
@@ -59,6 +60,36 @@ function buildPlan(chapter: number): PlanChapterOutput {
   };
 }
 
+function buildArcProvenance(chapter: number): ChapterArcProvenance {
+  return {
+    version: 1,
+    bookId: "book-a",
+    arcId: "arc-ledger",
+    arcUpdatedAt: "2026-08-09T00:00:00.000Z",
+    arcTitle: "Ledger Arc",
+    chapterNumber: chapter,
+    episodeRole: "promise",
+    openingState: "账册仍在旧港。",
+    promise: "取回账册。",
+    goal: "带走账册。",
+    obstacle: "守夜人巡逻。",
+    pressure: "换班窗口很短。",
+    turn: "账册已被动过。",
+    payoff: "主角拿到账册。",
+    irreversibleChange: "旧港开始追查主角。",
+    nextHook: "谁先翻过账册？",
+    beats: ["趁换班取回账册。"],
+    endingHook: "账册缺了一页。",
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+  };
+}
+
 describe("persisted-governed-plan round trip", () => {
   it("savePersistedPlan + loadPersistedPlan returns equal memo", async () => {
     const dir = await mkdtemp(join(tmpdir(), "inkos-plan-"));
@@ -70,7 +101,10 @@ describe("persisted-governed-plan round trip", () => {
       "utf-8",
     );
 
-    const plan = buildPlan(1);
+    const plan: PlanChapterOutput = {
+      ...buildPlan(1),
+      arcProvenance: buildArcProvenance(1),
+    };
     await savePersistedPlan(dir, plan);
 
     const persisted = await readFile(join(dir, "story", "runtime", "chapter-0001.plan.md"), "utf-8");
@@ -88,6 +122,7 @@ describe("persisted-governed-plan round trip", () => {
     expect(loaded!.intent.mustAvoid).toEqual(plan.intent.mustAvoid);
     expect(loaded!.intent.styleEmphasis).toEqual(plan.intent.styleEmphasis);
     expect(loaded!.plannerInputs).toEqual(plan.plannerInputs);
+    expect(loaded!.arcProvenance).toEqual(plan.arcProvenance);
   });
 
   it("returns null when plan file does not exist", async () => {

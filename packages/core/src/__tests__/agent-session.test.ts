@@ -12,11 +12,20 @@ const EMPTY_USAGE = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-const { agentInstances, streamCalls, heldStreamCompletions, heldStreamWaiters } = vi.hoisted(() => ({
+const {
+  agentInstances,
+  streamCalls,
+  heldStreamCompletions,
+  heldStreamWaiters,
+  codexStreamCalls,
+  codexLoopControl,
+} = vi.hoisted(() => ({
   agentInstances: [] as any[],
   streamCalls: [] as Array<{ model: any; context: any }>,
   heldStreamCompletions: [] as Array<() => void>,
   heldStreamWaiters: [] as Array<() => void>,
+  codexStreamCalls: [] as Array<{ model: any; context: any }>,
+  codexLoopControl: { enabled: false },
 }));
 
 vi.mock("@mariozechner/pi-agent-core", async () => {
@@ -28,6 +37,49 @@ vi.mock("@mariozechner/pi-agent-core", async () => {
     }
   }
   return { ...actual, Agent: SpyAgent };
+});
+
+vi.mock("../llm/codex-cli.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../llm/codex-cli.js")>();
+  return {
+    ...original,
+    codexCliAgentStream: (model: any, context: any, options?: { signal?: AbortSignal }) => {
+      if (!codexLoopControl.enabled) return original.codexCliAgentStream(model, context, options);
+      codexStreamCalls.push({
+        model: JSON.parse(JSON.stringify(model)),
+        context: JSON.parse(JSON.stringify(context)),
+      });
+      const callNumber = codexStreamCalls.length;
+      const message = {
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: `codex-loop-${callNumber}`,
+          name: "read",
+          arguments: { path: "book-a/story/story_bible.md" },
+        }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: EMPTY_USAGE,
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+      };
+      let emitted = false;
+      return {
+        result: async () => message,
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (emitted) return { value: undefined, done: true };
+              emitted = true;
+              return { value: { type: "done", reason: "toolUse", message }, done: false };
+            },
+          };
+        },
+      };
+    },
+  };
 });
 
 vi.mock("@mariozechner/pi-ai", async () => {
@@ -212,6 +264,7 @@ import {
   isTerminalProductionToolName,
   runAgentSession,
 } from "../agent/agent-session.js";
+import { CODEX_MAX_TOOL_ROUNDS } from "../llm/codex-cli.js";
 import {
   appendManualSessionMessages,
   appendTranscriptEvent,
@@ -263,6 +316,8 @@ describe("runAgentSession cache — bookId switch", () => {
     streamCalls.length = 0;
     heldStreamCompletions.length = 0;
     heldStreamWaiters.length = 0;
+    codexStreamCalls.length = 0;
+    codexLoopControl.enabled = false;
   });
 
   afterEach(async () => {
@@ -283,6 +338,7 @@ describe("runAgentSession cache — bookId switch", () => {
     evictAgentCache("play-confirmed-session");
     evictAgentCache("skill-history-session");
     evictAgentCache("abort-session");
+    evictAgentCache("codex-loop-session");
     await rm(projectRoot, { recursive: true, force: true });
     if (otherProjectRoot) await rm(otherProjectRoot, { recursive: true, force: true });
   });
@@ -388,6 +444,50 @@ describe("runAgentSession cache — bookId switch", () => {
         event.type === "request_failed" &&
         typeof event.error === "string" &&
         event.error.includes("InkOS context window guard"),
+    )).toBe(true);
+  });
+
+  it("caps Codex tool loops even after tool results are converted into synthetic user messages", async () => {
+    codexLoopControl.enabled = true;
+    const model = {
+      provider: "codex-cli",
+      id: "codex-default",
+      name: "codex-default",
+      // Exercise the lossy compatibility transform that rewrites tool results
+      // into synthetic user messages; the request counter must not depend on it.
+      api: "openai-completions",
+      baseUrl: "local://codex-subscription",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 32_768,
+    } as any;
+
+    const result = await runAgentSession(
+      {
+        sessionId: "codex-loop-session",
+        bookId: "book-a",
+        language: "zh",
+        pipeline: {} as any,
+        projectRoot,
+        model,
+      },
+      "repeat read forever",
+    );
+
+    expect(codexStreamCalls).toHaveLength(CODEX_MAX_TOOL_ROUNDS);
+    expect(result.errorMessage).toContain(
+      `stopped after ${CODEX_MAX_TOOL_ROUNDS} model/tool rounds`,
+    );
+    expect(codexStreamCalls[1]?.context.messages.at(-1)).toMatchObject({ role: "user" });
+    expect(JSON.stringify(codexStreamCalls[1]?.context.messages.at(-1))).toContain("Tool results");
+    const events = await readTranscriptEvents(projectRoot, "codex-loop-session");
+    expect(events.some(
+      (event: any) =>
+        event.type === "request_failed" &&
+        typeof event.error === "string" &&
+        event.error.includes(`stopped after ${CODEX_MAX_TOOL_ROUNDS}`),
     )).toBe(true);
   });
 
@@ -932,6 +1032,10 @@ describe("runAgentSession cache — bookId switch", () => {
     expect(isTerminalProductionToolName("create_narrative_forecast")).toBe(true);
     expect(isTerminalProductionToolName("get_narrative_forecast")).toBe(true);
     expect(isTerminalProductionToolName("select_narrative_branch")).toBe(true);
+    expect(isTerminalProductionToolName("get_story_rails")).toBe(true);
+    expect(isTerminalProductionToolName("replace_story_rails")).toBe(true);
+    expect(isTerminalProductionToolName("apply_story_rail_reflow")).toBe(true);
+    expect(isTerminalProductionToolName("discard_story_rail_reflow")).toBe(true);
   });
 
   it("treats play revise results as terminal instead of asking the model for extra prose", async () => {
@@ -1090,6 +1194,10 @@ describe("runAgentSession cache — bookId switch", () => {
       "sub_agent",
       "generate_cover",
       "read",
+      "get_story_rails",
+      "replace_story_rails",
+      "apply_story_rail_reflow",
+      "discard_story_rail_reflow",
       "write_truth_file",
       "rename_entity",
       "patch_chapter_text",
@@ -1121,6 +1229,7 @@ describe("runAgentSession cache — bookId switch", () => {
     );
     expect(agentInstances[0].state.tools.map((tool: any) => tool.name)).toEqual([
       "read",
+      "get_story_rails",
       "research_web",
       "ingest_material",
       "retrieve_material",
@@ -1142,6 +1251,10 @@ describe("runAgentSession cache — bookId switch", () => {
       "sub_agent",
       "generate_cover",
       "read",
+      "get_story_rails",
+      "replace_story_rails",
+      "apply_story_rail_reflow",
+      "discard_story_rail_reflow",
       "write_truth_file",
       "rename_entity",
       "patch_chapter_text",
@@ -1171,6 +1284,7 @@ describe("runAgentSession cache — bookId switch", () => {
 
     expect(agentInstances[0].state.tools.map((tool: any) => tool.name)).toEqual([
       "read",
+      "get_story_rails",
       "write_truth_file",
       "rename_entity",
       "patch_chapter_text",

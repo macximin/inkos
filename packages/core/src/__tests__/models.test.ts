@@ -263,6 +263,87 @@ describe("ChapterMetaSchema", () => {
     expect(result.reviewNote).toBeUndefined();
   });
 
+  it("accepts optional Arc provenance without making Arc a chapter parent", () => {
+    const result = ChapterMetaSchema.parse({
+      ...validChapter,
+      arcProvenance: {
+        version: 1,
+        bookId: "book-a",
+        arcId: "arc-opening",
+        arcUpdatedAt: "2026-01-01T00:00:00Z",
+        arcTitle: "Opening",
+        chapterNumber: 1,
+        episodeRole: "promise",
+        openingState: "The room is locked.",
+        promise: "Open the locked room.",
+        goal: "Find the key.",
+        obstacle: "The key is missing.",
+        pressure: "The guard approaches.",
+        turn: "The lock is false.",
+        payoff: "The door opens.",
+        irreversibleChange: "The room is exposed.",
+        nextHook: "Who built the false lock?",
+        beats: ["Find the first key."],
+        endingHook: "The key is warm.",
+        characterChanges: [],
+        relationshipChanges: [],
+        worldChanges: [],
+        hookOperations: [],
+        mustKeep: [],
+        mustAvoid: [],
+        styleEmphasis: [],
+        storyRail: {
+          planUpdatedAt: "2026-01-01T00:00:00Z",
+          anchor: {
+            id: "A01",
+            routeOrder: 100,
+            title: "First irreversible destination",
+            detailLevel: "compound",
+            state: "planned",
+            entryState: "The room is still sealed.",
+            trigger: "The false key is discovered.",
+            irreversibleChange: "The conspiracy knows the search has begun.",
+            humanAftermath: "The ally must choose a side.",
+            readerDebt: "Who built the false lock?",
+            payoffAxis: "Evidence and trust",
+            nextPressure: "The guard reaches the room.",
+          },
+          activeB: {
+            bId: "B001",
+            routeOrder: 100,
+            status: "active",
+            targetAnchorId: "A01",
+            narrativeFunction: "Open the first sealed room.",
+            payoffAxis: "Evidence",
+            carriedReaderDebt: "The false lock",
+            contrastRequirement: "Pay a public cost instead of sneaking away.",
+          },
+          nextB: {
+            bId: "B002",
+            routeOrder: 200,
+            status: "provisional",
+            targetAnchorId: "A02",
+            narrativeFunction: "Test the ally's public choice.",
+            payoffAxis: "Trust",
+            carriedReaderDebt: "The warm key",
+            contrastRequirement: "Use a relationship cost rather than another lock.",
+          },
+        },
+      },
+    });
+    expect(result.arcProvenance?.arcId).toBe("arc-opening");
+    expect(result.arcProvenance?.storyRail?.nextB).toMatchObject({
+      bId: "B002",
+      status: "provisional",
+      targetAnchorId: "A02",
+    });
+
+    expect(() => ChapterMetaSchema.parse({
+      ...validChapter,
+      arcProvenance: { ...result.arcProvenance!, chapterNumber: 2 },
+    })).toThrow(/same chapter number/i);
+  });
+
   it("rejects chapter number < 1", () => {
     expect(() =>
       ChapterMetaSchema.parse({ ...validChapter, number: 0 }),

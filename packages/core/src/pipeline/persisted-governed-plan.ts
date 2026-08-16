@@ -2,6 +2,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { PlanChapterOutput } from "../agents/planner.js";
 import {
+  ChapterArcProvenanceSchema,
+  type ChapterArcProvenance,
+} from "../models/chapter.js";
+import {
   ChapterIntentSchema,
   type ChapterIntent,
 } from "../models/input-governance.js";
@@ -41,7 +45,7 @@ export async function savePersistedPlan(
   plan: PlanChapterOutput,
 ): Promise<void> {
   const { intent, memo, plannerInputs } = plan;
-  const content = renderPersistedPlanMarkdown(intent, memo, plannerInputs);
+  const content = renderPersistedPlanMarkdown(intent, memo, plannerInputs, plan.arcProvenance);
   await writeFile(planPath(bookDir, memo.chapter), content, "utf-8");
 }
 
@@ -87,6 +91,17 @@ export async function loadPersistedPlan(
   }
 
   const plannerInputs = readListSection(raw, "Planner Inputs");
+  const arcProvenanceBlock = extractMarkedBlock(raw, "ARC_PROVENANCE");
+  let arcProvenance: ChapterArcProvenance | undefined;
+  if (arcProvenanceBlock) {
+    try {
+      const parsed = ChapterArcProvenanceSchema.parse(JSON.parse(arcProvenanceBlock));
+      if (parsed.chapterNumber !== chapterNumber) return null;
+      arcProvenance = parsed;
+    } catch {
+      return null;
+    }
+  }
 
   // intentMarkdown is a display artifact — read the sibling .intent.md so we
   // surface the same content downstream consumers expect. If it's missing we
@@ -104,6 +119,7 @@ export async function loadPersistedPlan(
     intentMarkdown,
     plannerInputs,
     runtimePath: intentPath(bookDir, chapterNumber),
+    ...(arcProvenance ? { arcProvenance } : {}),
   };
 }
 
@@ -111,6 +127,7 @@ function renderPersistedPlanMarkdown(
   intent: ChapterIntent,
   memo: PlanChapterOutput["memo"],
   plannerInputs: ReadonlyArray<string>,
+  arcProvenance?: ChapterArcProvenance,
 ): string {
   return [
     `# Chapter ${memo.chapter} Plan`,
@@ -119,6 +136,14 @@ function renderPersistedPlanMarkdown(
     `Chapter: ${memo.chapter}`,
     `Golden Opening: ${memo.isGoldenOpening ? "yes" : "no"}`,
     "",
+    ...(arcProvenance
+      ? [
+          "<!-- INKOS_PLAN_ARC_PROVENANCE_START -->",
+          JSON.stringify(arcProvenance, null, 2),
+          "<!-- INKOS_PLAN_ARC_PROVENANCE_END -->",
+          "",
+        ]
+      : []),
     "<!-- INKOS_PLAN_MEMO_START -->",
     renderMemoMarkdown(memo),
     "<!-- INKOS_PLAN_MEMO_END -->",

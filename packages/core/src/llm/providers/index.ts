@@ -42,6 +42,7 @@ import { GLM_CODING_PLAN } from "./endpoints/glmCodingPlan.js";
 import { VOLCENGINE_CODING_PLAN } from "./endpoints/volcengineCodingPlan.js";
 import { OPENCODE_CODING_PLAN } from "./endpoints/opencodeCodingPlan.js";
 import { ASTRON_CODING_PLAN } from "./endpoints/astronCodingPlan.js";
+import { CODEX } from "./endpoints/codex.js";
 
 export type { InkosEndpoint, InkosModel, ApiProtocol, EndpointGroup } from "./types.js";
 
@@ -54,7 +55,7 @@ const ALL_PROVIDERS: readonly InkosEndpoint[] = [
   MOONSHOT, ZHIPU, SILICONCLOUD, BAILIAN, VOLCENGINE, HUNYUAN, BAICHUAN, STEPFUN, WENXIN,
   SPARK, SENSENOVA, TENCENTCLOUD, XIAOMI_MIMO, LONGCAT, INTERNLM,
   ZEROONE, AI360,
-  OLLAMA, LMSTUDIO, OPENROUTER, CUSTOM, MISTRAL, XAI, NEWAPI, GITHUB_COPILOT, KKAIAPI,
+  CODEX, OLLAMA, LMSTUDIO, OPENROUTER, CUSTOM, MISTRAL, XAI, NEWAPI, GITHUB_COPILOT, KKAIAPI,
   // B6 CodingPlan（8 个）
   KIMI_CODING_PLAN, KIMI_CODE, MINIMAX_CODING_PLAN, BAILIAN_CODING_PLAN, GLM_CODING_PLAN, VOLCENGINE_CODING_PLAN, OPENCODE_CODING_PLAN, ASTRON_CODING_PLAN,
 ];

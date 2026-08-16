@@ -25,7 +25,14 @@ export const consolidateCommand = new Command("consolidate")
 
       if (!opts.json) log(`Consolidating chapter summaries for "${bookId}"...`);
 
-      const result = await consolidator.consolidate(bookDir);
+      await state.loadBookConfig(bookId);
+      const releaseLock = await state.acquireBookLock(bookId);
+      let result: Awaited<ReturnType<ConsolidatorAgent["consolidate"]>>;
+      try {
+        result = await consolidator.consolidate(bookDir);
+      } finally {
+        await releaseLock();
+      }
 
       if (opts.json) {
         log(JSON.stringify(result, null, 2));

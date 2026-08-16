@@ -2,7 +2,7 @@ import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
 import {
   classifyTruthAuthority,
   normalizeTruthFileName,
@@ -15,6 +15,36 @@ import {
 import { listChapterVersions, readChapterVersion } from "../state/chapter-workspace.js";
 
 let projectRoot: string;
+
+function makeArcProvenance(chapterNumber: number, arcId = "arc-original"): ChapterArcProvenance {
+  return {
+    version: 1,
+    bookId: "harbor",
+    arcId,
+    arcUpdatedAt: "2026-08-09T00:00:00.000Z",
+    arcTitle: "Original Arc",
+    chapterNumber,
+    episodeRole: "promise",
+    openingState: "The harbor is closed.",
+    promise: "Find the witness.",
+    goal: "Reach the witness.",
+    obstacle: "The guards block the road.",
+    pressure: "Dawn approaches.",
+    turn: "The witness has fled.",
+    payoff: "A receipt remains.",
+    irreversibleChange: "The guards see the hero.",
+    nextHook: "Who warned the witness?",
+    beats: ["Follow the receipt."],
+    endingHook: "The witness calls.",
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+  };
+}
 
 beforeAll(async () => {
   projectRoot = await mkdtemp(join(tmpdir(), "inkos-edit-controller-"));
@@ -410,6 +440,7 @@ describe("edit controller", () => {
       updatedAt: new Date().toISOString(),
       auditIssues: [],
       lengthWarnings: [],
+      arcProvenance: makeArcProvenance(2),
     }];
 
     let savedIndex: ChapterMeta[] = [...chapterIndex];
@@ -426,12 +457,14 @@ describe("edit controller", () => {
         bookId: "replacebook",
         chapterNumber: 2,
         fullText: "# 第2章 新章\n\n新正文完整替换。",
+        replacementArcProvenance: null,
       },
     );
 
     await expect(readFile(join(bookDir, "chapters", "0002_旧章.md"), "utf-8")).resolves.toContain("新正文完整替换");
     const versions = await listChapterVersions(bookDir, 2);
     expect(versions).toHaveLength(1);
+    expect(versions[0]?.arcProvenance?.arcId).toBe("arc-original");
     await expect(readChapterVersion(bookDir, 2, versions[0]!.id))
       .resolves.toContain("旧正文");
     await expect(access(join(bookDir, "story", "runtime", "chapter-0002.plan.md")).then(() => true).catch(() => false))
@@ -439,6 +472,7 @@ describe("edit controller", () => {
     await expect(readFile(join(bookDir, "story", "runtime", "chapter-0002.user-brief.md"), "utf-8"))
       .resolves.toBe("保留雨夜证词。\n");
     expect(savedIndex[0]?.status).toBe("audit-failed");
+    expect(savedIndex[0]?.arcProvenance).toBeUndefined();
     expect(savedIndex[0]?.wordCount).toBeGreaterThan(0);
     expect(savedIndex[0]?.auditIssues.at(-1)).toContain("Manual chapter replacement requires review");
     expect(result.reviewRequired).toBe(true);

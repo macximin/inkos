@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PipelineRunner, type ChapterPipelineResult } from "../pipeline/runner.js";
+import {
+  PipelineRunner,
+  StoryRailProductionGateError,
+  type ChapterPipelineResult,
+} from "../pipeline/runner.js";
 
 function chapter(
   chapterNumber: number,
@@ -88,6 +92,37 @@ describe("PipelineRunner.writeChapters", () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.status).toBe("audit-failed");
     expect(writeLocked).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("returns completed batch work when the active Arc endpoint gate is reached", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-batch-"));
+    roots.push(root);
+    const runner = new PipelineRunner({
+      client: {} as never,
+      model: "test-model",
+      projectRoot: root,
+    });
+    const release = vi.fn(async () => undefined);
+    const writeLocked = vi.fn()
+      .mockResolvedValueOnce(chapter(12))
+      .mockRejectedValueOnce(new StoryRailProductionGateError(
+        "active-arc-endpoint",
+        "Arc endpoint Chapter 12 requires review.",
+      ));
+    const onChapterComplete = vi.fn();
+    const internals = runner as unknown as {
+      state: { acquireBookLock: () => Promise<typeof release> };
+      _writeNextChapterLocked: typeof writeLocked;
+    };
+    internals.state = { acquireBookLock: async () => release };
+    internals._writeNextChapterLocked = writeLocked;
+
+    const results = await runner.writeChapters("demo-book", 3, { onChapterComplete });
+
+    expect(results.map((result) => result.chapterNumber)).toEqual([12]);
+    expect(writeLocked).toHaveBeenCalledTimes(2);
+    expect(onChapterComplete).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
   });
 

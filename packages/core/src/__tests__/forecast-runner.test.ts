@@ -9,6 +9,11 @@ import {
   selectNarrativeBranch,
 } from "../forecast/runner.js";
 import type { AgentContext } from "../agents/base.js";
+import { ArcStore } from "../arc/store.js";
+import type { ArcPacket } from "../arc/schema.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import type { StoryRailPlanInput } from "../arc/rail-schema.js";
+import { StateManager } from "../state/manager.js";
 import {
   makeModelBranch,
   snapshotCanonicalFiles,
@@ -56,6 +61,7 @@ describe("narrative forecast runner", () => {
     root = await mkdtemp(join(tmpdir(), "inkos-forecast-run-"));
     bookDir = join(root, "books", BOOK_ID);
     await writeForecastFixtureBook(bookDir);
+    await writeFile(join(bookDir, "book.json"), JSON.stringify(makeRunnerBookConfig()), "utf-8");
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -170,7 +176,7 @@ describe("narrative forecast runner", () => {
     expect(result.stale).toBe(true);
   });
 
-  it("selects a branch by writing only selected-branch-plan.md", async () => {
+  it("selects a fresh branch into an active editable Arc without changing canonical files", async () => {
     stubAgent();
     await createNarrativeForecast(createOptions());
     const forecastJsonPath = join(bookDir, "story", "runtime", "narrative-forecasts", FIXED_ID, "forecast.json");
@@ -186,11 +192,261 @@ describe("narrative forecast runner", () => {
     });
 
     expect(result.branch.branchId).toBe("branch-2");
+    expect(result.arcActivated).toBe(true);
+    expect(result.arc).toMatchObject({ status: "draft", episodeCount: 2, chapterNumbers: [13, 14] });
     const plan = await readFile(result.planPath, "utf-8");
     expect(plan).toContain("拒绝提议");
     expect(plan).not.toContain("branch-1");
     expect(await readFile(forecastJsonPath, "utf-8")).toBe(forecastJsonBefore);
     expect(await snapshotCanonicalFiles(bookDir)).toEqual(canonBefore);
+  });
+
+  it("rejects selection while the Book is busy and releases its lock after a successful selection", async () => {
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+    const state = new StateManager(root);
+    const releaseCompetingLock = await state.acquireBookLock(BOOK_ID);
+
+    try {
+      await expect(selectNarrativeBranch({
+        projectRoot: root,
+        bookId: BOOK_ID,
+        forecastId: FIXED_ID,
+        branchId: "branch-1",
+        determinism: { now: FIXED_NOW, idFactory: () => "arc-lock-test" },
+      })).rejects.toMatchObject({ code: "BOOK_BUSY" });
+      expect(await exists(join(
+        bookDir, "story", "runtime", "narrative-forecasts", FIXED_ID, "selected-branch-plan.md",
+      ))).toBe(false);
+    } finally {
+      await releaseCompetingLock();
+    }
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW, idFactory: () => "arc-lock-test" },
+    });
+    expect(result.arcActivated).toBe(true);
+
+    const releaseAfterSelection = await new StateManager(root).acquireBookLock(BOOK_ID);
+    await releaseAfterSelection();
+  });
+
+  it("releases the Book lock when Arc creation fails", async () => {
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+    vi.spyOn(ArcStore.prototype, "allocateArcId").mockRejectedValueOnce(new Error("forced Arc allocation failure"));
+
+    await expect(selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    })).rejects.toThrow("forced Arc allocation failure");
+
+    const releaseAfterFailure = await new StateManager(root).acquireBookLock(BOOK_ID);
+    await releaseAfterFailure();
+  });
+
+  it("binds a fresh selected Arc to the existing unbound active B without changing route status", async () => {
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput());
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-2",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.stale).toBe(false);
+    expect(result.arcActivated).toBe(true);
+    expect(result.arc).toBeDefined();
+    expect(result.railBinding).toEqual({ bId: "B001", changed: true });
+    expect(result.railWarning).toBeUndefined();
+    const rail = await railStore.load();
+    expect(rail?.arcRouteRail.entries[0]).toMatchObject({
+      bId: "B001",
+      status: "active",
+      arcId: result.arc!.id,
+    });
+  });
+
+  it("commits a fresh B binding and active Arc pointer without the split setActive path", async () => {
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput());
+    const splitActivation = vi.spyOn(ArcStore.prototype, "setActive")
+      .mockRejectedValue(new Error("split activation must not run"));
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.arcActivated).toBe(true);
+    expect(result.railBinding).toMatchObject({ bId: "B001", changed: true });
+    expect(splitActivation).not.toHaveBeenCalled();
+    expect((await railStore.load())?.arcRouteRail.entries[0]?.arcId).toBe(result.arc?.id);
+    expect((await new ArcStore(bookDir).getActive())?.id).toBe(result.arc?.id);
+  });
+
+  it("activates a fresh Arc when the ready active B is already compatibly bound", async () => {
+    const expectedArcId = "arc-20260715000000";
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput({ boundArcId: expectedArcId }));
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-2",
+      determinism: { now: FIXED_NOW, idFactory: () => expectedArcId },
+    });
+
+    expect(result.arc?.id).toBe(expectedArcId);
+    expect(result.arcActivated).toBe(true);
+    expect(result.railBinding).toEqual({ bId: "B001", changed: false });
+    expect((await new ArcStore(bookDir).getActive())?.id).toBe(expectedArcId);
+  });
+
+  it("saves the new draft but preserves the current active Arc on a ready B-Rail conflict", async () => {
+    const arcStore = new ArcStore(bookDir, { now: FIXED_NOW });
+    const previousArc = await arcStore.save(makeRunnerArc("arc-existing-active"));
+    await arcStore.setActive(previousArc.id);
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput({ boundArcId: previousArc.id }));
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-2",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.arc?.id).toMatch(/^arc-20260715000000-/);
+    expect(result.arcActivated).toBe(false);
+    expect(result.railBinding).toBeUndefined();
+    expect(result.railWarning).toContain("was saved but story/arcs/active.json was not changed");
+    expect((await arcStore.getActive())?.id).toBe(previousArc.id);
+    await expect(arcStore.load(result.arc!.id)).resolves.toMatchObject({ status: "draft" });
+  });
+
+  it("saves the new draft but preserves the current active Arc when a draft B-Rail is already bound", async () => {
+    const arcStore = new ArcStore(bookDir, { now: FIXED_NOW });
+    const previousArc = await arcStore.save(makeRunnerArc("arc-draft-binding"));
+    await arcStore.setActive(previousArc.id);
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput({
+      boundArcId: previousArc.id,
+      readiness: "draft",
+    }));
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.arcActivated).toBe(false);
+    expect(result.railBinding).toBeUndefined();
+    expect(result.railWarning).toContain("was saved but story/arcs/active.json was not changed");
+    expect((await arcStore.getActive())?.id).toBe(previousArc.id);
+    expect((await railStore.load())?.arcRouteRail.entries[0]?.arcId).toBe(previousArc.id);
+    await expect(arcStore.load(result.arc!.id)).resolves.toMatchObject({ status: "draft" });
+  });
+
+  it("fails open and activates when the optional Rail file is corrupt", async () => {
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await mkdir(railStore.railsDir, { recursive: true });
+    await writeFile(railStore.planPath, "{ corrupt-rail", "utf-8");
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.arcActivated).toBe(true);
+    expect(result.railBinding).toBeUndefined();
+    expect(result.railWarning).toContain("failed and was ignored");
+    expect((await new ArcStore(bookDir).getActive())?.id).toBe(result.arc?.id);
+  });
+
+  it("fails open and activates when plan.json belongs to another book", async () => {
+    const arcStore = new ArcStore(bookDir, { now: FIXED_NOW });
+    const previousArc = await arcStore.save(makeRunnerArc("arc-cross-book-binding"));
+    await arcStore.setActive(previousArc.id);
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput({ boundArcId: previousArc.id }));
+    const mismatchedPlan = JSON.parse(await readFile(railStore.planPath, "utf-8")) as Record<string, unknown>;
+    await writeFile(
+      railStore.planPath,
+      `${JSON.stringify({ ...mismatchedPlan, bookId: "other-book" }, null, 2)}\n`,
+      "utf-8",
+    );
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.arcActivated).toBe(true);
+    expect(result.railBinding).toBeUndefined();
+    expect(result.railWarning).toContain("belongs to book");
+    expect((await arcStore.getActive())?.id).toBe(result.arc?.id);
+  });
+
+  it("does not bind or otherwise mutate the Rail when selecting a stale forecast", async () => {
+    const railStore = new StoryRailStore(bookDir, { now: FIXED_NOW });
+    await railStore.replace(BOOK_ID, makeRunnerRailInput());
+    stubAgent();
+    await createNarrativeForecast(createOptions());
+    const railBefore = await readFile(railStore.planPath, "utf-8");
+    await writeFile(join(bookDir, "chapters", "0003_反击.md"), "第三章正文", "utf-8");
+
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(result.stale).toBe(true);
+    expect(result.arcActivated).toBe(false);
+    expect(result.arc).toBeUndefined();
+    expect(result.railBinding).toBeUndefined();
+    expect(await readFile(railStore.planPath, "utf-8")).toBe(railBefore);
   });
 
   it("refuses to select a branch that does not exist", async () => {
@@ -231,3 +487,99 @@ describe("narrative forecast runner", () => {
     await expect(createNarrativeForecast({ ...createOptions(), bookId: "nope" })).rejects.toThrow(/nope/);
   });
 });
+
+function makeRunnerBookConfig(targetChapters = 200) {
+  return {
+    id: BOOK_ID,
+    title: "示例书",
+    platform: "other",
+    genre: "urban",
+    status: "active",
+    targetChapters,
+    chapterWordCount: 3000,
+    language: "zh",
+    createdAt: "2026-07-15T00:00:00.000Z",
+    updatedAt: "2026-07-15T00:00:00.000Z",
+  } as const;
+}
+
+function makeRunnerArc(id: string): ArcPacket {
+  return {
+    version: 1,
+    id,
+    bookId: BOOK_ID,
+    title: "기존 활성 Arc",
+    status: "draft",
+    episodeCount: 1,
+    chapterNumbers: [3],
+    openingState: "기존 경로가 진행 중이다.",
+    promise: "기존 약속을 결산한다.",
+    goal: "현재 증거를 지킨다.",
+    obstacle: "상대가 증거를 노린다.",
+    pressure: "시간이 부족하다.",
+    turn: "동맹이 개입한다.",
+    payoff: "증거를 보존한다.",
+    irreversibleChange: "상대가 추적을 시작한다.",
+    nextHook: "다음 증인은 누구인가?",
+    episodeBeats: [{
+      chapterNumber: 3,
+      role: "payoff",
+      beats: ["기존 증거를 지킨다."],
+      endingHook: "새 증인이 등장한다.",
+    }],
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+    createdAt: "2026-07-15T00:00:00.000Z",
+    updatedAt: "2026-07-15T00:00:00.000Z",
+  };
+}
+
+function makeRunnerRailInput(options: {
+  readonly boundArcId?: string;
+  readonly readiness?: "draft" | "ready";
+  readonly targetChapters?: number;
+} = {}): StoryRailPlanInput {
+  const readiness = options.readiness ?? "ready";
+  const targetChapters = options.targetChapters ?? 200;
+  const routeEntryCount = Math.ceil(targetChapters / 3);
+  return {
+    anchorRail: {
+      status: readiness,
+      anchors: Array.from({ length: 6 }, (_, index) => ({
+        id: `A${String(index + 1).padStart(2, "0")}`,
+        routeOrder: (index + 1) * 100,
+        title: `장기 도착점 ${index + 1}`,
+        detailLevel: index < 2 ? "compound" as const : "sparse" as const,
+        state: "planned" as const,
+        entryState: `진입 상태 ${index + 1}`,
+        trigger: `트리거 ${index + 1}`,
+        irreversibleChange: `비가역 변화 ${index + 1}`,
+        humanAftermath: `인간 후폭풍 ${index + 1}`,
+        readerDebt: `독자 부채 ${index + 1}`,
+        payoffAxis: `보상 축 ${index + 1}`,
+        nextPressure: `다음 압력 ${index + 1}`,
+      })),
+    },
+    arcRouteRail: {
+      status: readiness,
+      entries: Array.from({ length: routeEntryCount }, (_, index) => ({
+        bId: `B${String(index + 1).padStart(3, "0")}`,
+        routeOrder: (index + 1) * 100,
+        status: index === 0 ? "active" as const
+          : index === 1 ? "provisional" as const
+            : "hypothesis" as const,
+        targetAnchorId: `A${String(Math.min(index + 1, 6)).padStart(2, "0")}`,
+        ...(index === 0 && options.boundArcId ? { arcId: options.boundArcId } : {}),
+        narrativeFunction: `내구 서사 기능 ${index + 1}`,
+        payoffAxis: `내구 보상 축 ${index + 1}`,
+        carriedReaderDebt: `이월 독자 부채 ${index + 1}`,
+        contrastRequirement: `직전 Arc와 다른 결산 ${index + 1}`,
+      })),
+    },
+  };
+}

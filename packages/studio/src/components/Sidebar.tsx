@@ -421,7 +421,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                         className="w-full flex items-center gap-2 pl-9 pr-2 py-1.5 text-[13px] text-muted-foreground/50 hover:text-foreground transition-colors"
                       >
                         <Plus size={12} />
-                        <span>{tr("新建会话", "New session")}</span>
+                        <span>{tr("新建会话", "New session", "새 대화")}</span>
                       </button>
                     </div>
                   </Collapse>
@@ -457,7 +457,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
               ))}
               {films.length === 0 && (
                 <div className="px-3 py-6 text-xs text-muted-foreground/50 italic text-center">
-                  {tr("还没有互动影游项目", "No interactive film projects yet")}
+                  {tr("还没有互动影游项目", "No interactive film projects yet", "아직 인터랙티브 영상 프로젝트가 없습니다")}
                 </div>
               )}
             </div>
@@ -546,7 +546,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                     className="w-full flex items-center gap-2 pl-2 pr-2 py-1.5 text-[13px] text-muted-foreground/50 hover:text-foreground transition-colors"
                   >
                     <Plus size={12} />
-                    <span>{tr("新建会话", "New session")}</span>
+                    <span>{tr("新建会话", "New session", "새 대화")}</span>
                   </button>
                 </div>
               </Collapse>
@@ -724,7 +724,7 @@ function getSessionLabel(session: { sessionId: string; title: string | null; mes
     const oneLine = firstUserMsg.replace(/\s+/g, " ");
     return oneLine.length > 20 ? `${oneLine.slice(0, 20)}…` : oneLine;
   }
-  return tr("新会话", "New session");
+  return tr("新会话", "New session", "새 대화");
 }
 
 function formatRelativeTime(sessionId: string): string {
@@ -732,14 +732,14 @@ function formatRelativeTime(sessionId: string): string {
   if (!Number.isFinite(rawTs)) return "";
   const diff = Date.now() - rawTs;
   const minutes = Math.floor(diff / 60_000);
-  if (minutes < 1) return tr("刚刚", "just now");
-  if (minutes < 60) return tr(`${minutes} 分钟`, `${minutes}m`);
+  if (minutes < 1) return tr("刚刚", "just now", "방금");
+  if (minutes < 60) return tr(`${minutes} 分钟`, `${minutes}m`, `${minutes}분`);
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return tr(`${hours} 小时`, `${hours}h`);
+  if (hours < 24) return tr(`${hours} 小时`, `${hours}h`, `${hours}시간`);
   const days = Math.floor(hours / 24);
-  if (days < 30) return tr(`${days} 天`, `${days}d`);
+  if (days < 30) return tr(`${days} 天`, `${days}d`, `${days}일`);
   const months = Math.floor(days / 30);
-  return tr(`${months} 个月`, `${months}mo`);
+  return tr(`${months} 个月`, `${months}mo`, `${months}개월`);
 }
 
 // Smooth collapse via grid-template-rows 0fr→1fr (content-height-agnostic, no JS measuring).

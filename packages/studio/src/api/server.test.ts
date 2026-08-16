@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadStudioTaskSnapshot, saveStudioTaskSnapshot, studioTaskSnapshotPath } from "./task-store.js";
 
@@ -24,6 +24,9 @@ const deleteLatestChapterMock = vi.fn();
 const saveChapterIndexMock = vi.fn();
 const loadChapterIndexMock = vi.fn();
 const loadBookConfigMock = vi.fn();
+const saveBookConfigMock = vi.fn();
+const releaseBookLockMock = vi.fn<() => Promise<void>>();
+const acquireBookLockMock = vi.fn<(bookId: string) => Promise<() => Promise<void>>>();
 const createLLMClientMock = vi.fn(() => ({}));
 const chatCompletionMock = vi.fn();
 const loadProjectConfigMock = vi.fn();
@@ -141,6 +144,15 @@ const getAllEndpointsMock = vi.fn(() => endpointMocks);
 const probeModelsFromUpstreamMock = vi.fn(async () => [
   { id: "custom-model", name: "custom-model", contextWindow: 0 },
 ]);
+const probeCodexCliMock = vi.fn(async (): Promise<{
+  installed: boolean;
+  loggedIn: boolean;
+  authMode?: "chatgpt" | "api-key" | "unknown";
+}> => ({
+  installed: true,
+  loggedIn: true,
+  authMode: "chatgpt",
+}));
 
 const logger = {
   child: () => logger,
@@ -148,6 +160,212 @@ const logger = {
   warn: vi.fn(),
   error: vi.fn(),
 };
+
+function makeArcProvenance(chapterNumber: number, arcId: string) {
+  return {
+    version: 1,
+    bookId: "demo-book",
+    arcId,
+    arcUpdatedAt: "2026-08-09T00:00:00.000Z",
+    arcTitle: `Arc ${arcId}`,
+    chapterNumber,
+    episodeRole: "turn",
+    openingState: "证人仍在港口。",
+    promise: "找到证人。",
+    goal: "拿到账页。",
+    obstacle: "守卫封锁港口。",
+    pressure: "天亮前必须离开。",
+    turn: "证人交出假账页。",
+    payoff: "水印揭穿假账页。",
+    irreversibleChange: "守卫认出主角。",
+    nextHook: "谁替换了账页？",
+    beats: ["用水印核对账页。"],
+    endingHook: "真账页已经被送走。",
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+  };
+}
+
+function makeValidStoryRailInput() {
+  const anchors = Array.from({ length: 6 }, (_, index) => {
+    const number = index + 1;
+    return {
+      id: `A${String(number).padStart(2, "0")}`,
+      routeOrder: number * 100,
+      title: `Anchor ${number}`,
+      detailLevel: number <= 2 ? "compound" : "sparse",
+      state: "planned",
+      entryState: `Entry ${number}`,
+      trigger: `Trigger ${number}`,
+      irreversibleChange: `Change ${number}`,
+      humanAftermath: `Aftermath ${number}`,
+      readerDebt: `Debt ${number}`,
+      payoffAxis: `Payoff ${number}`,
+      nextPressure: `Pressure ${number}`,
+    };
+  });
+  return {
+    anchorRail: {
+      status: "ready",
+      anchors,
+    },
+    arcRouteRail: {
+      status: "ready",
+      // The fixture Book targets 100 chapters. A ready route therefore needs
+      // at least ceil(100 / 3) = 34 live B slots, not merely one per Anchor.
+      entries: Array.from({ length: 34 }, (_, index) => ({
+        bId: `B${String(index + 1).padStart(3, "0")}`,
+        routeOrder: (index + 1) * 100,
+        status: index === 0 ? "active" : index === 1 ? "provisional" : "hypothesis",
+        targetAnchorId: anchors[Math.min(
+          anchors.length - 1,
+          Math.floor((index * anchors.length) / 34),
+        )]!.id,
+        narrativeFunction: `Function ${index + 1}`,
+        payoffAxis: `Payoff ${index + 1}`,
+        carriedReaderDebt: `Debt ${index + 1}`,
+        contrastRequirement: `Contrast ${index + 1}`,
+      })),
+    },
+  };
+}
+
+async function installStoryRailReflowFixture(root: string, bookId = "rail-book") {
+  await writeCompleteBookFixture(root, bookId, "Rail Book");
+  const input = makeValidStoryRailInput();
+  const plan = {
+    version: 1,
+    bookId,
+    ...input,
+    arcRouteRail: {
+      ...input.arcRouteRail,
+      entries: input.arcRouteRail.entries.map((entry, index) => index === 0
+        ? { ...entry, arcId: "arc-active" }
+        : entry),
+    },
+    routeCapacity: { targetChaptersSnapshot: 100, arcEpisodeCap: 3 },
+    createdAt: "2026-08-09T10:00:00.000Z",
+    updatedAt: "2026-08-09T10:00:00.000Z",
+  };
+  const arc = {
+    version: 1,
+    id: "arc-active",
+    bookId,
+    title: "첫 계약",
+    status: "ready",
+    episodeCount: 2,
+    chapterNumbers: [1, 2],
+    openingState: "빚 독촉이 시작됐다.",
+    promise: "첫 계약을 닫는다.",
+    goal: "고객을 확보한다.",
+    obstacle: "상대가 조건을 숨긴다.",
+    pressure: "오늘 안에 결정해야 한다.",
+    turn: "주인공이 비용을 감수한다.",
+    payoff: "첫 계약이 체결된다.",
+    irreversibleChange: "첫 고객 관계가 생긴다.",
+    nextHook: "더 큰 주문이 들어온다.",
+    episodeBeats: [
+      { chapterNumber: 1, role: "promise", beats: ["계약의 조건을 드러낸다."], endingHook: "조건이 바뀐다." },
+      { chapterNumber: 2, role: "payoff", beats: ["계약을 체결한다."], endingHook: "더 큰 주문이 온다." },
+    ],
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+    createdAt: "2026-08-09T09:00:00.000Z",
+    updatedAt: "2026-08-09T09:00:00.000Z",
+  };
+  const bookDir = join(root, "books", bookId);
+  await mkdir(join(bookDir, "story", "rails"), { recursive: true });
+  await mkdir(join(bookDir, "story", "arcs"), { recursive: true });
+  await mkdir(join(bookDir, "story", "state"), { recursive: true });
+  await writeFile(join(bookDir, "story", "rails", "plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  await writeFile(join(bookDir, "story", "arcs", `${arc.id}.json`), `${JSON.stringify(arc, null, 2)}\n`, "utf8");
+  await writeFile(join(bookDir, "story", "arcs", "active.json"), JSON.stringify({
+    arcId: arc.id,
+    updatedAt: "2026-08-09T10:00:00.000Z",
+  }), "utf8");
+  await writeFile(join(bookDir, "story", "state", "manifest.json"), JSON.stringify({
+    schemaVersion: 2,
+    language: "en",
+    lastAppliedChapter: 2,
+    projectionVersion: 1,
+    migrationWarnings: [],
+  }), "utf8");
+
+  const activeB = plan.arcRouteRail.entries[0]!;
+  const nextB = plan.arcRouteRail.entries[1]!;
+  const anchor = plan.anchorRail.anchors[0]!;
+  const chapters = [1, 2].map((number) => ({
+    number,
+    title: `Chapter ${number}`,
+    status: number === 1 ? "approved" as const : "ready-for-review" as const,
+    wordCount: 2200,
+    createdAt: `2026-08-09T09:0${number}:00.000Z`,
+    updatedAt: `2026-08-09T10:0${number}:00.000Z`,
+    auditIssues: [],
+    lengthWarnings: [],
+    arcProvenance: {
+      ...makeArcProvenance(number, arc.id),
+      bookId,
+      arcUpdatedAt: arc.updatedAt,
+      arcTitle: arc.title,
+      chapterNumber: number,
+      storyRail: {
+        planUpdatedAt: plan.updatedAt,
+        anchor,
+        activeB: {
+          bId: activeB.bId,
+          routeOrder: activeB.routeOrder,
+          status: "active" as const,
+          targetAnchorId: activeB.targetAnchorId,
+          narrativeFunction: activeB.narrativeFunction,
+          payoffAxis: activeB.payoffAxis,
+          carriedReaderDebt: activeB.carriedReaderDebt,
+          contrastRequirement: activeB.contrastRequirement,
+        },
+        nextB: {
+          bId: nextB.bId,
+          routeOrder: nextB.routeOrder,
+          status: "provisional" as const,
+          targetAnchorId: nextB.targetAnchorId,
+          narrativeFunction: nextB.narrativeFunction,
+          payoffAxis: nextB.payoffAxis,
+          carriedReaderDebt: nextB.carriedReaderDebt,
+          contrastRequirement: nextB.contrastRequirement,
+        },
+      },
+    },
+  }));
+  const { writeChapterTruthReceipt } = await import("@actalk/inkos-core");
+  await mkdir(join(bookDir, "chapters"), { recursive: true });
+  for (const chapter of chapters) {
+    await writeFile(
+      join(bookDir, "chapters", `${String(chapter.number).padStart(4, "0")}_Chapter_${chapter.number}.md`),
+      `# Chapter ${chapter.number}\n\nSettled content ${chapter.number}.`,
+      "utf8",
+    );
+    const snapshotStateDir = join(bookDir, "story", "snapshots", String(chapter.number), "state");
+    await mkdir(snapshotStateDir, { recursive: true });
+    await writeFile(join(snapshotStateDir, "manifest.json"), JSON.stringify({
+      schemaVersion: 2,
+      language: "en",
+      lastAppliedChapter: chapter.number,
+      projectionVersion: 1,
+      migrationWarnings: [],
+    }), "utf8");
+    await writeChapterTruthReceipt(bookDir, bookId, chapter as never, () => new Date("2026-08-09T10:10:00.000Z"));
+  }
+  return { plan, arc, chapters };
+}
 
 vi.mock("@actalk/inkos-core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actalk/inkos-core")>();
@@ -175,6 +393,10 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
       return (await loadChapterIndexMock(bookId)) as [];
     }
 
+    async saveBookConfig(bookId: string, book: unknown): Promise<void> {
+      await saveBookConfigMock(bookId, book);
+    }
+
     async saveChapterIndex(bookId: string, index: unknown): Promise<void> {
       await saveChapterIndexMock(bookId, index);
     }
@@ -183,8 +405,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
       return (await rollbackToChapterMock(bookId, chapterNumber)) as number[];
     }
 
-    async acquireBookLock(): Promise<() => Promise<void>> {
-      return async () => undefined;
+    async acquireBookLock(bookId: string): Promise<() => Promise<void>> {
+      return acquireBookLockMock(bookId);
     }
 
     async getNextChapterNumber(_bookId?: string): Promise<number> {
@@ -262,6 +484,10 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
 
   return {
     StateManager: MockStateManager,
+    StoryRailStore: actual.StoryRailStore,
+    StoryRailReflowStore: actual.StoryRailReflowStore,
+    writeChapterTruthReceipt: actual.writeChapterTruthReceipt,
+    safeNonSymlinkChildPath: actual.safeNonSymlinkChildPath,
     PipelineRunner: MockPipelineRunner,
     Scheduler: MockScheduler,
     createLLMClient: createLLMClientMock,
@@ -278,11 +504,13 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     processProjectInteractionRequest: processProjectInteractionRequestMock,
     createInteractionToolsFromDeps: createInteractionToolsFromDepsMock,
     deleteLatestChapter: deleteLatestChapterMock,
+    archiveChapterVersion: actual.archiveChapterVersion,
     executeEditTransaction: actual.executeEditTransaction,
     listChapterVersions: actual.listChapterVersions,
     readChapterPlanDocument: actual.readChapterPlanDocument,
     readChapterUserBrief: actual.readChapterUserBrief,
     readChapterVersion: actual.readChapterVersion,
+    readChapterVersionMetadata: actual.readChapterVersionMetadata,
     saveChapterUserBrief: actual.saveChapterUserBrief,
     loadProjectSession: loadProjectSessionMock,
     resolveSessionActiveBook: resolveSessionActiveBookMock,
@@ -334,6 +562,9 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     listModelsForService: listModelsForServiceMock,
     getAllEndpoints: getAllEndpointsMock,
     probeModelsFromUpstream: probeModelsFromUpstreamMock,
+    probeCodexCli: probeCodexCliMock,
+    CODEX_SERVICE_ID: actual.CODEX_SERVICE_ID,
+    CODEX_DEFAULT_MODEL: actual.CODEX_DEFAULT_MODEL,
     fetchWithProxy: vi.fn((input: Parameters<typeof fetch>[0], init?: RequestInit) => fetch(input, init)),
     GLOBAL_ENV_PATH: join(tmpdir(), "inkos-global.env"),
     SessionKindSchema: actual.SessionKindSchema,
@@ -434,6 +665,11 @@ describe("createStudioServer daemon lifecycle", () => {
     saveChapterIndexMock.mockReset();
     loadChapterIndexMock.mockReset();
     loadBookConfigMock.mockReset();
+    saveBookConfigMock.mockReset();
+    releaseBookLockMock.mockReset();
+    releaseBookLockMock.mockResolvedValue(undefined);
+    acquireBookLockMock.mockReset();
+    acquireBookLockMock.mockResolvedValue(releaseBookLockMock);
     generatePlayImageMock.mockClear();
     await mkdir(join(root, "books", "demo-book", "chapters"), { recursive: true });
     await writeFile(join(root, "books", "demo-book", "chapters", "0003_Demo.md"), "# Demo\n\nBody", "utf-8");
@@ -582,6 +818,7 @@ describe("createStudioServer daemon lifecycle", () => {
       createdAt: "2026-04-12T00:00:00.000Z",
       updatedAt: "2026-04-12T00:00:00.000Z",
     });
+    saveBookConfigMock.mockResolvedValue(undefined);
     saveChapterIndexMock.mockResolvedValue(undefined);
     rollbackToChapterMock.mockResolvedValue([]);
     deleteLatestChapterMock.mockResolvedValue({
@@ -622,6 +859,8 @@ describe("createStudioServer daemon lifecycle", () => {
     listModelsForServiceMock.mockClear();
     getAllEndpointsMock.mockClear();
     probeModelsFromUpstreamMock.mockClear();
+    probeCodexCliMock.mockReset();
+    probeCodexCliMock.mockResolvedValue({ installed: true, loggedIn: true, authMode: "chatgpt" });
     // Default BookSession for agent tests
     const defaultBookSession = {
       sessionId: "agent-session-1",
@@ -715,6 +954,333 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
+  it("returns a null story rail plan when the optional file is missing", async () => {
+    await writeCompleteBookFixture(root, "rail-book", "Rail Book");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/rail-book/story-rails");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ plan: null });
+  });
+
+  it("does not create rail storage for a book that does not exist", async () => {
+    loadBookConfigMock.mockRejectedValue(new Error("not found"));
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const read = await app.request("http://localhost/api/v1/books/missing-book/story-rails");
+    expect(read.status).toBe(404);
+
+    const replace = await app.request("http://localhost/api/v1/books/missing-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(makeValidStoryRailInput()),
+    });
+    expect(replace.status).toBe(404);
+    await expect(access(join(root, "books", "missing-book"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("strictly replaces and reads back a valid story rail plan", async () => {
+    await writeCompleteBookFixture(root, "rail-book", "Rail Book");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const input = makeValidStoryRailInput();
+
+    const replace = await app.request("http://localhost/api/v1/books/rail-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    expect(replace.status).toBe(200);
+    const replaced = await replace.json() as {
+      ok: boolean;
+      plan: Record<string, unknown> & { bookId: string; version: number };
+    };
+    expect(replaced).toMatchObject({
+      ok: true,
+      plan: {
+        version: 1,
+        bookId: "rail-book",
+        anchorRail: input.anchorRail,
+        arcRouteRail: input.arcRouteRail,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+    });
+
+    const read = await app.request("http://localhost/api/v1/books/rail-book/story-rails");
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual({ plan: replaced.plan });
+
+    const persisted = JSON.parse(await readFile(
+      join(root, "books", "rail-book", "story", "rails", "plan.json"),
+      "utf-8",
+    ));
+    expect(persisted).toEqual(replaced.plan);
+  });
+
+  it("rejects invalid ready rails and broken cross-references without changing the existing plan", async () => {
+    await writeCompleteBookFixture(root, "rail-book", "Rail Book");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const validInput = makeValidStoryRailInput();
+    const planPath = join(root, "books", "rail-book", "story", "rails", "plan.json");
+
+    const initial = await app.request("http://localhost/api/v1/books/rail-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validInput),
+    });
+    expect(initial.status).toBe(200);
+    const before = await readFile(planPath, "utf-8");
+
+    const invalidReady = structuredClone(validInput);
+    invalidReady.anchorRail.anchors = invalidReady.anchorRail.anchors.slice(0, 5);
+    invalidReady.arcRouteRail.entries = invalidReady.arcRouteRail.entries.slice(0, 5);
+    const readyResponse = await app.request("http://localhost/api/v1/books/rail-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(invalidReady),
+    });
+    expect(readyResponse.status).toBe(400);
+    await expect(readyResponse.json()).resolves.toMatchObject({
+      error: {
+        code: "INVALID_STORY_RAIL_INPUT",
+        message: expect.stringContaining("requires 6 to 12 anchors"),
+      },
+    });
+    await expect(readFile(planPath, "utf-8")).resolves.toBe(before);
+
+    const invalidCrossReference = structuredClone(validInput);
+    invalidCrossReference.arcRouteRail.entries[0]!.targetAnchorId = "A99";
+    const crossReferenceResponse = await app.request("http://localhost/api/v1/books/rail-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(invalidCrossReference),
+    });
+    expect(crossReferenceResponse.status).toBe(400);
+    await expect(crossReferenceResponse.json()).resolves.toMatchObject({
+      error: {
+        code: "INVALID_STORY_RAIL_INPUT",
+        message: expect.stringContaining("does not exist"),
+      },
+    });
+    await expect(readFile(planPath, "utf-8")).resolves.toBe(before);
+  });
+
+  it("rejects a cross-book story rail plan without replacing its file", async () => {
+    await writeCompleteBookFixture(root, "rail-book", "Rail Book");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const input = makeValidStoryRailInput();
+    const planPath = join(root, "books", "rail-book", "story", "rails", "plan.json");
+
+    const initial = await app.request("http://localhost/api/v1/books/rail-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    expect(initial.status).toBe(200);
+    const existing = JSON.parse(await readFile(planPath, "utf-8")) as Record<string, unknown>;
+    existing.bookId = "other-book";
+    await writeFile(planPath, `${JSON.stringify(existing, null, 2)}\n`, "utf-8");
+    const before = await readFile(planPath, "utf-8");
+
+    const response = await app.request("http://localhost/api/v1/books/rail-book/story-rails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "INVALID_STORY_RAIL_INPUT",
+        message: expect.stringContaining("belongs to book"),
+      },
+    });
+    await expect(readFile(planPath, "utf-8")).resolves.toBe(before);
+  });
+
+  it("reports a corrupt story rail plan as a diagnosable read error", async () => {
+    await writeCompleteBookFixture(root, "rail-book", "Rail Book");
+    const railsDir = join(root, "books", "rail-book", "story", "rails");
+    await mkdir(railsDir, { recursive: true });
+    await writeFile(join(railsDir, "plan.json"), "{not-json", "utf-8");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/rail-book/story-rails");
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "INVALID_STORY_RAIL_PLAN",
+        message: expect.stringContaining("Story rail plan cannot be read"),
+      },
+    });
+  });
+
+  it("queues reflow on Arc-end approval and applies only explicit future-B decisions", async () => {
+    const fixture = await installStoryRailReflowFixture(root);
+    loadChapterIndexMock.mockResolvedValue(fixture.chapters);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const approval = await app.request("http://localhost/api/v1/books/rail-book/chapters/2/approve", {
+      method: "POST",
+    });
+    expect(approval.status).toBe(200);
+    const approvalBody = await approval.json() as any;
+    expect(approvalBody).toMatchObject({
+      ok: true,
+      status: "approved",
+      railReflow: {
+        status: "pending",
+        pending: {
+          activeB: { bId: "B001", arcId: "arc-active" },
+          endpointChapterNumber: 2,
+          actualEpisodeCount: 2,
+        },
+      },
+    });
+    expect(saveChapterIndexMock).toHaveBeenCalledWith(
+      "rail-book",
+      expect.arrayContaining([expect.objectContaining({ number: 2, status: "approved" })]),
+    );
+    const approvedIndex = saveChapterIndexMock.mock.calls.at(-1)?.[1];
+    loadChapterIndexMock.mockResolvedValue(approvedIndex);
+
+    const pendingResponse = await app.request("http://localhost/api/v1/books/rail-book/story-rails/reflow");
+    expect(pendingResponse.status).toBe(200);
+    const pendingBody = await pendingResponse.json() as any;
+    expect(pendingBody.pending.pendingId).toBe(approvalBody.railReflow.pending.pendingId);
+
+    const apply = await app.request("http://localhost/api/v1/books/rail-book/story-rails/reflow/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pendingId: pendingBody.pending.pendingId,
+        expectedPlanUpdatedAt: pendingBody.pending.expectedPlanUpdatedAt,
+        closeout: {
+          startState: "빚 독촉이 시작됐다.",
+          actualOutcome: "비용을 감수하고 첫 계약을 체결했다.",
+          irreversibleSettlement: "첫 고객과 지급 이력이 생겼다.",
+          humanRemainder: "가족은 다음 주문까지 주인공이 책임지길 기대한다.",
+          readerDebt: {
+            paid: ["첫 계약 체결"],
+            carried: ["확장 가능성"],
+            retired: [],
+            emerged: ["더 큰 주문의 발신자"],
+          },
+          emergence: ["첫 고객이 더 큰 구매자를 소개했다."],
+          anchorImpact: {
+            anchorId: "A01",
+            decision: "keep",
+            reason: "현재 A01 방향을 바꾸지 않고 진전시켰다.",
+          },
+          stateThroughChapter: 2,
+        },
+        nextActiveBId: "B002",
+        nextProvisionalBId: "B003",
+        decisions: fixture.plan.arcRouteRail.entries.slice(1).map((entry) => ({
+          bId: entry.bId,
+          action: "keep",
+        })),
+        newEntries: [],
+      }),
+    });
+    expect(apply.status).toBe(200);
+    const applyBody = await apply.json();
+    expect(applyBody).toMatchObject({
+      status: "applied",
+      receipt: {
+        closedB: { bId: "B001", arcId: "arc-active", actualEpisodeCount: 2 },
+        nextActiveBId: "B002",
+      },
+    });
+    expect(applyBody.plan.arcRouteRail.entries.slice(0, 3)).toEqual([
+      expect.objectContaining({ bId: "B001", status: "closed", actualEpisodeCount: 2 }),
+      expect.objectContaining({ bId: "B002", status: "active" }),
+      expect.objectContaining({ bId: "B003", status: "provisional" }),
+    ]);
+    await expect(access(join(root, "books", "rail-book", "story", "arcs", "active.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("explicitly discards a pending reflow through the Studio API without changing Rail or Arc truth", async () => {
+    const fixture = await installStoryRailReflowFixture(root);
+    const approved = fixture.chapters.map((chapter) => ({ ...chapter, status: "approved" as const }));
+    loadChapterIndexMock.mockResolvedValue(approved);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const planPath = join(root, "books", "rail-book", "story", "rails", "plan.json");
+    const arcPath = join(root, "books", "rail-book", "story", "arcs", "arc-active.json");
+    const planBefore = await readFile(planPath, "utf8");
+    const arcBefore = await readFile(arcPath, "utf8");
+    const prepared = await app.request("http://localhost/api/v1/books/rail-book/story-rails/reflow/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(prepared.status).toBe(200);
+    const pending = (await prepared.json() as any).pending;
+
+    const discarded = await app.request("http://localhost/api/v1/books/rail-book/story-rails/reflow/discard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pendingId: pending.pendingId,
+        expectedPlanUpdatedAt: pending.expectedPlanUpdatedAt,
+        reason: "Direct Chapter production continued.",
+      }),
+    });
+
+    expect(discarded.status).toBe(200);
+    await expect(discarded.json()).resolves.toMatchObject({
+      status: "discarded",
+      receipt: { pending: { pendingId: pending.pendingId } },
+    });
+    const pendingAfterDiscard = await app.request("http://localhost/api/v1/books/rail-book/story-rails/reflow");
+    await expect(pendingAfterDiscard.json()).resolves.toEqual({ pending: null });
+    expect(await readFile(planPath, "utf8")).toBe(planBefore);
+    expect(await readFile(arcPath, "utf8")).toBe(arcBefore);
+  });
+
+  it("keeps chapter approval successful when optional reflow preparation is damaged", async () => {
+    await writeCompleteBookFixture(root, "rail-book", "Rail Book");
+    const railsDir = join(root, "books", "rail-book", "story", "rails");
+    await mkdir(railsDir, { recursive: true });
+    await writeFile(join(railsDir, "plan.json"), "{broken", "utf8");
+    loadChapterIndexMock.mockResolvedValue([{
+      number: 1,
+      title: "Chapter 1",
+      status: "ready-for-review",
+      wordCount: 100,
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/rail-book/chapters/1/approve", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: "approved",
+      railReflowWarning: expect.stringContaining("Story rail plan cannot be read"),
+    });
+    expect(saveChapterIndexMock).toHaveBeenCalled();
+  });
+
   it("allows reading and updating fixed control truth files", async () => {
     const bookDir = join(root, "books", "demo-book");
     const storyDir = join(bookDir, "story");
@@ -734,6 +1300,11 @@ describe("createStudioServer daemon lifecycle", () => {
       content: "# Author Intent\n\nStay cold.\n",
     });
 
+    releaseBookLockMock.mockImplementationOnce(async () => {
+      await expect(readFile(join(storyDir, "current_focus.md"), "utf-8")).resolves.toBe(
+        "# Current Focus\n\nPull focus back to the harbor trail.\n",
+      );
+    });
     const updateCurrentFocus = await app.request("http://localhost/api/v1/books/demo-book/truth/current_focus.md", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -744,6 +1315,217 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(readFile(join(storyDir, "current_focus.md"), "utf-8")).resolves.toBe(
       "# Current Focus\n\nPull focus back to the harbor trail.\n",
     );
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+  });
+
+  it("releases the Book lock when a truth-file PUT fails before writing", async () => {
+    const truthPath = join(root, "books", "demo-book", "story", "current_focus.md");
+    await mkdir(dirname(truthPath), { recursive: true });
+    await writeFile(truthPath, "original truth\n", "utf-8");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book/truth/current_focus.md", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{not-json",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(readFile(truthPath, "utf-8")).resolves.toBe("original truth\n");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a truth file unchanged when its Book lock is busy", async () => {
+    const truthPath = join(root, "books", "demo-book", "story", "current_focus.md");
+    await mkdir(dirname(truthPath), { recursive: true });
+    await writeFile(truthPath, "original truth\n", "utf-8");
+    acquireBookLockMock.mockRejectedValueOnce(new Error("Book demo-book is locked by an active InkOS write"));
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book/truth/current_focus.md", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "replacement truth\n" }),
+    });
+
+    expect(response.status).toBe(500);
+    await expect(readFile(truthPath, "utf-8")).resolves.toBe("original truth\n");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects truth PUT symlinks into Rail, outside-project, or another Book before locking", async () => {
+    const bookDir = join(root, "books", "demo-book");
+    const aliasDir = join(bookDir, "story", "roles", "major");
+    const aliasPath = join(aliasDir, "Alias.md");
+    const planPath = join(bookDir, "story", "rails", "plan.json");
+    const outsidePath = join(root, "outside-truth.md");
+    const otherPath = join(root, "books", "other-book", "story", "target.md");
+    await Promise.all([
+      mkdir(aliasDir, { recursive: true }),
+      mkdir(dirname(planPath), { recursive: true }),
+      mkdir(dirname(otherPath), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(planPath, "rail-plan-protected", "utf-8"),
+      writeFile(outsidePath, "outside-protected", "utf-8"),
+      writeFile(otherPath, "other-book-protected", "utf-8"),
+    ]);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    for (const [target, expected] of [
+      ["../../rails/plan.json", "rail-plan-protected"],
+      ["../../../../../outside-truth.md", "outside-protected"],
+      ["../../../../other-book/story/target.md", "other-book-protected"],
+    ] as const) {
+      await symlink(target, aliasPath);
+      const response = await app.request(
+        "http://localhost/api/v1/books/demo-book/truth/roles/major/Alias.md",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: "must-not-overwrite" }),
+        },
+      );
+      expect(response.status).toBe(400);
+      await expect(readFile(aliasPath, "utf-8")).resolves.toBe(expected);
+      await rm(aliasPath);
+    }
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes an existing Book under its Book lock and releases afterward", async () => {
+    const bookDir = join(root, "books", "demo-book");
+    await writeFile(join(bookDir, "delete-sentinel.txt"), "present\n", "utf-8");
+    releaseBookLockMock.mockImplementationOnce(async () => {
+      await expect(access(bookDir)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book", {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, bookId: "demo-book" });
+    await expect(access(bookDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(loadBookConfigMock).toHaveBeenCalledWith("demo-book");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(loadBookConfigMock.mock.invocationCallOrder.at(-1)!)
+      .toBeLessThan(acquireBookLockMock.mock.invocationCallOrder[0]!);
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not acquire a Book lock or create a directory when Book delete cannot find the Book", async () => {
+    loadBookConfigMock.mockRejectedValueOnce(new Error("not found"));
+    const missingBookDir = join(root, "books", "missing-book");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/missing-book", {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: 'Book "missing-book" not found' });
+    await expect(access(missingBookDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(loadBookConfigMock).toHaveBeenCalledWith("missing-book");
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing Book directory unchanged when delete finds its Book lock busy", async () => {
+    const bookDir = join(root, "books", "demo-book");
+    const sentinelPath = join(bookDir, "delete-sentinel.txt");
+    await writeFile(sentinelPath, "present\n", "utf-8");
+    acquireBookLockMock.mockRejectedValueOnce(new Error("Book demo-book is locked by an active InkOS write"));
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book", {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(readFile(sentinelPath, "utf-8")).resolves.toBe("present\n");
+    expect(loadBookConfigMock).toHaveBeenCalledWith("demo-book");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(loadBookConfigMock.mock.invocationCallOrder.at(-1)!)
+      .toBeLessThan(acquireBookLockMock.mock.invocationCallOrder[0]!);
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+  });
+
+  it("releases the Book lock when deleting the Book directory fails", async () => {
+    const booksPath = join(root, "books");
+    await rm(booksPath, { recursive: true, force: true });
+    await writeFile(booksPath, "directory blocker\n", "utf-8");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book", {
+      method: "DELETE",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(readFile(booksPath, "utf-8")).resolves.toBe("directory blocker\n");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+  });
+
+  it("reloads and updates Book target capacity inside the Book lock", async () => {
+    loadBookConfigMock
+      .mockResolvedValueOnce({
+        id: "demo-book",
+        title: "Demo Book",
+        platform: "qidian",
+        genre: "xuanhuan",
+        status: "active",
+        targetChapters: 100,
+        chapterWordCount: 3000,
+        createdAt: "2026-04-12T00:00:00.000Z",
+        updatedAt: "2026-04-12T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        id: "demo-book",
+        title: "Concurrent Title",
+        platform: "qidian",
+        genre: "xuanhuan",
+        status: "active",
+        targetChapters: 100,
+        chapterWordCount: 3000,
+        createdAt: "2026-04-12T00:00:00.000Z",
+        updatedAt: "2026-08-09T10:00:00.000Z",
+      });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetChapters: 120 }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(loadBookConfigMock).toHaveBeenCalledTimes(2);
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(saveBookConfigMock).toHaveBeenCalledWith("demo-book", expect.objectContaining({
+      title: "Concurrent Title",
+      targetChapters: 120,
+    }));
+    expect(saveBookConfigMock.mock.invocationCallOrder[0]!)
+      .toBeLessThan(releaseBookLockMock.mock.invocationCallOrder[0]!);
   });
 
   it("exposes runtime context trace files as read-only truth diagnostics", async () => {
@@ -1078,6 +1860,114 @@ describe("createStudioServer daemon lifecycle", () => {
     });
     expect(body.services.find((s) => s.service === "custom:内网GPT")).toMatchObject({
       connected: true,
+    });
+  });
+
+  it("exposes a configured Codex subscription service without an API key", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        ...projectConfig.llm,
+        service: "codex",
+        defaultModel: "codex-default",
+        services: [{ service: "codex", apiFormat: "responses", stream: false }],
+      },
+    }, null, 2), "utf-8");
+    getAllEndpointsMock.mockReturnValueOnce([{
+      id: "codex",
+      label: "Codex (ChatGPT 구독)",
+      group: "local",
+      baseUrl: "http://127.0.0.1/codex-subscription",
+      models: [{ id: "codex-default", maxOutput: 32768, contextWindowTokens: 200000 }],
+    }] as never);
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      services: [{
+        service: "codex",
+        label: "Codex (ChatGPT 구독)",
+        group: "local",
+        apiKeyOptional: true,
+        authMode: "local-subscription",
+        connected: true,
+      }],
+    });
+    expect(probeCodexCliMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("tests Codex subscription auth without probing an HTTP endpoint", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/codex/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "", apiFormat: "responses", stream: false }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      selectedModel: "codex-default",
+      models: [{ id: "codex-default", name: "구독 기본 모델" }],
+      detected: { authMode: "chatgpt" },
+    });
+    expect(probeModelsFromUpstreamMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects API-key Codex auth for the subscription connection", async () => {
+    probeCodexCliMock.mockResolvedValueOnce({
+      installed: true,
+      loggedIn: true,
+      authMode: "api-key",
+    });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/codex/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "", apiFormat: "responses", stream: false }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      probe: { ok: false, error: "ChatGPT subscription sign-in required" },
+    });
+    expect(probeModelsFromUpstreamMock).not.toHaveBeenCalled();
+  });
+
+  it("returns configured Codex models without a saved secret", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      llm: {
+        ...projectConfig.llm,
+        service: "codex",
+        defaultModel: "codex-default",
+        services: [{ service: "codex" }],
+      },
+    }, null, 2), "utf-8");
+    getAllEndpointsMock.mockReturnValueOnce([{
+      id: "codex",
+      label: "Codex (ChatGPT 구독)",
+      group: "local",
+      models: [{ id: "codex-default", maxOutput: 32768, contextWindowTokens: 200000, enabled: true }],
+    }] as never);
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/services/models");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      groups: [{
+        service: "codex",
+        label: "Codex (ChatGPT 구독)",
+        models: [{ id: "codex-default", name: "구독 기본 모델", maxOutput: 32768, contextWindow: 200000 }],
+      }],
     });
   });
 
@@ -2861,6 +3751,12 @@ describe("createStudioServer daemon lifecycle", () => {
     const versionId = "1782864000000_revision_11111111-1111-4111-8111-111111111111";
     await mkdir(versionsDir, { recursive: true });
     await writeFile(join(versionsDir, `${versionId}.md`), "# 第3章 旧稿\n\n恢复后的正文。", "utf-8");
+    const restoredArcProvenance = makeArcProvenance(3, "arc-restored");
+    await writeFile(
+      join(versionsDir, `${versionId}.json`),
+      `${JSON.stringify({ version: 1, arcProvenance: restoredArcProvenance }, null, 2)}\n`,
+      "utf-8",
+    );
     loadChapterIndexMock.mockResolvedValue([{
       number: 3,
       title: "Demo",
@@ -2870,6 +3766,7 @@ describe("createStudioServer daemon lifecycle", () => {
       updatedAt: "2026-07-01T00:00:00.000Z",
       auditIssues: [],
       lengthWarnings: [],
+      arcProvenance: makeArcProvenance(3, "arc-current"),
     }]);
 
     const { createStudioServer } = await import("./server.js");
@@ -2882,6 +3779,27 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(restoreResponse.status).toBe(200);
     await expect(readFile(join(bookDir, "chapters", "0003_Demo.md"), "utf-8"))
       .resolves.toContain("恢复后的正文");
+    expect(saveChapterIndexMock).toHaveBeenCalledWith("demo-book", [
+      expect.objectContaining({
+        number: 3,
+        arcProvenance: restoredArcProvenance,
+      }),
+    ]);
+
+    const legacyVersionId = "1782864000001_manual_22222222-2222-4222-8222-222222222222";
+    await writeFile(
+      join(versionsDir, `${legacyVersionId}.md`),
+      "# 第3章 更早旧稿\n\n没有 Arc sidecar 的正文。",
+      "utf-8",
+    );
+    saveChapterIndexMock.mockClear();
+    const legacyRestoreResponse = await app.request(
+      `http://localhost/api/v1/books/demo-book/chapters/3/versions/${legacyVersionId}/restore`,
+      { method: "POST" },
+    );
+    expect(legacyRestoreResponse.status).toBe(200);
+    const legacySavedIndex = saveChapterIndexMock.mock.calls.at(-1)?.[1] as Array<Record<string, unknown>>;
+    expect(legacySavedIndex[0]).not.toHaveProperty("arcProvenance");
 
     const deleteResponse = await app.request(
       "http://localhost/api/v1/books/demo-book/chapters/3",
@@ -4907,6 +5825,211 @@ describe("createStudioServer daemon lifecycle", () => {
     ]);
     expect(runAgentSessionMock).not.toHaveBeenCalled();
     expect(writeNextChapterMock).not.toHaveBeenCalled();
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+    expect(saveChapterIndexMock.mock.invocationCallOrder[0])
+      .toBeLessThan(releaseBookLockMock.mock.invocationCallOrder[0]!);
+  });
+
+  it("releases the book lock when external chapter edit validation fails", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "第3章把「Missing body」改成「Body updated」",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "EDIT_TARGET_NOT_FOUND",
+        message: "要替换的原文没有在目标章节中找到。",
+      },
+    });
+    await expect(readFile(join(root, "books", "demo-book", "chapters", "0003_Demo.md"), "utf-8"))
+      .resolves.toBe("# Demo\n\nBody");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves an external chapter unchanged when its book lock is busy", async () => {
+    const lockError = 'Book "demo-book" is locked by an active InkOS write (pid:123). Wait for it to finish.';
+    acquireBookLockMock.mockRejectedValueOnce(new Error(lockError));
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "第3章把「Body」改成「Body updated」",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "BOOK_BUSY", message: lockError },
+    });
+    await expect(readFile(join(root, "books", "demo-book", "chapters", "0003_Demo.md"), "utf-8"))
+      .resolves.toBe("# Demo\n\nBody");
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an implicit Chapter symlink to a Story Rail plan before locking", async () => {
+    const chapterPath = join(root, "books", "demo-book", "chapters", "0003_Demo.md");
+    const planPath = join(root, "books", "demo-book", "story", "rails", "plan.md");
+    await mkdir(dirname(planPath), { recursive: true });
+    await writeFile(planPath, "Body in plan\n", "utf-8");
+    await rm(chapterPath);
+    await symlink(planPath, chapterPath);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "第3章把「Body」改成「Body updated」",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
+    });
+    await expect(readFile(planPath, "utf-8")).resolves.toBe("Body in plan\n");
+    await expect(readFile(chapterPath, "utf-8")).resolves.toBe("Body in plan\n");
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an implicit Chapter symlink outside the project before locking", async () => {
+    const outsideDir = await mkdtemp(join(tmpdir(), "inkos-implicit-chapter-outside-"));
+    try {
+      const chapterPath = join(root, "books", "demo-book", "chapters", "0003_Demo.md");
+      const outsidePath = join(outsideDir, "0003_Outside.md");
+      await writeFile(outsidePath, "Body outside\n", "utf-8");
+      await rm(chapterPath);
+      await symlink(outsidePath, chapterPath);
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "第3章把「Body」改成「Body updated」",
+          activeBookId: "demo-book",
+          sessionId: "agent-session-1",
+          sessionKind: "edit",
+          requestedIntent: "edit_artifact",
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
+      });
+      await expect(readFile(outsidePath, "utf-8")).resolves.toBe("Body outside\n");
+      await expect(readFile(chapterPath, "utf-8")).resolves.toBe("Body outside\n");
+      expect(acquireBookLockMock).not.toHaveBeenCalled();
+      expect(releaseBookLockMock).not.toHaveBeenCalled();
+      expect(saveChapterIndexMock).not.toHaveBeenCalled();
+      expect(runAgentSessionMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an implicit Chapter symlink to another Book before locking", async () => {
+    const chapterPath = join(root, "books", "demo-book", "chapters", "0003_Demo.md");
+    const otherChapterPath = join(root, "books", "other-book", "chapters", "0003_Other.md");
+    await mkdir(dirname(otherChapterPath), { recursive: true });
+    await writeFile(otherChapterPath, "Body in another Book\n", "utf-8");
+    await rm(chapterPath);
+    await symlink(otherChapterPath, chapterPath);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "第3章把「Body」改成「Body updated」",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
+    });
+    await expect(readFile(otherChapterPath, "utf-8")).resolves.toBe("Body in another Book\n");
+    await expect(readFile(chapterPath, "utf-8")).resolves.toBe("Body in another Book\n");
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an implicit Chapter symlink to a different chapter before locking", async () => {
+    const chapterPath = join(root, "books", "demo-book", "chapters", "0003_Demo.md");
+    const otherChapterPath = join(root, "books", "demo-book", "chapters", "0004_Other.md");
+    await writeFile(otherChapterPath, "Body in chapter four\n", "utf-8");
+    await rm(chapterPath);
+    await symlink(otherChapterPath, chapterPath);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "第3章把「Body」改成「Body updated」",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
+    });
+    await expect(readFile(otherChapterPath, "utf-8")).resolves.toBe("Body in chapter four\n");
+    await expect(readFile(chapterPath, "utf-8")).resolves.toBe("Body in chapter four\n");
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it("handles explicit chat artifact edits only for content roots", async () => {
@@ -4935,6 +6058,8 @@ describe("createStudioServer daemon lifecycle", () => {
       .resolves.toContain("标题字压到最大");
     expect(saveChapterIndexMock).not.toHaveBeenCalled();
     expect(runAgentSessionMock).not.toHaveBeenCalled();
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
   });
 
   it("handles explicit chat edits against role-card truth files", async () => {
@@ -4963,6 +6088,122 @@ describe("createStudioServer daemon lifecycle", () => {
     });
     await expect(readFile(rolePath, "utf-8")).resolves.toContain("查清账册里的失踪名单");
     expect(runAgentSessionMock).not.toHaveBeenCalled();
+    expect(acquireBookLockMock).toHaveBeenCalledOnce();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { label: "book config", targetRel: "books/demo-book/book.json" },
+    { label: "chapter index", targetRel: "books/demo-book/chapters/index.json" },
+    { label: "current chapter metadata", targetRel: "books/demo-book/chapters/.current-metadata/0003.json" },
+    { label: "Story Rail plan", targetRel: "books/demo-book/story/rails/plan.json" },
+    { label: "Arc active pointer", targetRel: "books/demo-book/story/arcs/active.json" },
+    { label: "story runtime", targetRel: "books/demo-book/story/runtime/chapter-0003.json" },
+    { label: "story state", targetRel: "books/demo-book/story/state/manifest.json" },
+    { label: "story snapshot", targetRel: "books/demo-book/story/snapshots/3/state/manifest.json" },
+    { label: "mixed-case book config", targetRel: "books/demo-book/book.json", requestedRel: "books/demo-book/Book.JSON" },
+    { label: "mixed-case chapter index", targetRel: "books/demo-book/chapters/index.json", requestedRel: "books/demo-book/chapters/INDEX.JSON" },
+    { label: "mixed-case current metadata", targetRel: "books/demo-book/chapters/.current-metadata/0003.json", requestedRel: "books/demo-book/chapters/.CURRENT-METADATA/0003.JSON" },
+    { label: "mixed-case Rails", targetRel: "books/demo-book/story/rails/plan.json", requestedRel: "books/demo-book/story/Rails/plan.JSON" },
+    { label: "mixed-case Arcs", targetRel: "books/demo-book/story/arcs/active.json", requestedRel: "books/demo-book/story/ARCS/active.JSON" },
+    { label: "mixed-case runtime", targetRel: "books/demo-book/story/runtime/chapter-0003.json", requestedRel: "books/demo-book/story/Runtime/chapter-0003.JSON" },
+    { label: "mixed-case state", targetRel: "books/demo-book/story/state/manifest.json", requestedRel: "books/demo-book/story/State/manifest.JSON" },
+    { label: "mixed-case snapshots", targetRel: "books/demo-book/story/snapshots/3/state/manifest.json", requestedRel: "books/demo-book/story/Snapshots/3/state/manifest.JSON" },
+  ])("rejects raw chat edits to structured Book authority: $label", async ({ targetRel, requestedRel }) => {
+    const targetPath = join(root, targetRel);
+    await mkdir(dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, "old-value\n", "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: `把 ${requestedRel ?? targetRel} 里的「old-value」改成「new-value」`,
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "UNSUPPORTED_CHAT_EDIT_TARGET",
+        message: "Structured Book authority files cannot be edited as raw chat text. Use the typed Studio/API/Story Rail tools instead.",
+      },
+    });
+    await expect(readFile(targetPath, "utf-8")).resolves.toBe("old-value\n");
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an allowed-looking symlink that resolves to structured Book authority", async () => {
+    const planPath = join(root, "books", "demo-book", "story", "rails", "plan.json");
+    const linkPath = join(root, "books", "demo-book", "notes.json");
+    await mkdir(dirname(planPath), { recursive: true });
+    await writeFile(planPath, "old-value\n", "utf8");
+    await symlink(planPath, linkPath);
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "把 books/demo-book/notes.json 里的「old-value」改成「new-value」",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+        requestedIntent: "edit_artifact",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
+    });
+    await expect(readFile(planPath, "utf8")).resolves.toBe("old-value\n");
+    expect(acquireBookLockMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an allowed-looking symlink that resolves outside the project", async () => {
+    const outsideDir = await mkdtemp(join(tmpdir(), "inkos-chat-edit-outside-"));
+    try {
+      const outsidePath = join(outsideDir, "outside.md");
+      const linkPath = join(root, "covers", "demo", "outside.md");
+      await mkdir(dirname(linkPath), { recursive: true });
+      await writeFile(outsidePath, "old-value\n", "utf8");
+      await symlink(outsidePath, linkPath);
+
+      const { createStudioServer } = await import("./server.js");
+      const app = createStudioServer(cloneProjectConfig() as never, root);
+      const response = await app.request("http://localhost/api/v1/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instruction: "把 covers/demo/outside.md 里的「old-value」改成「new-value」",
+          sessionId: "agent-session-1",
+          sessionKind: "edit",
+          requestedIntent: "edit_artifact",
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "UNSUPPORTED_CHAT_EDIT_TARGET" },
+      });
+      await expect(readFile(outsidePath, "utf8")).resolves.toBe("old-value\n");
+      expect(acquireBookLockMock).not.toHaveBeenCalled();
+      expect(releaseBookLockMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it("does not bypass the agent for edit-shaped questions", async () => {
@@ -6098,6 +7339,8 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(projectMode.json()).resolves.toMatchObject({ mode: "auto" });
     const rawBook = JSON.parse(await readFile(join(root, "books", "demo-book", "book.json"), "utf-8"));
     expect(rawBook.writing.reviewMode).toBe("manual");
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
   });
 
   it("uses a book-level manual review override when writing the next chapter", async () => {
@@ -6226,6 +7469,9 @@ describe("createStudioServer daemon lifecycle", () => {
     const consolidateRes = await app.request("http://localhost/api/v1/books/demo-book/consolidate", { method: "POST" });
     await expect(consolidateRes.json()).resolves.toMatchObject({ archivedVolumes: 1, retainedChapters: 8 });
     expect(consolidateMock).toHaveBeenCalled();
+    expect(acquireBookLockMock).toHaveBeenCalledWith("demo-book");
+    expect(consolidateMock.mock.invocationCallOrder[0]!)
+      .toBeLessThan(releaseBookLockMock.mock.invocationCallOrder[0]!);
 
     const planRes = await app.request("http://localhost/api/v1/books/demo-book/plan", {
       method: "POST", headers: { "Content-Type": "application/json" },

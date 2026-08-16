@@ -2,12 +2,19 @@ import { readFile, writeFile, mkdir, readdir, rm, stat, unlink, open } from "nod
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { BookConfig } from "../models/book.js";
-import type { ChapterMeta } from "../models/chapter.js";
+import {
+  ChapterArcProvenanceSchema,
+  type ChapterArcProvenance,
+  type ChapterMeta,
+} from "../models/chapter.js";
+import { commitAtomicFileSet, recoverAtomicFileSets } from "../utils/atomic-file-set.js";
 import { bootstrapStructuredStateFromMarkdown, resolveDurableStoryProgress } from "./state-bootstrap.js";
 
 const BOOK_LOCK_HEARTBEAT_MS = 30_000;
 const BOOK_LOCK_LEASE_MS = 3 * 60_000;
 const BOOK_LOCK_RELEASE_RETRIES = 4;
+const CURRENT_CHAPTER_METADATA_DIR = ".current-metadata";
+const CURRENT_CHAPTER_METADATA_VERSION = 1;
 
 interface BookLockMetadata {
   readonly version: 1;
@@ -186,6 +193,28 @@ export class StateManager {
 
       if (!acquired) {
         throw new BookWriteLockError(bookId, lockPath);
+      }
+
+      // A previous process may have died between the durable phases of a
+      // Book-local multi-file commit. Recovery is safe only after this exact
+      // Book lock is ours and before any caller can observe or mutate files.
+      try {
+        await recoverAtomicFileSets(this.bookDir(bookId));
+      } catch (recoveryError) {
+        try {
+          const snapshot = await this.readLockSnapshot(lockPath);
+          if (snapshot.metadata?.token === owner.metadata.token) {
+            await this.unlinkWithRetry(lockPath);
+          }
+        } catch (cleanupError) {
+          if ((cleanupError as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+            throw new AggregateError(
+              [recoveryError, cleanupError],
+              `Book ${JSON.stringify(bookId)} recovery failed and its temporary lock could not be removed`,
+            );
+          }
+        }
+        throw recoveryError;
       }
 
       this.startLockHeartbeat(lockPath, lockKey, owner);
@@ -488,10 +517,13 @@ export class StateManager {
   }
 
   private async rebuildChapterIndexFromFiles(bookId: string): Promise<ReadonlyArray<ChapterMeta>> {
-    return this.rebuildChapterIndexFromFilesAt(this.bookDir(bookId));
+    return this.rebuildChapterIndexFromFilesAt(this.bookDir(bookId), bookId);
   }
 
-  private async rebuildChapterIndexFromFilesAt(bookDir: string): Promise<ReadonlyArray<ChapterMeta>> {
+  private async rebuildChapterIndexFromFilesAt(
+    bookDir: string,
+    expectedBookId?: string,
+  ): Promise<ReadonlyArray<ChapterMeta>> {
     const chaptersDir = join(bookDir, "chapters");
     let files: string[];
     try {
@@ -506,9 +538,10 @@ export class StateManager {
       const number = parseInt(match[1]!, 10);
       if (!Number.isFinite(number) || number <= 0) return [];
       const filePath = join(chaptersDir, file);
-      const [metadata, content] = await Promise.all([
+      const [metadata, content, arcProvenance] = await Promise.all([
         stat(filePath).catch(() => null),
         readFile(filePath, "utf-8").catch(() => ""),
+        loadCurrentChapterArcProvenance(chaptersDir, number, expectedBookId),
       ]);
       const timestamp = (metadata?.mtime ?? new Date()).toISOString();
       const rawTitle = match[2]?.replace(/^_+/, "").replace(/_/g, " ").trim();
@@ -521,6 +554,7 @@ export class StateManager {
         updatedAt: timestamp,
         auditIssues: [],
         lengthWarnings: [],
+        ...(arcProvenance ? { arcProvenance } : {}),
       }];
     }));
 
@@ -545,13 +579,28 @@ export class StateManager {
     const chaptersDir = join(bookDir, "chapters");
     await mkdir(chaptersDir, { recursive: true });
     const safeIndex = index.length === 0 && !options.allowEmptyWithChapterFiles
-      ? await this.rebuildChapterIndexFromFilesAt(bookDir).then((rebuilt) => rebuilt.length > 0 ? rebuilt : index)
+      ? await loadBookIdFromConfigAt(bookDir)
+        .then((expectedBookId) => this.rebuildChapterIndexFromFilesAt(bookDir, expectedBookId))
+        .then((rebuilt) => rebuilt.length > 0 ? rebuilt : index)
       : index;
-    await writeFile(
-      join(chaptersDir, "index.json"),
-      JSON.stringify(safeIndex, null, 2),
-      "utf-8",
-    );
+    const currentMetadata = buildCurrentChapterMetadataWrites(safeIndex);
+    const existingMetadataFiles = await listCurrentChapterMetadataFiles(chaptersDir);
+    const desiredMetadataPaths = new Set(currentMetadata.map((entry) => entry.relativePath));
+    const staleMetadataPaths = existingMetadataFiles
+      .map((file) => join("chapters", CURRENT_CHAPTER_METADATA_DIR, file))
+      .filter((relativePath) => !desiredMetadataPaths.has(relativePath));
+
+    await commitAtomicFileSet({
+      rootDir: bookDir,
+      writes: [
+        {
+          relativePath: join("chapters", "index.json"),
+          content: JSON.stringify(safeIndex, null, 2),
+        },
+        ...currentMetadata,
+      ],
+      deletes: staleMetadataPaths,
+    });
   }
 
   async snapshotState(bookId: string, chapterNumber: number): Promise<void> {
@@ -817,5 +866,124 @@ export class StateManager {
     } catch {
       await writeFile(path, content, "utf-8");
     }
+  }
+}
+
+interface CurrentChapterMetadataSidecar {
+  readonly version: 1;
+  readonly chapterNumber: number;
+  readonly arcProvenance: ChapterArcProvenance;
+}
+
+function currentChapterMetadataFileName(chapterNumber: number): string {
+  return `${String(chapterNumber).padStart(6, "0")}.json`;
+}
+
+function buildCurrentChapterMetadataWrites(
+  index: ReadonlyArray<ChapterMeta>,
+): Array<{ readonly relativePath: string; readonly content: string }> {
+  // Last entry wins only for sidecar synchronization, matching the effective
+  // result of index consumers that locate one chapter by number. The index
+  // itself is preserved byte-for-byte apart from JSON formatting as before.
+  const currentByChapter = new Map<number, ChapterArcProvenance | undefined>();
+  for (const entry of index) {
+    if (!entry.arcProvenance) {
+      currentByChapter.set(entry.number, undefined);
+      continue;
+    }
+    const provenance = ChapterArcProvenanceSchema.parse(entry.arcProvenance);
+    if (provenance.chapterNumber !== entry.number) {
+      throw new Error(
+        `Chapter ${entry.number} cannot persist Arc provenance for chapter ${provenance.chapterNumber}.`,
+      );
+    }
+    currentByChapter.set(entry.number, provenance);
+  }
+
+  const writes: Array<{ readonly relativePath: string; readonly content: string }> = [];
+  for (const [chapterNumber, arcProvenance] of currentByChapter) {
+    if (!arcProvenance) continue;
+    const sidecar: CurrentChapterMetadataSidecar = {
+      version: CURRENT_CHAPTER_METADATA_VERSION,
+      chapterNumber,
+      arcProvenance,
+    };
+    writes.push({
+      relativePath: join(
+        "chapters",
+        CURRENT_CHAPTER_METADATA_DIR,
+        currentChapterMetadataFileName(chapterNumber),
+      ),
+      content: `${JSON.stringify(sidecar, null, 2)}\n`,
+    });
+  }
+  return writes;
+}
+
+async function listCurrentChapterMetadataFiles(chaptersDir: string): Promise<string[]> {
+  try {
+    return (await readdir(join(chaptersDir, CURRENT_CHAPTER_METADATA_DIR)))
+      .filter((file) => /^\d+\.json$/.test(file));
+  } catch {
+    return [];
+  }
+}
+
+async function loadCurrentChapterArcProvenance(
+  chaptersDir: string,
+  chapterNumber: number,
+  expectedBookId?: string,
+): Promise<ChapterArcProvenance | undefined> {
+  if (!expectedBookId) return undefined;
+  try {
+    const raw = JSON.parse(await readFile(
+      join(
+        chaptersDir,
+        CURRENT_CHAPTER_METADATA_DIR,
+        currentChapterMetadataFileName(chapterNumber),
+      ),
+      "utf-8",
+    )) as {
+      readonly version?: unknown;
+      readonly chapterNumber?: unknown;
+      readonly arcProvenance?: unknown;
+    };
+    if (
+      raw.version !== CURRENT_CHAPTER_METADATA_VERSION
+      || raw.chapterNumber !== chapterNumber
+      || raw.arcProvenance === undefined
+    ) {
+      return undefined;
+    }
+    const parsed = ChapterArcProvenanceSchema.safeParse(raw.arcProvenance);
+    if (
+      !parsed.success
+      || parsed.data.chapterNumber !== chapterNumber
+      || parsed.data.bookId !== expectedBookId
+    ) {
+      return undefined;
+    }
+    return parsed.data;
+  } catch {
+    // Current metadata is recovery assistance, never a Book -> Chapter gate.
+    return undefined;
+  }
+}
+
+async function loadBookIdFromConfigAt(bookDir: string): Promise<string | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(join(bookDir, "book.json"), "utf-8")) as {
+      readonly id?: unknown;
+    };
+    if (
+      typeof parsed.id !== "string"
+      || parsed.id.length === 0
+      || parsed.id.trim() !== parsed.id
+    ) {
+      return undefined;
+    }
+    return parsed.id;
+  } catch {
+    return undefined;
   }
 }

@@ -3,6 +3,10 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WriterAgent } from "../agents/writer.js";
+import type { ArcPacket } from "../arc/schema.js";
+import { resolveArcChapterContext } from "../arc/forecast.js";
+import { StoryRailStore } from "../arc/rail-store.js";
+import type { StoryRailPlanInput } from "../arc/rail-schema.js";
 import { buildLengthSpec } from "../utils/length-metrics.js";
 
 const ZERO_USAGE = {
@@ -10,6 +14,81 @@ const ZERO_USAGE = {
   completionTokens: 0,
   totalTokens: 0,
 } as const;
+
+function makeArcPacket(): ArcPacket {
+  return {
+    version: 1,
+    id: "arc-river-ledger",
+    bookId: "writer-book",
+    title: "River Ledger Arc",
+    status: "ready",
+    episodeCount: 1,
+    chapterNumbers: [3],
+    openingState: "The mentor debt is unresolved.",
+    promise: "Trace the debt through the river-port ledger.",
+    goal: "Secure the ledger page.",
+    obstacle: "Guild watchers control the quay.",
+    pressure: "The tide will erase the trail.",
+    turn: "The page names an ally.",
+    payoff: "Lin Yue obtains the page.",
+    irreversibleChange: "The guild learns Lin Yue is investigating.",
+    nextHook: "Why is the ally named?",
+    episodeBeats: [{
+      chapterNumber: 3,
+      role: "payoff",
+      beats: ["Recover the ledger page before the tide turns."],
+      endingHook: "The ally's seal is on the page.",
+    }],
+    characterChanges: ["Lin Yue commits to the debt trail."],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: ["Advance mentor-debt."],
+    mustKeep: ["The jade seal cannot be destroyed."],
+    mustAvoid: ["Do not reveal the mentor's motive."],
+    styleEmphasis: ["Restrained tension."],
+    createdAt: "2026-08-09T00:00:00.000Z",
+    updatedAt: "2026-08-09T00:00:00.000Z",
+  };
+}
+
+function makeWriterRailInput(boundArcId: string, targetChapters: number): StoryRailPlanInput {
+  const routeEntryCount = Math.ceil(targetChapters / 3);
+  return {
+    anchorRail: {
+      status: "ready",
+      anchors: Array.from({ length: 6 }, (_, index) => ({
+        id: `A${String(index + 1).padStart(2, "0")}`,
+        routeOrder: (index + 1) * 100,
+        title: `장기 도착점 ${index + 1}`,
+        detailLevel: index < 2 ? "compound" as const : "sparse" as const,
+        state: "planned" as const,
+        entryState: `진입 상태 ${index + 1}`,
+        trigger: `트리거 ${index + 1}`,
+        irreversibleChange: `비가역 변화 ${index + 1}`,
+        humanAftermath: `인간 후폭풍 ${index + 1}`,
+        readerDebt: `독자 부채 ${index + 1}`,
+        payoffAxis: `보상 축 ${index + 1}`,
+        nextPressure: `다음 압력 ${index + 1}`,
+      })),
+    },
+    arcRouteRail: {
+      status: "ready",
+      entries: Array.from({ length: routeEntryCount }, (_, index) => ({
+        bId: `B${String(index + 1).padStart(3, "0")}`,
+        routeOrder: (index + 1) * 100,
+        status: index === 0 ? "active" as const
+          : index === 1 ? "provisional" as const
+            : "hypothesis" as const,
+        targetAnchorId: `A${String(Math.min(index + 1, 6)).padStart(2, "0")}`,
+        ...(index === 0 ? { arcId: boundArcId } : {}),
+        narrativeFunction: `내구 서사 기능 ${index + 1}`,
+        payoffAxis: `내구 보상 축 ${index + 1}`,
+        carriedReaderDebt: `이월 독자 부채 ${index + 1}`,
+        contrastRequirement: `직전 Arc와 다른 결산 ${index + 1}`,
+      })),
+    },
+  };
+}
 
 function createCaptureLogger() {
   const infos: string[] = [];
@@ -373,8 +452,21 @@ describe("WriterAgent", () => {
     const chaptersDir = join(bookDir, "chapters");
     await mkdir(storyDir, { recursive: true });
     await mkdir(chaptersDir, { recursive: true });
+    await mkdir(join(storyDir, "arcs"), { recursive: true });
 
     await Promise.all([
+      writeFile(join(bookDir, "book.json"), JSON.stringify({
+        id: "writer-book",
+        title: "Writer Book",
+        platform: "tomato",
+        genre: "xuanhuan",
+        status: "active",
+        targetChapters: 20,
+        chapterWordCount: 2200,
+        language: "en",
+        createdAt: "2026-03-25T00:00:00.000Z",
+        updatedAt: "2026-03-25T00:00:00.000Z",
+      }), "utf-8"),
       writeFile(join(chaptersDir, "index.json"), JSON.stringify([
         { number: 1, title: "Ch1", status: "approved" },
         { number: 2, title: "Ch2", status: "approved" },
@@ -404,7 +496,20 @@ describe("WriterAgent", () => {
         "| 2 | Old Ledger | Lin Yue | Lin Yue finds the old ledger | Debt sharpens | mentor-debt advanced | tense | mainline |",
         "",
       ].join("\n"), "utf-8"),
+      writeFile(
+        join(storyDir, "arcs", "arc-river-ledger.json"),
+        `${JSON.stringify(makeArcPacket(), null, 2)}\n`,
+        "utf-8",
+      ),
+      writeFile(
+        join(storyDir, "arcs", "active.json"),
+        `${JSON.stringify({ arcId: "arc-river-ledger", updatedAt: "2026-08-09T00:00:00.000Z" }, null, 2)}\n`,
+        "utf-8",
+      ),
     ]);
+    await new StoryRailStore(bookDir, {
+      now: () => new Date("2026-08-09T00:30:00.000Z"),
+    }).replace("writer-book", makeWriterRailInput("arc-river-ledger", 20));
 
     const agent = new WriterAgent({
       client: {
@@ -422,7 +527,7 @@ describe("WriterAgent", () => {
       projectRoot: root,
     });
 
-    vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+    const chatSpy = vi.spyOn(WriterAgent.prototype as never, "chat" as never)
       .mockResolvedValueOnce({
         content: [
           "=== CHAPTER_TITLE ===",
@@ -501,6 +606,7 @@ describe("WriterAgent", () => {
         },
         bookDir,
         chapterNumber: 3,
+        externalContext: "Use the exact title River Ledger.",
         lengthSpec: buildLengthSpec(2200, "en"),
       });
 
@@ -510,6 +616,171 @@ describe("WriterAgent", () => {
       expect(output.updatedHooks).toContain("mentor-debt");
       expect(output.updatedChapterSummaries).toContain("River Ledger");
       expect(output.chapterSummary).toContain("| 3 | River Ledger |");
+      expect(output.arcProvenance).toMatchObject({
+        bookId: "writer-book",
+        arcId: "arc-river-ledger",
+        chapterNumber: 3,
+        beats: ["Recover the ledger page before the tide turns."],
+        storyRail: {
+          anchor: { id: "A01" },
+          activeB: { bId: "B001" },
+          nextB: { bId: "B002", status: "provisional" },
+        },
+      });
+      const creativePrompt = (chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined)?.[1]?.content ?? "";
+      expect(creativePrompt).toContain("Per-chapter user instruction (highest priority)");
+      expect(creativePrompt).toContain("Use the exact title River Ledger.");
+      expect(creativePrompt).toContain("Active Arc planning guidance (subordinate authority)");
+      expect(creativePrompt).toContain("Recover the ledger page before the tide turns.");
+      expect(creativePrompt).toContain("Next provisional B: B002 → A02");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the Planner-supplied Arc snapshot instead of re-reading a raced disk active Arc", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-writer-arc-snapshot-race-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const plannerArc: ArcPacket = {
+      ...makeArcPacket(),
+      id: "arc-planner-snapshot",
+      title: "Planner Snapshot Arc",
+      promise: "PLANNER_SNAPSHOT_PROMISE",
+      goal: "Follow the plan captured before Writer starts.",
+      episodeBeats: [{
+        chapterNumber: 3,
+        role: "payoff",
+        beats: ["PLANNER_SNAPSHOT_BEAT"],
+        endingHook: "The captured plan remains authoritative for this run.",
+      }],
+      updatedAt: "2026-08-09T01:00:00.000Z",
+    };
+    const diskArc: ArcPacket = {
+      ...makeArcPacket(),
+      id: "arc-disk-race-winner",
+      title: "Disk Race Arc",
+      promise: "DISK_RACE_PROMISE_MUST_NOT_APPEAR",
+      goal: "This later active Arc belongs to another planning run.",
+      episodeBeats: [{
+        chapterNumber: 3,
+        role: "payoff",
+        beats: ["DISK_RACE_BEAT_MUST_NOT_APPEAR"],
+        endingHook: "A later pointer should not replace the supplied snapshot.",
+      }],
+      updatedAt: "2026-08-09T02:00:00.000Z",
+    };
+    const plannerSnapshot = resolveArcChapterContext(plannerArc, 3)!.provenance;
+
+    await mkdir(chaptersDir, { recursive: true });
+    await mkdir(join(storyDir, "arcs"), { recursive: true });
+    await Promise.all([
+      writeFile(join(chaptersDir, "index.json"), JSON.stringify([
+        { number: 1, title: "Ch1", status: "approved" },
+        { number: 2, title: "Ch2", status: "approved" },
+      ]), "utf-8"),
+      writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n\n- The seal remains intact.\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n\n## Chapter 3\nFollow the captured plan.\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# Style Guide\n\n- Keep the prose restrained.\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# Current State\n\n| Current Chapter | 2 |\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "| hook_id | status |\n| --- | --- |\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "| chapter | title | events |\n| --- | --- | --- |\n", "utf-8"),
+      writeFile(join(storyDir, "arcs", `${diskArc.id}.json`), `${JSON.stringify(diskArc, null, 2)}\n`, "utf-8"),
+      writeFile(
+        join(storyDir, "arcs", "active.json"),
+        `${JSON.stringify({ arcId: diskArc.id, updatedAt: diskArc.updatedAt }, null, 2)}\n`,
+        "utf-8",
+      ),
+    ]);
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: [
+          "=== CHAPTER_TITLE ===",
+          "Captured Plan",
+          "",
+          "=== CHAPTER_CONTENT ===",
+          "Lin Yue follows the plan captured before the active pointer changes.",
+          "",
+          "=== PRE_WRITE_CHECK ===",
+          "- ok",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: "=== OBSERVATIONS ===\n- observed",
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== POST_SETTLEMENT ===",
+          "- captured plan applied",
+          "",
+          "=== RUNTIME_STATE_DELTA ===",
+          "```json",
+          JSON.stringify({
+            chapter: 3,
+            currentStatePatch: { currentGoal: "Continue from the captured plan." },
+            hookOps: { upsert: [], resolve: [], defer: [] },
+            chapterSummary: {
+              chapter: 3,
+              title: "Captured Plan",
+              characters: "Lin Yue",
+              events: "Lin Yue follows the captured plan.",
+              stateChanges: "The plan advances.",
+              hookActivity: "none",
+              mood: "tense",
+              chapterType: "investigation",
+            },
+            notes: [],
+          }, null, 2),
+          "```",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      const output = await agent.writeChapter({
+        book: {
+          id: "writer-book",
+          title: "Writer Book",
+          platform: "tomato",
+          genre: "xuanhuan",
+          status: "active",
+          targetChapters: 20,
+          chapterWordCount: 2200,
+          language: "en",
+          createdAt: "2026-03-25T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        },
+        bookDir,
+        chapterNumber: 3,
+        arcProvenance: plannerSnapshot,
+        lengthSpec: buildLengthSpec(2200, "en"),
+      });
+
+      const creativePrompt = (chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined)?.[1]?.content ?? "";
+      expect(creativePrompt).toContain("PLANNER_SNAPSHOT_PROMISE");
+      expect(creativePrompt).toContain("PLANNER_SNAPSHOT_BEAT");
+      expect(creativePrompt).not.toContain("DISK_RACE_PROMISE_MUST_NOT_APPEAR");
+      expect(creativePrompt).not.toContain("DISK_RACE_BEAT_MUST_NOT_APPEAR");
+      expect(output.arcProvenance).toEqual(plannerSnapshot);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

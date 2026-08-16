@@ -33,6 +33,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     async loadBookConfig(): Promise<never> { throw new Error("not implemented"); }
     async loadChapterIndex(): Promise<[]> { return []; }
     async getNextChapterNumber(): Promise<number> { return 1; }
+    async acquireBookLock(): Promise<() => Promise<void>> { return async () => {}; }
     bookDir(id: string): string { return join(this.root, "books", id); }
   }
   class MockPipelineRunner {
@@ -69,6 +70,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     createLogger: vi.fn(() => logger),
     computeAnalytics: vi.fn(() => ({})),
     isSafeBookId: actual.isSafeBookId,
+    safeNonSymlinkChildPath: actual.safeNonSymlinkChildPath,
     chatCompletion: vi.fn(),
     loadProjectConfig: loadProjectConfigMock,
     GLOBAL_ENV_PATH: join(tmpdir(), "inkos-global.env"),

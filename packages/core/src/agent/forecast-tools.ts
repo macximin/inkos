@@ -9,10 +9,9 @@ import {
 import type { ForecastBranch, NarrativeForecast } from "../forecast/schema.js";
 import { assertSafeBookId } from "../utils/book-id.js";
 
-// Narrative forecast tools (RFC #342). All three operate strictly on
-// story/runtime/narrative-forecasts/ — they never modify canonical prose,
-// state, or control documents. The v1 create call runs synchronously inside
-// the chat turn (Studio confirmed background execution is a v2 follow-up).
+// Narrative forecast tools (RFC #342). Forecasts stay non-canonical. A fresh
+// chosen branch becomes an editable active Arc, never a direct mutation of
+// chapters, state, or control documents.
 
 // ---------------------------------------------------------------------------
 // Local helpers (textResult / book resolution are not exported by agent-tools)
@@ -118,7 +117,7 @@ export function createNarrativeForecastCreateTool(
           `Comparison: ${result.comparisonPath}`,
           `Forecast data: ${result.forecastJsonPath}`,
           "These branches are non-canonical planning material. Use select_narrative_branch with the forecastId and a branchId "
-          + "to write selected-branch-plan.md, or get_narrative_forecast to re-check staleness later.",
+          + "to create an editable active Arc draft, or get_narrative_forecast to re-check staleness later.",
         ].join("\n"),
         { kind: "narrative_forecast_created", forecastId: result.forecast.forecastId, ...result },
       );
@@ -196,9 +195,9 @@ export function createNarrativeForecastSelectTool(
   return {
     name: "select_narrative_branch",
     description:
-      "Select one branch of a narrative forecast. Writes only selected-branch-plan.md inside the forecast directory — "
-      + "it does NOT apply the plan to the outline, chapter intents, or canonical state; that is a separate, "
-      + "user-confirmed operation.",
+      "Select one fresh branch of a narrative forecast. It writes selected-branch-plan.md and saves an editable "
+      + "1–3 chapter Arc draft. A ready B-Rail conflict keeps the current active Arc unchanged; chapters, outlines, "
+      + "and canonical state are never modified.",
     label: "Select Narrative Branch",
     parameters: ForecastSelectParams,
     async execute(
@@ -220,9 +219,27 @@ export function createNarrativeForecastSelectTool(
             ? ["WARNING: this forecast is stale — canon changed after it was generated. The plan includes a stale warning; verify before applying."]
             : []),
           `Plan written: ${result.planPath}`,
-          "Canonical files were not modified. Applying this plan to the outline or chapter intents requires explicit user confirmation.",
+          ...(result.arc && result.arcActivated
+            ? [`Active Arc draft: ${result.arc.id} (${result.arc.chapterNumbers.join(", ")}장)`]
+            : result.arc
+              ? [`Arc draft saved but not activated: ${result.arc.id} (${result.arc.chapterNumbers.join(", ")}장)`]
+              : []),
+          ...(result.railBinding
+            ? [`B-Rail: active ${result.railBinding.bId} is bound to Arc ${result.arc?.id}.`]
+            : []),
+          ...(result.railWarning ? [`WARNING: ${result.railWarning}`] : []),
+          "Canonical files were not modified. The Arc stays editable before any chapter is generated.",
         ].join("\n"),
-        { kind: "narrative_branch_selected", stale: result.stale, planPath: result.planPath, branchId: result.branch.branchId },
+        {
+          kind: "narrative_branch_selected",
+          stale: result.stale,
+          planPath: result.planPath,
+          branchId: result.branch.branchId,
+          arc: result.arc,
+          arcActivated: result.arcActivated,
+          railBinding: result.railBinding,
+          railWarning: result.railWarning,
+        },
       );
     },
   };

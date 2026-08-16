@@ -53,8 +53,8 @@ export async function writeForecastFixtureBook(bookDir: string): Promise<void> {
 }
 
 /**
- * Snapshot every canonical file under bookDir (excluding the forecast output
- * directory) so tests can assert that forecast operations never touch canon.
+ * Snapshot every canonical file under bookDir (excluding the non-canonical
+ * forecast output and editable Arc planning directories).
  */
 export async function snapshotCanonicalFiles(bookDir: string): Promise<ReadonlyMap<string, string>> {
   const snapshot = new Map<string, string>();
@@ -68,6 +68,7 @@ async function walk(root: string, dir: string, snapshot: Map<string, string>): P
     const path = join(dir, entry.name);
     const rel = relative(root, path);
     if (rel.startsWith(join("story", "runtime", "narrative-forecasts"))) continue;
+    if (rel.startsWith(join("story", "arcs"))) continue;
     if (entry.isDirectory()) {
       await walk(root, path, snapshot);
     } else {

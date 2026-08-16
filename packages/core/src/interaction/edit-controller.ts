@@ -1,6 +1,10 @@
 import { access, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
-import type { ChapterMeta } from "../models/chapter.js";
+import {
+  ChapterArcProvenanceSchema,
+  type ChapterArcProvenance,
+  type ChapterMeta,
+} from "../models/chapter.js";
 import {
   archiveChapterVersion,
   type ChapterVersionSource,
@@ -27,6 +31,8 @@ export type EditRequest =
       readonly chapterNumber: number;
       readonly fullText: string;
       readonly versionSource?: ChapterVersionSource;
+      /** Undefined preserves current provenance; null explicitly clears it. */
+      readonly replacementArcProvenance?: ChapterArcProvenance | null;
     }
   | {
       readonly kind: "chapter-local-edit";
@@ -310,6 +316,19 @@ function markChapterForManualReview(
     : chapter);
 }
 
+function replaceChapterArcProvenance(
+  index: ReadonlyArray<ChapterMeta>,
+  chapterNumber: number,
+  provenance: ChapterArcProvenance | null,
+): ReadonlyArray<ChapterMeta> {
+  return index.map((chapter) => {
+    if (chapter.number !== chapterNumber) return chapter;
+    if (provenance) return { ...chapter, arcProvenance: provenance };
+    const { arcProvenance: _discardedArcProvenance, ...withoutArcProvenance } = chapter;
+    return withoutArcProvenance;
+  });
+}
+
 function roughChapterLength(content: string): number {
   return content
     .replace(/^---[\s\S]*?---\s*/m, "")
@@ -327,23 +346,46 @@ async function executeChapterReplace(
   if (!fullText) {
     throw new Error("Chapter replacement requires fullText.");
   }
+  const replacementArcProvenance = request.replacementArcProvenance
+    ? ChapterArcProvenanceSchema.parse(request.replacementArcProvenance)
+    : request.replacementArcProvenance;
+  if (
+    replacementArcProvenance
+    && (
+      replacementArcProvenance.bookId !== request.bookId
+      || replacementArcProvenance.chapterNumber !== request.chapterNumber
+    )
+  ) {
+    throw new Error("Replacement Arc provenance must belong to the target book and chapter.");
+  }
   const { chapterPath } = await findChapterPath(root, request.chapterNumber);
+  const currentIndex = await deps.loadChapterIndex(request.bookId);
+  const currentMeta = currentIndex.find((chapter) => chapter.number === request.chapterNumber);
   const previousContent = await readFile(chapterPath, "utf-8");
   await archiveChapterVersion(
     root,
     request.chapterNumber,
     previousContent,
     request.versionSource ?? "agent",
+    new Date(),
+    { arcProvenance: currentMeta?.arcProvenance },
   );
   await writeFile(chapterPath, fullText.endsWith("\n") ? fullText : `${fullText}\n`, "utf-8");
   const removedRuntimeFiles = await clearChapterRuntimeFiles(root, request.chapterNumber);
 
-  const updatedIndex = markChapterForManualReview(
-    await deps.loadChapterIndex(request.bookId),
+  let updatedIndex = markChapterForManualReview(
+    currentIndex,
     request.chapterNumber,
     "Manual chapter replacement requires review before continuation.",
     roughChapterLength(fullText),
   );
+  if (replacementArcProvenance !== undefined) {
+    updatedIndex = replaceChapterArcProvenance(
+      updatedIndex,
+      request.chapterNumber,
+      replacementArcProvenance,
+    );
+  }
   await deps.saveChapterIndex(request.bookId, updatedIndex);
 
   return {
@@ -375,12 +417,21 @@ async function executeChapterLocalEdit(
   if (nextContent === content) {
     throw new Error(`Target text was not found in chapter ${request.chapterNumber}.`);
   }
-  await archiveChapterVersion(root, request.chapterNumber, content, "agent");
+  const currentIndex = await deps.loadChapterIndex(request.bookId);
+  const currentMeta = currentIndex.find((chapter) => chapter.number === request.chapterNumber);
+  await archiveChapterVersion(
+    root,
+    request.chapterNumber,
+    content,
+    "agent",
+    new Date(),
+    { arcProvenance: currentMeta?.arcProvenance },
+  );
   await writeFile(chapterPath, nextContent, "utf-8");
 
   const removedRuntimeFiles = await clearChapterRuntimeFiles(root, request.chapterNumber);
   const updatedIndex = markChapterForManualReview(
-    await deps.loadChapterIndex(request.bookId),
+    currentIndex,
     request.chapterNumber,
     "Manual text edit requires review before continuation.",
     roughChapterLength(nextContent),

@@ -33,32 +33,36 @@ export interface ContextCompressionStreamEvent {
 
 // [zh, en] tuples resolved through tr() at call time so labels follow the
 // current app language instead of the language active at module load.
-const AGENT_LABELS: Record<string, readonly [string, string]> = {
-  architect: ["建书", "Create book"], writer: ["写作", "Write"], auditor: ["审计", "Audit"],
-  reviser: ["修订", "Revise"], exporter: ["导出", "Export"],
+const AGENT_LABELS: Record<string, readonly [string, string, string]> = {
+  architect: ["建书", "Create book", "책 만들기"], writer: ["写作", "Write", "집필"], auditor: ["审计", "Audit", "검수"],
+  reviser: ["修订", "Revise", "수정"], exporter: ["导出", "Export", "내보내기"],
 };
-const TOOL_LABELS: Record<string, readonly [string, string]> = {
-  read: ["读取文件", "Read file"], edit: ["编辑文件", "Edit file"], grep: ["搜索", "Search"], ls: ["列目录", "List directory"],
-  context_compression: ["整理上下文", "Organize context"],
-  propose_action: ["确认动作", "Confirm action"],
-  short_fiction_run: ["短篇生产", "Short fiction run"],
-  generate_cover: ["生成封面", "Generate cover"],
-  play_edit: ["编辑互动世界", "Edit interactive world"],
-  play_start: ["启动互动世界", "Start interactive world"],
-  play_revise: ["重做互动回合", "Redo play turn"],
-  play_step: ["推进互动世界", "Advance interactive world"],
-  create_narrative_forecast: ["剧情多线推演", "Narrative forecast"],
-  get_narrative_forecast: ["核验剧情推演", "Recheck forecast"],
-  select_narrative_branch: ["采用候选分支", "Select candidate branch"],
+const TOOL_LABELS: Record<string, readonly [string, string, string]> = {
+  read: ["读取文件", "Read file", "파일 읽기"], edit: ["编辑文件", "Edit file", "파일 편집"], grep: ["搜索", "Search", "검색"], ls: ["列目录", "List directory", "목록 보기"],
+  context_compression: ["整理上下文", "Organize context", "대화 정리"],
+  propose_action: ["确认动作", "Confirm action", "작업 확인"],
+  short_fiction_run: ["短篇生产", "Short fiction run", "단편 제작"],
+  generate_cover: ["生成封面", "Generate cover", "표지 생성"],
+  play_edit: ["编辑互动世界", "Edit interactive world", "인터랙티브 세계 편집"],
+  play_start: ["启动互动世界", "Start interactive world", "인터랙티브 세계 시작"],
+  play_revise: ["重做互动回合", "Redo play turn", "인터랙티브 턴 다시 만들기"],
+  play_step: ["推进互动世界", "Advance interactive world", "인터랙티브 세계 진행"],
+  create_narrative_forecast: ["剧情多线推演", "Narrative forecast", "서사 분기 예측"],
+  get_narrative_forecast: ["核验剧情推演", "Recheck forecast", "서사 예측 확인"],
+  select_narrative_branch: ["采用候选分支", "Select candidate branch", "후보 분기 선택"],
+  get_story_rails: ["查看 A/B 故事轨道", "View A/B Story Rails", "A/B Story Rail 확인"],
+  replace_story_rails: ["更新 A/B 故事轨道", "Update A/B Story Rails", "A/B Story Rail 수정"],
+  apply_story_rail_reflow: ["应用 A/B 故事轨道 Reflow", "Apply A/B Story Rail reflow", "A/B Story Rail Reflow 적용"],
+  discard_story_rail_reflow: ["放弃待处理 A/B 故事轨道 Reflow", "Discard pending A/B Story Rail reflow", "대기 A/B Story Rail Reflow 폐기"],
 };
 
 function resolveToolLabel(tool: string, agent?: string): string {
   if (tool === "sub_agent" && agent) {
     const label = AGENT_LABELS[agent];
-    return label ? tr(label[0], label[1]) : agent;
+    return label ? tr(label[0], label[1], label[2]) : agent;
   }
   const label = TOOL_LABELS[tool];
-  return label ? tr(label[0], label[1]) : tool;
+  return label ? tr(label[0], label[1], label[2]) : tool;
 }
 
 function summarizeToolResult(result: unknown): string {

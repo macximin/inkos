@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
   ChevronRight,
   GitFork,
   RefreshCw,
@@ -28,6 +29,12 @@ export type NarrativeForecastPreviewDetails =
       readonly branchId: string;
       readonly planPath: string;
       readonly stale: boolean;
+      readonly arcActivated: boolean;
+      readonly arc?: {
+        readonly id: string;
+        readonly chapterNumbers: readonly number[];
+      };
+      readonly railWarning?: string;
     };
 
 export interface NarrativeForecastPreviewProps {
@@ -66,8 +73,34 @@ export function getNarrativeForecastPreviewDetails(exec: ToolExecution): Narrati
   if (details.kind === "narrative_branch_selected") {
     const branchId = nonEmptyString(details.branchId);
     const planPath = nonEmptyString(details.planPath);
-    if (!branchId || !planPath) return null;
-    return { kind: "selected", branchId, planPath, stale: details.stale === true };
+    if (!branchId || !planPath || typeof details.arcActivated !== "boolean") return null;
+    let arc: Extract<NarrativeForecastPreviewDetails, { kind: "selected" }>["arc"];
+    if (details.arc !== undefined) {
+      const arcRecord = recordOf(details.arc);
+      const id = arcRecord ? nonEmptyString(arcRecord.id) : null;
+      const chapterNumbers = arcRecord?.chapterNumbers;
+      if (
+        !id
+        || !Array.isArray(chapterNumbers)
+        || chapterNumbers.length < 1
+        || chapterNumbers.length > 3
+        || chapterNumbers.some((chapter) => !Number.isSafeInteger(chapter) || Number(chapter) < 1)
+        || new Set(chapterNumbers).size !== chapterNumbers.length
+      ) return null;
+      arc = { id, chapterNumbers: chapterNumbers as number[] };
+    }
+    if (details.arcActivated && !arc) return null;
+    const railWarning = details.railWarning === undefined ? undefined : nonEmptyString(details.railWarning);
+    if (details.railWarning !== undefined && !railWarning) return null;
+    return {
+      kind: "selected",
+      branchId,
+      planPath,
+      stale: details.stale === true,
+      arcActivated: details.arcActivated,
+      ...(arc ? { arc } : {}),
+      ...(railWarning ? { railWarning } : {}),
+    };
   }
 
   return null;
@@ -76,17 +109,21 @@ export function getNarrativeForecastPreviewDetails(exec: ToolExecution): Narrati
 export function buildNarrativeForecastSelectionInstruction(
   forecastId: string,
   branchId: string,
-  language: "zh" | "en",
+  language: "zh" | "en" | "ko",
 ): string {
+  if (language === "ko") {
+    return `select_narrative_branch를 호출해 예측 ${forecastId}의 ${branchId}를 선택해. 원고·개요·정본 상태는 바꾸지 말고, 편집 가능한 활성 Arc 초안만 만들어.`;
+  }
   return language === "zh"
-    ? `请调用 select_narrative_branch，选择推演 ${forecastId} 的 ${branchId}。只保存候选计划，不修改正文、大纲或正史状态。`
-    : `Call select_narrative_branch for ${branchId} in forecast ${forecastId}. Save only the candidate plan; do not modify prose, outlines, or canonical state.`;
+    ? `请调用 select_narrative_branch，选择推演 ${forecastId} 的 ${branchId}。只保存候选计划并创建可编辑的 active Arc 草稿，不修改正文、大纲或正史状态。`
+    : `Call select_narrative_branch for ${branchId} in forecast ${forecastId}. Save the candidate plan and create an editable active Arc draft; do not modify prose, outlines, or canonical state.`;
 }
 
 export function buildNarrativeForecastRecheckInstruction(
   forecastId: string,
-  language: "zh" | "en",
+  language: "zh" | "en" | "ko",
 ): string {
+  if (language === "ko") return `get_narrative_forecast를 호출해 예측 ${forecastId}가 오래된 상태인지 다시 확인해.`;
   return language === "zh"
     ? `请调用 get_narrative_forecast，重新核验推演 ${forecastId} 是否已经过期。`
     : `Call get_narrative_forecast for forecast ${forecastId} and report whether it is stale.`;
@@ -228,21 +265,59 @@ export function NarrativeForecastPreview({ exec, onSelectBranch, onRecheck }: Na
   if (!details) return null;
 
   if (details.kind === "selected") {
+    const activationBlocked = !details.stale && !details.arcActivated;
     return (
-      <div className="mx-3 mb-3 mt-1 rounded-xl border border-primary/25 bg-primary/5 px-3.5 py-3">
+      <div
+        data-arc-activated={details.arcActivated ? "true" : "false"}
+        className={`mx-3 mb-3 mt-1 rounded-xl border px-3.5 py-3 ${activationBlocked ? "border-amber-500/35 bg-amber-500/8" : "border-primary/25 bg-primary/5"}`}
+      >
         <div className="flex items-center gap-2 text-sm font-semibold text-primary">
           <Check size={15} />
-          {tr("候选分支已保存", "Candidate branch saved")}
+          {tr("候选分支已保存", "Candidate branch saved", "후보 분기 저장됨")}
         </div>
         <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
           {tr(
             `${details.branchId} 已写入候选计划；正文、大纲和正史状态没有修改。`,
             `${details.branchId} was written to the candidate plan; prose, outline, and canon were not modified.`,
+            `${details.branchId}를 후보 계획에 저장했습니다. 원고·개요·정본 상태는 바뀌지 않았습니다.`,
           )}
         </p>
+        {details.arcActivated && details.arc && (
+          <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/8 px-3 py-2 text-xs leading-5 text-emerald-800 dark:text-emerald-200">
+            <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+            <span>
+              {tr(
+                `已启用活动 Arc ${details.arc.id} · 第 ${details.arc.chapterNumbers.join(", ")} 章`,
+                `Active Arc ${details.arc.id} · chapters ${details.arc.chapterNumbers.join(", ")}`,
+                `활성 Arc ${details.arc.id} · ${details.arc.chapterNumbers.join(", ")}화`,
+              )}
+            </span>
+          </div>
+        )}
+        {activationBlocked && (
+          <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-background/60 px-3 py-2 text-xs leading-5 text-amber-900 dark:text-amber-100">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              {tr(
+                `候选 Arc${details.arc ? ` ${details.arc.id}` : ""} 已保存，但为保护 ready B 的现有连接，没有将其设为活动 Arc。`,
+                `Candidate Arc${details.arc ? ` ${details.arc.id}` : ""} was saved but not activated because the existing ready B binding is protected.`,
+                `후보 Arc${details.arc ? ` ${details.arc.id}` : ""}는 저장됐지만 기존 ready B 연결을 보호하기 위해 활성화하지 않았습니다.`,
+              )}
+            </span>
+          </div>
+        )}
+        {details.railWarning && (
+          <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-950 dark:text-amber-100">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <div className="min-w-0">
+              <div className="font-semibold">{tr("Rail 连接警告", "Rail binding warning", "Rail 연결 경고")}</div>
+              <div className="mt-0.5 whitespace-pre-wrap break-words">{details.railWarning}</div>
+            </div>
+          </div>
+        )}
         {details.stale && (
           <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-            {tr("该推演基于旧正史，请核验后再继续写作。", "This forecast is stale; verify it before writing.")}
+            {tr("该推演基于旧正史，请核验后再继续写作。", "This forecast is stale; verify it before writing.", "이 예측은 이전 정본을 기준으로 합니다. 집필 전 다시 확인하세요.")}
           </p>
         )}
       </div>

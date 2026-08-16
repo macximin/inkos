@@ -36,6 +36,9 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     async getNextChapterNumber(): Promise<number> {
       return 1;
     }
+    async acquireBookLock(): Promise<() => Promise<void>> {
+      return async () => {};
+    }
     bookDir(id: string): string {
       return join(this.root, "books", id);
     }
@@ -78,6 +81,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     createLogger: vi.fn(() => logger),
     computeAnalytics: vi.fn(() => ({})),
     isSafeBookId: actual.isSafeBookId,
+    safeNonSymlinkChildPath: actual.safeNonSymlinkChildPath,
     chatCompletion: chatCompletionMock,
     loadProjectConfig: loadProjectConfigMock,
     GLOBAL_ENV_PATH: join(tmpdir(), "inkos-global.env"),

@@ -191,6 +191,27 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(userMsg?.content).toContain("当面对质");
   });
 
+  it("keeps Arc planning below the explicit per-chapter user instruction", async () => {
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validMemoRaw(1),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 1,
+      externalContext: "사용자 지시가 최우선이다.",
+      arcContext: "## Active Arc\n- Required beat: 장부를 회수한다.",
+    });
+
+    const messages = chatSpy.mock.calls[0]![2] as ReadonlyArray<{ role: string; content: string }>;
+    const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
+    expect(userPrompt).toContain("本章用户指令（本章最高优先级）");
+    expect(userPrompt).toContain("当前 Arc 制作计划（从属权威）");
+    expect(userPrompt).toContain("不得覆盖创作 brief、作品正典、硬性规则");
+  });
+
   it("retries when the first response is malformed and succeeds on retry", async () => {
     const chatSpy = vi.spyOn(llmProvider, "chatCompletion")
       .mockResolvedValueOnce({

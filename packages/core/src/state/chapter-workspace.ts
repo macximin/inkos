@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  ChapterArcProvenanceSchema,
+  type ChapterArcProvenance,
+} from "../models/chapter.js";
 
 export type ChapterVersionSource =
   | "manual"
@@ -15,6 +19,11 @@ export interface ChapterVersion {
   readonly source: ChapterVersionSource;
   readonly createdAt: string;
   readonly characterCount: number;
+  readonly arcProvenance?: ChapterArcProvenance;
+}
+
+export interface ChapterVersionMetadata {
+  readonly arcProvenance?: ChapterArcProvenance;
 }
 
 const VERSION_ID_PATTERN = /^(\d{13})_(manual|agent|revision|regeneration|restore)_([0-9a-f-]{36})$/;
@@ -64,18 +73,27 @@ export async function archiveChapterVersion(
   content: string,
   source: ChapterVersionSource,
   now = new Date(),
+  metadata: ChapterVersionMetadata = {},
 ): Promise<ChapterVersion> {
   assertChapterNumber(chapterNumber);
   const id = `${now.getTime()}_${source}_${randomUUID()}`;
   const dir = versionsDir(bookDir, chapterNumber);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, `${id}.md`), content, "utf-8");
+  if (metadata.arcProvenance) {
+    await writeFile(
+      join(dir, `${id}.json`),
+      `${JSON.stringify({ version: 1, arcProvenance: metadata.arcProvenance }, null, 2)}\n`,
+      "utf-8",
+    );
+  }
   return {
     id,
     chapterNumber,
     source,
     createdAt: now.toISOString(),
     characterCount: content.length,
+    ...(metadata.arcProvenance ? { arcProvenance: metadata.arcProvenance } : {}),
   };
 }
 
@@ -97,13 +115,17 @@ export async function listChapterVersions(
     const id = file.slice(0, -3);
     const parsed = parseVersionId(id);
     if (!parsed) return [];
-    return [readFile(join(versionsDir(bookDir, chapterNumber), file), "utf-8").then((content) => ({
-      id,
-      chapterNumber,
-      source: parsed.source,
-      createdAt: new Date(parsed.timestamp).toISOString(),
-      characterCount: content.length,
-    }))];
+    return [Promise.all([
+      readFile(join(versionsDir(bookDir, chapterNumber), file), "utf-8"),
+      readChapterVersionMetadata(bookDir, chapterNumber, id),
+    ]).then(([content, metadata]) => ({
+        id,
+        chapterNumber,
+        source: parsed.source,
+        createdAt: new Date(parsed.timestamp).toISOString(),
+        characterCount: content.length,
+        ...(metadata.arcProvenance ? { arcProvenance: metadata.arcProvenance } : {}),
+      }))];
   }));
 
   return versions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -119,6 +141,33 @@ export async function readChapterVersion(
     throw new Error(`Invalid chapter version id: ${versionId}`);
   }
   return readFile(join(versionsDir(bookDir, chapterNumber), `${versionId}.md`), "utf-8");
+}
+
+/**
+ * Read optional version provenance. Legacy versions and malformed sidecars
+ * remain readable and simply return an empty metadata object.
+ */
+export async function readChapterVersionMetadata(
+  bookDir: string,
+  chapterNumber: number,
+  versionId: string,
+): Promise<ChapterVersionMetadata> {
+  assertChapterNumber(chapterNumber);
+  if (!parseVersionId(versionId)) {
+    throw new Error(`Invalid chapter version id: ${versionId}`);
+  }
+  try {
+    const raw = JSON.parse(
+      await readFile(join(versionsDir(bookDir, chapterNumber), `${versionId}.json`), "utf-8"),
+    ) as { readonly version?: unknown; readonly arcProvenance?: unknown };
+    if (raw.version !== 1 || raw.arcProvenance === undefined) return {};
+    const parsed = ChapterArcProvenanceSchema.safeParse(raw.arcProvenance);
+    return parsed.success && parsed.data.chapterNumber === chapterNumber
+      ? { arcProvenance: parsed.data }
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function userBriefPath(bookDir: string, chapterNumber: number): string {

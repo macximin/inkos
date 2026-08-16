@@ -29,7 +29,13 @@ chapterCommand
       const book = await state.loadBookConfig(bookId);
       const language = resolveCliLanguage(book.language);
 
-      const result = await syncChapterWordCounts(state, bookId);
+      const releaseLock = await state.acquireBookLock(bookId);
+      let result: Awaited<ReturnType<typeof syncChapterWordCounts>>;
+      try {
+        result = await syncChapterWordCounts(state, bookId);
+      } finally {
+        await releaseLock();
+      }
 
       if (opts.json) {
         log(JSON.stringify(result, null, 2));
@@ -92,9 +98,15 @@ chapterCommand
         }
       }
 
-      const result = await deleteLatestChapter(state, bookId, {
-        ...(requestedChapter === undefined ? {} : { chapterNumber: requestedChapter }),
-      });
+      const releaseLock = await state.acquireBookLock(bookId);
+      let result: Awaited<ReturnType<typeof deleteLatestChapter>>;
+      try {
+        result = await deleteLatestChapter(state, bookId, {
+          ...(requestedChapter === undefined ? {} : { chapterNumber: requestedChapter }),
+        });
+      } finally {
+        await releaseLock();
+      }
 
       if (opts.json) {
         log(JSON.stringify(result, null, 2));

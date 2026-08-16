@@ -6,6 +6,8 @@ import { gzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import {
   StateManager,
+  StoryRailStore,
+  StoryRailReflowStore,
   PipelineRunner,
   createLLMClient,
   createLogger,
@@ -100,6 +102,7 @@ import {
   readChapterPlanDocument,
   readChapterUserBrief,
   readChapterVersion,
+  readChapterVersionMetadata,
   saveChapterUserBrief,
   createTranslationProjectFromFile,
   loadTranslationChapter,
@@ -108,6 +111,7 @@ import {
   writeTranslationExport,
   filmLLMDepsFromClient,
   applyGraphDelta,
+  archiveChapterVersion,
   loadStoryGraph,
   reviewStoryGraph,
   exportInk,
@@ -125,9 +129,16 @@ import {
   type LogEntry,
   type RequestedIntent,
   type SessionKind,
+  type StoryRailPlanInput,
+  type StoryRailReflowApplyInput,
+  type StoryRailReflowDiscardInput,
   type AgentSessionAttachment,
+  CODEX_SERVICE_ID,
+  CODEX_DEFAULT_MODEL,
+  probeCodexCli,
+  safeNonSymlinkChildPath,
 } from "@actalk/inkos-core";
-import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSafeBookId } from "./safety.js";
 import { ApiError } from "./errors.js";
@@ -141,14 +152,19 @@ import {
 
 // -- Studio server language (read per request from the project config's `language`) --
 
-type StudioLanguage = "zh" | "en";
+type StudioLanguage = "zh" | "ko" | "en";
 
 function normalizeStudioLanguage(value: unknown): StudioLanguage {
+  if (value === "ko") return "ko";
   return value === "en" ? "en" : "zh";
 }
 
-function pick(lang: StudioLanguage, zh: string, en: string): string {
-  return lang === "en" ? en : zh;
+function pick(lang: StudioLanguage, zh: string, en: string, ko?: string): string {
+  return lang === "en" ? en : lang === "ko" ? ko ?? en : zh;
+}
+
+function coreLanguage(lang: StudioLanguage): "zh" | "en" {
+  return lang === "zh" ? "zh" : "en";
 }
 
 // -- Pipeline stage definitions per agent type --
@@ -287,7 +303,7 @@ function compareServiceListItems(
   left: { readonly service: string },
   right: { readonly service: string },
 ): number {
-  const priority = ["kkaiapi", "openrouter", "newapi", "siliconcloud"];
+  const priority = [CODEX_SERVICE_ID, "kkaiapi", "openrouter", "newapi", "siliconcloud"];
   const leftPriority = priority.indexOf(left.service);
   const rightPriority = priority.indexOf(right.service);
   if (leftPriority !== -1 || rightPriority !== -1) {
@@ -1001,6 +1017,8 @@ type ExternalChatEditResult = {
 const CHAT_EDIT_WARNING = "[warning] Chat external edit requires review before continuation.";
 const CHAT_EDIT_TEXT_EXTENSIONS = /\.(md|txt|json|ya?ml)$/i;
 const CHAT_EDIT_ALLOWED_ROOTS = new Set(["books", "shorts", "covers", "genres"]);
+const CHAT_EDIT_STRUCTURED_AUTHORITY_MESSAGE =
+  "Structured Book authority files cannot be edited as raw chat text. Use the typed Studio/API/Story Rail tools instead.";
 
 function parseReplacementInstruction(instruction: string): { oldText: string; newText: string } | null {
   const inFileQuoted = instruction.match(/(?:里|里的|中|中的|里面)\s*[「“"]([\s\S]+?)[」”"]\s*(?:改成|替换成|换成)\s*[「“"]([\s\S]+?)[」”"]/);
@@ -1053,27 +1071,57 @@ function countContentUnits(content: string): number {
   return stripped.split(/\s+/).filter(Boolean).length;
 }
 
-function resolveExternalChatEditPath(root: string, requestedPath: string): { path: string; rel: string } {
+function isStructuredBookAuthorityPath(rel: string): boolean {
+  const normalized = rel.toLowerCase();
+  if (/^books\/[^/]+\/book\.json$/.test(normalized)) return true;
+  if (/^books\/[^/]+\/chapters\/index\.json$/.test(normalized)) return true;
+  return /^books\/[^/]+\/(?:chapters\/\.current-metadata|story\/(?:rails|arcs|runtime|state|snapshots))(?:\/|$)/.test(normalized);
+}
+
+function validateExternalChatEditRelativePath(rel: string): void {
+  const normalizedRel = rel.toLowerCase();
+  if (!rel || rel.startsWith("../") || rel === "..") {
+    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edit path escapes the project root.");
+  }
+  const first = normalizedRel.split("/")[0] ?? "";
+  if (!CHAT_EDIT_ALLOWED_ROOTS.has(first)) {
+    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify source code, config, or arbitrary project files.");
+  }
+  if (normalizedRel.includes("/.inkos/") || normalizedRel.endsWith("/.inkos") || normalizedRel.includes("/secrets") || normalizedRel.endsWith(".env")) {
+    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify secrets or runtime internals.");
+  }
+  if (isStructuredBookAuthorityPath(normalizedRel)) {
+    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", CHAT_EDIT_STRUCTURED_AUTHORITY_MESSAGE);
+  }
+  if (!CHAT_EDIT_TEXT_EXTENSIONS.test(rel)) {
+    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits only support text content files.");
+  }
+}
+
+async function resolveExternalChatEditPath(
+  root: string,
+  requestedPath: string,
+): Promise<{ path: string; rel: string; canonicalRel: string }> {
   if (isAbsolute(requestedPath)) {
     throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits only support project-relative content paths.");
   }
   const projectRoot = resolve(root);
   const resolved = resolve(projectRoot, requestedPath);
   const rel = relative(projectRoot, resolved).replace(/\\/g, "/");
-  if (!rel || rel.startsWith("../") || rel === "..") {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edit path escapes the project root.");
+  validateExternalChatEditRelativePath(rel);
+
+  try {
+    const [canonicalRoot, canonicalPath] = await Promise.all([
+      realpath(projectRoot),
+      realpath(resolved),
+    ]);
+    const canonicalRel = relative(canonicalRoot, canonicalPath).replace(/\\/g, "/");
+    validateExternalChatEditRelativePath(canonicalRel);
+    return { path: canonicalPath, rel, canonicalRel };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error;
   }
-  const first = rel.split("/")[0] ?? "";
-  if (!CHAT_EDIT_ALLOWED_ROOTS.has(first)) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify source code, config, or arbitrary project files.");
-  }
-  if (rel.includes("/.inkos/") || rel.endsWith("/.inkos") || rel.includes("/secrets") || rel.endsWith(".env")) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits cannot modify secrets or runtime internals.");
-  }
-  if (!CHAT_EDIT_TEXT_EXTENSIONS.test(rel)) {
-    throw new ApiError(400, "UNSUPPORTED_CHAT_EDIT_TARGET", "Chat external edits only support text content files.");
-  }
-  return { path: resolved, rel };
+  return { path: resolved, rel, canonicalRel: rel };
 }
 
 async function findChapterFile(root: string, bookId: string, chapterNumber: number): Promise<string | null> {
@@ -1091,15 +1139,68 @@ function parseBookChapterFromRelativePath(rel: string): { bookId: string; chapte
   return Number.isInteger(chapterNumber) ? { bookId: match[1], chapterNumber } : null;
 }
 
+function parseBookIdFromRelativePath(rel: string): string | null {
+  const match = rel.match(/^books\/([^/]+)(?:\/|$)/);
+  return match?.[1] ?? null;
+}
+
+async function resolveImplicitChapterEditPath(
+  root: string,
+  bookId: string,
+  chapterNumber: number,
+): Promise<string | null> {
+  const chapterPath = await findChapterFile(root, bookId, chapterNumber);
+  if (!chapterPath) return null;
+
+  let canonicalRoot: string;
+  let canonicalPath: string;
+  try {
+    [canonicalRoot, canonicalPath] = await Promise.all([
+      realpath(resolve(root)),
+      realpath(chapterPath),
+    ]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return null;
+    throw error;
+  }
+
+  const canonicalRel = relative(canonicalRoot, canonicalPath).replace(/\\/g, "/");
+  const canonicalChapter = parseBookChapterFromRelativePath(canonicalRel);
+  if (canonicalChapter?.bookId !== bookId || canonicalChapter.chapterNumber !== chapterNumber) {
+    throw new ApiError(
+      400,
+      "UNSUPPORTED_CHAT_EDIT_TARGET",
+      "Implicit Chapter edits must resolve to the requested Book's matching Chapter markdown file.",
+    );
+  }
+  return canonicalPath;
+}
+
+async function withExternalChatEditBookLock<T>(
+  state: StateManager,
+  bookId: string,
+  edit: () => Promise<T>,
+): Promise<T> {
+  const releaseLock = await state.acquireBookLock(bookId);
+  try {
+    return await edit();
+  } finally {
+    await releaseLock();
+  }
+}
+
+// The caller must hold the Book lock across the preceding read/archive/write
+// and this index/runtime synchronization so reflow cannot observe a half-edit.
 async function syncExternalChapterEdit(params: {
   readonly state: StateManager;
   readonly root: string;
   readonly bookId: string;
   readonly chapterNumber: number;
   readonly content: string;
+  readonly index?: Awaited<ReturnType<StateManager["loadChapterIndex"]>>;
 }): Promise<void> {
   const now = new Date().toISOString();
-  const index = [...(await params.state.loadChapterIndex(params.bookId))];
+  const index = [...(params.index ?? await params.state.loadChapterIndex(params.bookId))];
   const updated = index.map((chapter) => chapter.number === params.chapterNumber
     ? {
         ...chapter,
@@ -1126,6 +1227,26 @@ async function syncExternalChapterEdit(params: {
   );
 }
 
+async function archiveExternalChatChapterEdit(params: {
+  readonly state: StateManager;
+  readonly root: string;
+  readonly bookId: string;
+  readonly chapterNumber: number;
+  readonly content: string;
+}): Promise<Awaited<ReturnType<StateManager["loadChapterIndex"]>>> {
+  const index = await params.state.loadChapterIndex(params.bookId);
+  const chapter = index.find((entry) => entry.number === params.chapterNumber);
+  await archiveChapterVersion(
+    join(params.root, "books", params.bookId),
+    params.chapterNumber,
+    params.content,
+    "agent",
+    new Date(),
+    { arcProvenance: chapter?.arcProvenance },
+  );
+  return index;
+}
+
 async function tryHandleExternalChatEdit(params: {
   readonly root: string;
   readonly state: StateManager;
@@ -1138,72 +1259,97 @@ async function tryHandleExternalChatEdit(params: {
 
   const explicitPath = parseExplicitEditPath(params.instruction);
   if (explicitPath) {
-    const target = resolveExternalChatEditPath(params.root, explicitPath);
-    const content = await readFile(target.path, "utf-8").catch((error) => {
-      throw new ApiError(404, "CHAT_EDIT_TARGET_NOT_FOUND", error instanceof Error ? error.message : String(error));
-    });
+    const target = await resolveExternalChatEditPath(params.root, explicitPath);
+    const editTarget = async (): Promise<ExternalChatEditResult> => {
+      const content = await readFile(target.path, "utf-8").catch((error) => {
+        throw new ApiError(404, "CHAT_EDIT_TARGET_NOT_FOUND", error instanceof Error ? error.message : String(error));
+      });
+      const first = content.indexOf(replacement.oldText);
+      if (first === -1) {
+        throw new ApiError(400, "EDIT_TARGET_NOT_FOUND", "要替换的原文没有在目标文件中找到。");
+      }
+      if (content.indexOf(replacement.oldText, first + replacement.oldText.length) !== -1) {
+        throw new ApiError(400, "EDIT_TARGET_AMBIGUOUS", "要替换的原文出现多次，请给出更具体的一段。");
+      }
+      const updated = content.slice(0, first) + replacement.newText + content.slice(first + replacement.oldText.length);
+      const chapterTarget = parseBookChapterFromRelativePath(target.canonicalRel);
+      const chapterIndex = chapterTarget
+        ? await archiveExternalChatChapterEdit({
+          state: params.state,
+          root: params.root,
+          bookId: chapterTarget.bookId,
+          chapterNumber: chapterTarget.chapterNumber,
+          content,
+        })
+        : undefined;
+      await writeFile(target.path, updated, "utf-8");
+
+      if (chapterTarget) {
+        await syncExternalChapterEdit({
+          state: params.state,
+          root: params.root,
+          bookId: chapterTarget.bookId,
+          chapterNumber: chapterTarget.chapterNumber,
+          content: updated,
+          index: chapterIndex,
+        });
+      }
+
+      return {
+        activeBookId: chapterTarget?.bookId ?? params.activeBookId ?? undefined,
+        responseText: `已直接编辑 ${target.rel}${chapterTarget ? "，并标记为需要复核" : ""}。`,
+      };
+    };
+
+    const targetBookId = parseBookIdFromRelativePath(target.canonicalRel);
+    return targetBookId
+      ? withExternalChatEditBookLock(params.state, targetBookId, editTarget)
+      : editTarget();
+  }
+
+  const bookId = params.activeBookId;
+  if (!bookId) return null;
+  const chapterNumber = parseChapterNumberForEdit(params.instruction);
+  if (!replacement || !chapterNumber) return null;
+
+  const chapterPath = await resolveImplicitChapterEditPath(params.root, bookId, chapterNumber);
+  if (!chapterPath) {
+    throw new ApiError(404, "CHAPTER_NOT_FOUND", `Chapter ${chapterNumber} not found in ${bookId}`);
+  }
+
+  return withExternalChatEditBookLock(params.state, bookId, async () => {
+    const content = await readFile(chapterPath, "utf-8");
     const first = content.indexOf(replacement.oldText);
     if (first === -1) {
-      throw new ApiError(400, "EDIT_TARGET_NOT_FOUND", "要替换的原文没有在目标文件中找到。");
+      throw new ApiError(400, "EDIT_TARGET_NOT_FOUND", "要替换的原文没有在目标章节中找到。");
     }
     if (content.indexOf(replacement.oldText, first + replacement.oldText.length) !== -1) {
       throw new ApiError(400, "EDIT_TARGET_AMBIGUOUS", "要替换的原文出现多次，请给出更具体的一段。");
     }
-    const updated = content.slice(0, first) + replacement.newText + content.slice(first + replacement.oldText.length);
-    await writeFile(target.path, updated, "utf-8");
 
-    const chapterTarget = parseBookChapterFromRelativePath(target.rel);
-    if (chapterTarget) {
-      await syncExternalChapterEdit({
-        state: params.state,
-        root: params.root,
-        bookId: chapterTarget.bookId,
-        chapterNumber: chapterTarget.chapterNumber,
-        content: updated,
-      });
-    }
+    const updated = content.slice(0, first) + replacement.newText + content.slice(first + replacement.oldText.length);
+    const chapterIndex = await archiveExternalChatChapterEdit({
+      state: params.state,
+      root: params.root,
+      bookId,
+      chapterNumber,
+      content,
+    });
+    await writeFile(chapterPath, updated, "utf-8");
+    await syncExternalChapterEdit({
+      state: params.state,
+      root: params.root,
+      bookId,
+      chapterNumber,
+      content: updated,
+      index: chapterIndex,
+    });
 
     return {
-      activeBookId: chapterTarget?.bookId ?? params.activeBookId ?? undefined,
-      responseText: `已直接编辑 ${target.rel}${chapterTarget ? "，并标记为需要复核" : ""}。`,
+      activeBookId: bookId,
+      responseText: `已直接编辑 ${bookId} 第 ${chapterNumber} 章，并标记为需要复核。`,
     };
-  }
-
-  if (!params.activeBookId) return null;
-  const chapterNumber = parseChapterNumberForEdit(params.instruction);
-  if (!replacement || !chapterNumber) return null;
-
-  const chapterPath = await findChapterFile(params.root, params.activeBookId, chapterNumber);
-  if (!chapterPath) {
-    throw new ApiError(404, "CHAPTER_NOT_FOUND", `Chapter ${chapterNumber} not found in ${params.activeBookId}`);
-  }
-  if (!CHAT_EDIT_TEXT_EXTENSIONS.test(chapterPath)) {
-    throw new ApiError(400, "UNSUPPORTED_EDIT_TARGET", "Chat external edits only support text files.");
-  }
-
-  const content = await readFile(chapterPath, "utf-8");
-  const first = content.indexOf(replacement.oldText);
-  if (first === -1) {
-    throw new ApiError(400, "EDIT_TARGET_NOT_FOUND", "要替换的原文没有在目标章节中找到。");
-  }
-  if (content.indexOf(replacement.oldText, first + replacement.oldText.length) !== -1) {
-    throw new ApiError(400, "EDIT_TARGET_AMBIGUOUS", "要替换的原文出现多次，请给出更具体的一段。");
-  }
-
-  const updated = content.slice(0, first) + replacement.newText + content.slice(first + replacement.oldText.length);
-  await writeFile(chapterPath, updated, "utf-8");
-  await syncExternalChapterEdit({
-    state: params.state,
-    root: params.root,
-    bookId: params.activeBookId,
-    chapterNumber,
-    content: updated,
   });
-
-  return {
-    activeBookId: params.activeBookId,
-    responseText: `已直接编辑 ${params.activeBookId} 第 ${chapterNumber} 章，并标记为需要复核。`,
-  };
 }
 
 function validateAgentActionExecution(args: {
@@ -1637,7 +1783,7 @@ async function executeConfirmedProductionAction(args: {
     const payload = actionPayload?.shortRun;
     const direction = payload?.direction?.trim() || args.instruction.trim();
     if (!direction) throw new ApiError(400, "CONFIRMED_ACTION_PAYLOAD_INCOMPLETE", pick(lang, "确认短篇缺少方向，请重新生成确认卡。", "The short fiction confirmation is missing a direction. Regenerate the confirmation card."));
-    tool = createShortFictionRunTool(args.pipeline, args.root, { actionPayload, language: lang });
+    tool = createShortFictionRunTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       direction,
       ...(payload?.reference ? { reference: payload.reference } : {}),
@@ -1668,7 +1814,7 @@ async function executeConfirmedProductionAction(args: {
   } else if (args.requestedIntent === "script_create") {
     const payload = actionPayload?.scriptCreate;
     const title = requirePayloadText(payload?.title, pick(lang, "确认创建剧本缺少标题，请重新生成确认卡。", "The script creation confirmation is missing a title. Regenerate the confirmation card."));
-    tool = createScriptCreationTool(args.pipeline, args.root, { actionPayload, language: lang });
+    tool = createScriptCreationTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       title,
       instruction: args.instruction,
@@ -1685,7 +1831,7 @@ async function executeConfirmedProductionAction(args: {
   } else if (args.requestedIntent === "storyboard_create") {
     const payload = actionPayload?.storyboardCreate;
     const title = requirePayloadText(payload?.title, pick(lang, "确认创建分镜缺少标题，请重新生成确认卡。", "The storyboard creation confirmation is missing a title. Regenerate the confirmation card."));
-    tool = createStoryboardCreationTool(args.pipeline, args.root, { actionPayload, language: lang });
+    tool = createStoryboardCreationTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       title,
       instruction: args.instruction,
@@ -1703,7 +1849,7 @@ async function executeConfirmedProductionAction(args: {
   } else if (args.requestedIntent === "interactive_film_create") {
     const payload = actionPayload?.interactiveFilmCreate;
     const title = requirePayloadText(payload?.title, pick(lang, "确认创建互动影游缺少标题，请重新生成确认卡。", "The interactive film confirmation is missing a title. Regenerate the confirmation card."));
-    tool = createInteractiveFilmCreationTool(args.pipeline, args.root, { actionPayload, language: lang });
+    tool = createInteractiveFilmCreationTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       title,
       instruction: args.instruction,
@@ -1765,7 +1911,7 @@ async function executeConfirmedProductionAction(args: {
     if (!projectId) throw new ApiError(400, "INVALID_ID", "interactive-film action requires a project id (bookId)");
     const agentCtx = args.pipeline.createAgentContext("film-authoring", projectId);
     const deps = filmLLMDepsFromClient(agentCtx.client, agentCtx.model);
-    tool = createDraftStructureTool(args.root, projectId, deps, lang);
+    tool = createDraftStructureTool(args.root, projectId, deps, coreLanguage(lang));
     params = {
       instruction: payload?.instruction?.trim() || args.instruction,
     };
@@ -2759,7 +2905,7 @@ async function probeServiceCapabilities(args: {
           apiFormat: plan.apiFormat,
           stream: plan.stream,
           error: error instanceof Error ? error.message : String(error),
-          language: lang,
+          language: coreLanguage(lang),
         });
       }
     }
@@ -3031,6 +3177,207 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     }
   });
 
+  // --- Optional A-Rail / B-Rail story plan ---
+
+  app.get("/api/v1/books/:id/story-rails", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    const store = new StoryRailStore(state.bookDir(id));
+    try {
+      const plan = await store.load();
+      if (plan && plan.bookId !== id) {
+        return c.json({
+          error: {
+            code: "STORY_RAIL_BOOK_MISMATCH",
+            message: `Story rail plan belongs to book ${JSON.stringify(plan.bookId)}, not ${JSON.stringify(id)}.`,
+          },
+        }, 422);
+      }
+      return c.json({ plan });
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_PLAN",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 422);
+    }
+  });
+
+  app.put("/api/v1/books/:id/story-rails", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    let body: StoryRailPlanInput;
+    try {
+      body = await c.req.json<StoryRailPlanInput>();
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_INPUT",
+          message: error instanceof Error ? error.message : "Request body must be valid JSON.",
+        },
+      }, 400);
+    }
+
+    const releaseLock = await state.acquireBookLock(id);
+    try {
+      const store = new StoryRailStore(state.bookDir(id));
+      const plan = await store.replace(id, body);
+      return c.json({ ok: true, plan });
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_INPUT",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 400);
+    } finally {
+      await releaseLock();
+    }
+  });
+
+  app.get("/api/v1/books/:id/story-rails/reflow", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    try {
+      const pending = await new StoryRailReflowStore(state.bookDir(id)).getPending(id);
+      return c.json({ pending });
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 422);
+    }
+  });
+
+  app.post("/api/v1/books/:id/story-rails/reflow/prepare", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    const body: { endpointChapterNumber?: unknown } = await c.req
+      .json<{ endpointChapterNumber?: unknown }>()
+      .catch(() => ({}));
+    if (
+      body.endpointChapterNumber !== undefined
+      && (!Number.isInteger(body.endpointChapterNumber) || Number(body.endpointChapterNumber) < 1)
+    ) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW_INPUT",
+          message: "endpointChapterNumber must be a positive integer.",
+        },
+      }, 400);
+    }
+
+    const releaseLock = await state.acquireBookLock(id);
+    try {
+      const chapters = await state.loadChapterIndex(id);
+      const result = await new StoryRailReflowStore(state.bookDir(id)).prepare(id, chapters, {
+        ...(typeof body.endpointChapterNumber === "number"
+          ? { endpointChapterNumber: body.endpointChapterNumber }
+          : {}),
+      });
+      return c.json(result);
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 400);
+    } finally {
+      await releaseLock();
+    }
+  });
+
+  app.post("/api/v1/books/:id/story-rails/reflow/apply", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    let body: StoryRailReflowApplyInput;
+    try {
+      body = await c.req.json<StoryRailReflowApplyInput>();
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW_INPUT",
+          message: error instanceof Error ? error.message : "Request body must be valid JSON.",
+        },
+      }, 400);
+    }
+
+    const releaseLock = await state.acquireBookLock(id);
+    try {
+      const chapters = await state.loadChapterIndex(id);
+      const result = await new StoryRailReflowStore(state.bookDir(id)).apply(id, chapters, body);
+      return c.json(result);
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW_INPUT",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 400);
+    } finally {
+      await releaseLock();
+    }
+  });
+
+  app.post("/api/v1/books/:id/story-rails/reflow/discard", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    let body: StoryRailReflowDiscardInput;
+    try {
+      body = await c.req.json<StoryRailReflowDiscardInput>();
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW_INPUT",
+          message: error instanceof Error ? error.message : "Request body must be valid JSON.",
+        },
+      }, 400);
+    }
+
+    const releaseLock = await state.acquireBookLock(id);
+    try {
+      const result = await new StoryRailReflowStore(state.bookDir(id)).discard(id, body);
+      return c.json(result);
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_STORY_RAIL_REFLOW_INPUT",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 400);
+    } finally {
+      await releaseLock();
+    }
+  });
+
   // --- Genres ---
 
   app.get("/api/v1/genres", async (c) => {
@@ -3277,12 +3624,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const id = c.req.param("id");
     const num = parseInt(c.req.param("num"), 10);
     try {
-      const content = await readChapterVersion(
-        state.bookDir(id),
-        num,
-        c.req.param("versionId"),
-      );
-      return c.json({ chapterNumber: num, versionId: c.req.param("versionId"), content });
+      const versionId = c.req.param("versionId");
+      const [content, metadata] = await Promise.all([
+        readChapterVersion(state.bookDir(id), num, versionId),
+        readChapterVersionMetadata(state.bookDir(id), num, versionId),
+      ]);
+      return c.json({ chapterNumber: num, versionId, content, ...metadata });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 404);
     }
@@ -3293,11 +3640,11 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const num = parseInt(c.req.param("num"), 10);
     const releaseLock = await state.acquireBookLock(id);
     try {
-      const fullText = await readChapterVersion(
-        state.bookDir(id),
-        num,
-        c.req.param("versionId"),
-      );
+      const versionId = c.req.param("versionId");
+      const [fullText, metadata] = await Promise.all([
+        readChapterVersion(state.bookDir(id), num, versionId),
+        readChapterVersionMetadata(state.bookDir(id), num, versionId),
+      ]);
       const result = await executeEditTransaction(
         {
           bookDir: (bookId) => state.bookDir(bookId),
@@ -3310,10 +3657,11 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
           chapterNumber: num,
           fullText,
           versionSource: "restore",
+          replacementArcProvenance: metadata.arcProvenance ?? null,
         },
       );
       broadcast("chapter:restored", { bookId: id, chapterNumber: num });
-      return c.json({ ok: true, chapterNumber: num, versionId: c.req.param("versionId"), result });
+      return c.json({ ok: true, chapterNumber: num, versionId, result });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
     } finally {
@@ -3567,9 +3915,15 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         model: pipelineConfig.model,
         projectRoot: root,
       });
-      const result = await consolidator.consolidate(state.bookDir(id));
-      broadcast("consolidate:complete", { bookId: id, ...result });
-      return c.json(result);
+      await state.loadBookConfig(id);
+      const releaseLock = await state.acquireBookLock(id);
+      try {
+        const result = await consolidator.consolidate(state.bookDir(id));
+        broadcast("consolidate:complete", { bookId: id, ...result });
+        return c.json(result);
+      } finally {
+        await releaseLock();
+      }
     } catch (e) {
       broadcast("consolidate:error", { bookId: id, error: String(e) });
       return c.json({ error: String(e) }, 500);
@@ -3634,12 +3988,37 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const num = parseInt(c.req.param("num"), 10);
 
     try {
-      const index = await state.loadChapterIndex(id);
-      const updated = index.map((ch) =>
-        ch.number === num ? { ...ch, status: "approved" as const } : ch,
-      );
-      await state.saveChapterIndex(id, updated);
-      return c.json({ ok: true, chapterNumber: num, status: "approved" });
+      // Validate before acquireBookLock(), which creates its lock directory.
+      // This keeps an invalid id from leaving a ghost Book directory.
+      await state.loadBookConfig(id);
+      const releaseLock = await state.acquireBookLock(id);
+      try {
+        const index = await state.loadChapterIndex(id);
+        const updated = index.map((ch) =>
+          ch.number === num ? { ...ch, status: "approved" as const } : ch,
+        );
+        await state.saveChapterIndex(id, updated);
+
+        // Approval remains authoritative even when optional Rail closeout
+        // preparation cannot run. prepare() only records a pending gate; it
+        // never closes/promotes a B or changes the active Arc.
+        let railReflow: Awaited<ReturnType<StoryRailReflowStore["prepare"]>> | undefined;
+        let railReflowWarning: string | undefined;
+        try {
+          railReflow = await new StoryRailReflowStore(state.bookDir(id)).prepare(id, updated);
+        } catch (error) {
+          railReflowWarning = error instanceof Error ? error.message : String(error);
+        }
+        return c.json({
+          ok: true,
+          chapterNumber: num,
+          status: "approved",
+          ...(railReflow ? { railReflow } : {}),
+          ...(railReflowWarning ? { railReflowWarning } : {}),
+        });
+      } finally {
+        await releaseLock();
+      }
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
@@ -3650,21 +4029,27 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const num = parseInt(c.req.param("num"), 10);
 
     try {
-      const index = await state.loadChapterIndex(id);
-      const target = index.find((ch) => ch.number === num);
-      if (!target) {
-        return c.json({ error: `Chapter ${num} not found` }, 404);
-      }
+      await state.loadBookConfig(id);
+      const releaseLock = await state.acquireBookLock(id);
+      try {
+        const index = await state.loadChapterIndex(id);
+        const target = index.find((ch) => ch.number === num);
+        if (!target) {
+          return c.json({ error: `Chapter ${num} not found` }, 404);
+        }
 
-      const rollbackTarget = num - 1;
-      const discarded = await state.rollbackToChapter(id, rollbackTarget);
-      return c.json({
-        ok: true,
-        chapterNumber: num,
-        status: "rejected",
-        rolledBackTo: rollbackTarget,
-        discarded,
-      });
+        const rollbackTarget = num - 1;
+        const discarded = await state.rollbackToChapter(id, rollbackTarget);
+        return c.json({
+          ok: true,
+          chapterNumber: num,
+          status: "rejected",
+          rolledBackTo: rollbackTarget,
+          discarded,
+        });
+      } finally {
+        await releaseLock();
+      }
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
@@ -3717,6 +4102,9 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         .filter((service) => service.service !== "custom")
         .map((service) => service.service),
     );
+    const codexStatus = configuredBankServices.has(CODEX_SERVICE_ID)
+      ? await probeCodexCli()
+      : { installed: true, loggedIn: false, authMode: undefined } as const;
 
     // Fast: only check connection status from secrets, no external API calls.
     const services = endpoints.map((ep) => {
@@ -3728,9 +4116,14 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         service: ep.id,
         label: ep.label,
         group: ep.group,
-        apiKeyOptional,
-        connected: Boolean(secrets.services[ep.id]?.apiKey)
-          || (apiKeyOptional && configuredBankServices.has(ep.id)),
+        apiKeyOptional: ep.id === CODEX_SERVICE_ID ? true : apiKeyOptional,
+        ...(ep.id === CODEX_SERVICE_ID ? { authMode: "local-subscription" as const } : {}),
+        connected: ep.id === CODEX_SERVICE_ID
+          ? configuredBankServices.has(ep.id)
+            && codexStatus.loggedIn
+            && codexStatus.authMode === "chatgpt"
+          : Boolean(secrets.services[ep.id]?.apiKey)
+            || (apiKeyOptional && configuredBankServices.has(ep.id)),
       };
     }).sort(compareServiceListItems);
 
@@ -3984,6 +4377,50 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       stream?: boolean;
     }>();
 
+    if (service === CODEX_SERVICE_ID) {
+      const status = await probeCodexCli();
+      if (!status.installed) {
+        return c.json({
+          ok: false,
+          error: "Codex CLI를 찾을 수 없습니다. Codex를 설치한 뒤 다시 시도하세요.",
+          probe: { ok: false, models: 0, error: "Codex CLI not found" },
+          chat: null,
+        }, 400);
+      }
+      if (!status.loggedIn) {
+        return c.json({
+          ok: false,
+          error: "Codex 로그인이 필요합니다. 터미널에서 codex login을 실행하세요.",
+          probe: { ok: false, models: 0, error: "Codex is not signed in" },
+          chat: null,
+        }, 400);
+      }
+      if (status.authMode !== "chatgpt") {
+        return c.json({
+          ok: false,
+          error: "API 키 로그인이 아니라 ChatGPT 구독 로그인이 필요합니다. codex logout 후 codex login을 실행하세요.",
+          probe: { ok: false, models: 0, error: "ChatGPT subscription sign-in required" },
+          chat: null,
+        }, 400);
+      }
+      const models = [{ id: CODEX_DEFAULT_MODEL, name: "구독 기본 모델" }];
+      return c.json({
+        ok: true,
+        modelCount: models.length,
+        models,
+        selectedModel: CODEX_DEFAULT_MODEL,
+        detected: {
+          apiFormat: "responses" as const,
+          stream: false,
+          baseUrl: "local://codex-subscription",
+          modelsSource: "fallback" as const,
+          authMode: status.authMode ?? "unknown",
+        },
+        probe: { ok: true, models: models.length },
+        chat: null,
+      });
+    }
+
     const language = await currentProjectLanguage();
     const resolvedBaseUrl = await resolveConfiguredServiceBaseUrl(root, service, baseUrl);
     if (!resolvedBaseUrl) {
@@ -4086,8 +4523,20 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
 
   app.get("/api/v1/services/models", async (c) => {
     const secrets = await loadSecrets(root);
+    const rawConfig = await loadRawConfig(root).catch(() => ({} as Record<string, unknown>));
+    const configuredServices = new Set(
+      normalizeServiceConfig((rawConfig.llm as Record<string, unknown> | undefined)?.services)
+        .map((service) => serviceConfigKey(service)),
+    );
+    const codexStatus = configuredServices.has(CODEX_SERVICE_ID)
+      ? await probeCodexCli()
+      : { installed: true, loggedIn: false, authMode: undefined } as const;
+    const codexReady = codexStatus.loggedIn && codexStatus.authMode === "chatgpt";
     const endpoints = getAllEndpoints()
-      .filter((ep) => ep.id !== "custom" && Boolean(secrets.services[ep.id]?.apiKey));
+      .filter((ep) => ep.id !== "custom" && (
+        Boolean(secrets.services[ep.id]?.apiKey)
+        || (ep.id === CODEX_SERVICE_ID && codexReady)
+      ));
 
     const groups = endpoints.map((ep) => ({
       service: ep.id,
@@ -4097,7 +4546,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         .filter((m) => isTextChatModelId(m.id))
         .map((m) => ({
           id: m.id,
-          name: m.id,
+          name: ep.id === CODEX_SERVICE_ID && m.id === CODEX_DEFAULT_MODEL ? "구독 기본 모델" : m.id,
           ...(typeof m.maxOutput === "number" ? { maxOutput: m.maxOutput } : {}),
           ...(m.contextWindowTokens > 0 ? { contextWindow: m.contextWindowTokens } : {}),
         })),
@@ -4140,6 +4589,15 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const refresh = c.req.query("refresh") === "1";
     const secrets = await loadSecrets(root);
     const apiKey = c.req.query("apiKey") || secrets.services[service]?.apiKey || "";
+
+    if (service === CODEX_SERVICE_ID) {
+      const status = await probeCodexCli();
+      return c.json({
+        models: status.loggedIn && status.authMode === "chatgpt"
+          ? [{ id: CODEX_DEFAULT_MODEL, name: "구독 기본 모델", maxOutput: 32768, contextWindow: 200000 }]
+          : [],
+      });
+    }
 
     const resolvedBaseUrl = await resolveConfiguredServiceBaseUrl(root, service);
     const baseService = isCustomServiceId(service) ? "custom" : service;
@@ -5840,31 +6298,37 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const { mode } = await c.req.json<{ mode?: string }>();
     const rawBookPath = join(root, "books", bookId, "book.json");
     try {
-      const [projectConfig, rawBook] = await Promise.all([
+      const [projectConfig] = await Promise.all([
         loadRawConfig(root),
         loadRawBookConfig(root, bookId),
       ]);
       const projectMode = readProjectChapterReviewMode(projectConfig);
-      if (mode === "inherit") {
-        const writing = rawBook.writing && typeof rawBook.writing === "object" && !Array.isArray(rawBook.writing)
-          ? { ...(rawBook.writing as Record<string, unknown>) }
-          : {};
-        delete writing.reviewMode;
-        rawBook.writing = Object.keys(writing).length > 0 ? writing : undefined;
-      } else {
-        rawBook.writing = {
-          ...(rawBook.writing && typeof rawBook.writing === "object" && !Array.isArray(rawBook.writing) ? rawBook.writing as Record<string, unknown> : {}),
-          reviewMode: normalizeChapterReviewMode(mode),
-        };
+      const releaseLock = await state.acquireBookLock(bookId);
+      try {
+        const rawBook = await loadRawBookConfig(root, bookId);
+        if (mode === "inherit") {
+          const writing = rawBook.writing && typeof rawBook.writing === "object" && !Array.isArray(rawBook.writing)
+            ? { ...(rawBook.writing as Record<string, unknown>) }
+            : {};
+          delete writing.reviewMode;
+          rawBook.writing = Object.keys(writing).length > 0 ? writing : undefined;
+        } else {
+          rawBook.writing = {
+            ...(rawBook.writing && typeof rawBook.writing === "object" && !Array.isArray(rawBook.writing) ? rawBook.writing as Record<string, unknown> : {}),
+            reviewMode: normalizeChapterReviewMode(mode),
+          };
+        }
+        await writeFile(rawBookPath, JSON.stringify(rawBook, null, 2), "utf-8");
+        const bookMode = readBookChapterReviewMode(rawBook);
+        return c.json({
+          ok: true,
+          mode: bookMode ?? projectMode,
+          bookMode: bookMode ?? null,
+          projectMode,
+        });
+      } finally {
+        await releaseLock();
       }
-      await writeFile(rawBookPath, JSON.stringify(rawBook, null, 2), "utf-8");
-      const bookMode = readBookChapterReviewMode(rawBook);
-      return c.json({
-        ok: true,
-        mode: bookMode ?? projectMode,
-        bookMode: bookMode ?? null,
-        projectMode,
-      });
     } catch {
       return c.json({ error: `Book "${bookId}" not found` }, 404);
     }
@@ -5920,6 +6384,12 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     if (!resolved) {
       return c.json({ error: "Invalid truth file" }, 400);
     }
+    let safeResolved: string;
+    try {
+      safeResolved = await safeNonSymlinkChildPath(bookDir, join("story", file));
+    } catch {
+      return c.json({ error: "Invalid truth file: symbolic-link targets are not writable" }, 400);
+    }
     // Legacy pointer shims are read-only in new-layout books: writing
     // story_bible.md or book_rules.md does nothing at runtime (the pipeline
     // reads outline/ instead). For pre-Phase-5 books these ARE authoritative.
@@ -5935,12 +6405,18 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     if (RUNTIME_DIAGNOSTIC_FILE_RE.test(file)) {
       return c.json({ error: "Runtime diagnostic files are read-only" }, 400);
     }
-    const { content } = await c.req.json<{ content: string }>();
-    const { writeFile: writeFileFs, mkdir: mkdirFs } = await import("node:fs/promises");
-    const { dirname: dirnameFs } = await import("node:path");
-    await mkdirFs(dirnameFs(resolved), { recursive: true });
-    await writeFileFs(resolved, content, "utf-8");
-    return c.json({ ok: true });
+    const releaseLock = await state.acquireBookLock(id);
+    try {
+      const { content } = await c.req.json<{ content: string }>();
+      const { writeFile: writeFileFs, mkdir: mkdirFs } = await import("node:fs/promises");
+      const { dirname: dirnameFs } = await import("node:path");
+      safeResolved = await safeNonSymlinkChildPath(bookDir, join("story", file));
+      await mkdirFs(dirnameFs(safeResolved), { recursive: true });
+      await writeFileFs(safeResolved, content, "utf-8");
+      return c.json({ ok: true });
+    } finally {
+      await releaseLock();
+    }
   });
 
   // =============================================
@@ -5953,10 +6429,21 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const id = c.req.param("id");
     const bookDir = state.bookDir(id);
     try {
-      const { rm } = await import("node:fs/promises");
-      await rm(bookDir, { recursive: true, force: true });
-      broadcast("book:deleted", { bookId: id });
-      return c.json({ ok: true, bookId: id });
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+
+    try {
+      const releaseLock = await state.acquireBookLock(id);
+      try {
+        const { rm } = await import("node:fs/promises");
+        await rm(bookDir, { recursive: true, force: true });
+        broadcast("book:deleted", { bookId: id });
+        return c.json({ ok: true, bookId: id });
+      } finally {
+        await releaseLock();
+      }
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }
@@ -5973,17 +6460,23 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       language?: string;
     }>();
     try {
-      const book = await state.loadBookConfig(id);
-      const updated = {
-        ...book,
-        ...(updates.chapterWordCount !== undefined ? { chapterWordCount: Number(updates.chapterWordCount) } : {}),
-        ...(updates.targetChapters !== undefined ? { targetChapters: Number(updates.targetChapters) } : {}),
-        ...(updates.status !== undefined ? { status: updates.status as typeof book.status } : {}),
-        ...(updates.language !== undefined ? { language: updates.language as "zh" | "en" } : {}),
-        updatedAt: new Date().toISOString(),
-      };
-      await state.saveBookConfig(id, updated);
-      return c.json({ ok: true, book: updated });
+      await state.loadBookConfig(id);
+      const releaseLock = await state.acquireBookLock(id);
+      try {
+        const book = await state.loadBookConfig(id);
+        const updated = {
+          ...book,
+          ...(updates.chapterWordCount !== undefined ? { chapterWordCount: Number(updates.chapterWordCount) } : {}),
+          ...(updates.targetChapters !== undefined ? { targetChapters: Number(updates.targetChapters) } : {}),
+          ...(updates.status !== undefined ? { status: updates.status as typeof book.status } : {}),
+          ...(updates.language !== undefined ? { language: updates.language as "zh" | "en" } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        await state.saveBookConfig(id, updated);
+        return c.json({ ok: true, book: updated });
+      } finally {
+        await releaseLock();
+      }
     } catch (e) {
       return c.json({ error: String(e) }, 500);
     }

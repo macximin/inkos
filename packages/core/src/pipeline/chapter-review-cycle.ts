@@ -48,6 +48,7 @@ export async function runChapterReviewCycle(params: {
   readonly chapterNumber: number;
   readonly initialOutput: Pick<WriteChapterOutput, "content" | "wordCount" | "postWriteErrors">;
   readonly reducedControlInput?: ChapterReviewCycleControlInput;
+  readonly arcProvenanceContext?: string;
   readonly lengthSpec: LengthSpec;
   readonly initialUsage: ChapterReviewCycleUsage;
   readonly createReviser: () => {
@@ -65,6 +66,7 @@ export async function runChapterReviewCycle(params: {
         contextPackage?: ContextPackage;
         ruleStack?: RuleStack;
         lengthSpec?: LengthSpec;
+        arcProvenanceContext?: string;
       },
     ) => Promise<ReviseOutput>;
   };
@@ -78,6 +80,7 @@ export async function runChapterReviewCycle(params: {
         temperature?: number;
         chapterIntent?: string;
         chapterMemo?: ChapterMemo;
+        arcContext?: string;
         contextPackage?: ContextPackage;
         ruleStack?: RuleStack;
       },
@@ -150,14 +153,17 @@ export async function runChapterReviewCycle(params: {
     content: string,
     options?: { temperature?: number },
   ): Promise<{ auditResult: AuditResult; score: number; lengthInRange: boolean }> => {
+    const auditOptions = {
+      ...(params.reducedControlInput ?? {}),
+      ...(params.arcProvenanceContext ? { arcContext: params.arcProvenanceContext } : {}),
+      ...(options ?? {}),
+    };
     const llmAudit = await params.auditor.auditChapter(
       params.bookDir,
       content,
       params.chapterNumber,
       params.book.genre,
-      params.reducedControlInput
-        ? { ...params.reducedControlInput, ...(options ?? {}) }
-        : options,
+      Object.keys(auditOptions).length > 0 ? auditOptions : undefined,
     );
     totalUsage = params.addUsage(totalUsage, llmAudit.tokenUsage);
     const aiTellsResult = params.analyzeAITells(content);
@@ -250,7 +256,13 @@ export async function runChapterReviewCycle(params: {
         currentAudit.auditResult.issues,
         "auto",
         params.book.genre,
-        { ...params.reducedControlInput, lengthSpec: params.lengthSpec },
+        {
+          ...params.reducedControlInput,
+          lengthSpec: params.lengthSpec,
+          ...(params.arcProvenanceContext
+            ? { arcProvenanceContext: params.arcProvenanceContext }
+            : {}),
+        },
       );
       totalUsage = params.addUsage(totalUsage, reviseOutput.tokenUsage);
 

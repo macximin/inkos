@@ -1,5 +1,5 @@
 import type { AuditIssue, AuditResult } from "../agents/continuity.js";
-import type { ChapterMeta } from "../models/chapter.js";
+import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
 import type { LengthTelemetry } from "../models/length-governance.js";
 import { buildStateDegradedReviewNote } from "./chapter-state-recovery.js";
 
@@ -20,6 +20,7 @@ export async function persistChapterArtifacts(params: {
   readonly lengthWarnings: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly degradedIssues: ReadonlyArray<AuditIssue>;
+  readonly arcProvenance?: ChapterArcProvenance;
   readonly tokenUsage?: ChapterPersistenceUsage;
   readonly loadChapterIndex: () => Promise<ReadonlyArray<ChapterMeta>>;
   readonly saveChapter: () => Promise<void>;
@@ -55,6 +56,7 @@ export async function persistChapterArtifacts(params: {
         )
       : undefined,
     lengthTelemetry: params.lengthTelemetry,
+    arcProvenance: params.arcProvenance,
     tokenUsage: params.tokenUsage,
   };
   const existingIdx = existingIndex.findIndex((e) => e.number === params.chapterNumber);

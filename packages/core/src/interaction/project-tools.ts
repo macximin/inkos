@@ -14,7 +14,7 @@ import { executeEditTransaction } from "./edit-controller.js";
 import { defaultChapterLength } from "../utils/length-metrics.js";
 import type { InteractionRuntimeTools } from "./runtime.js";
 import { writeExportArtifact } from "./export-artifact.js";
-import { safeChildPath } from "../utils/path-safety.js";
+import { safeNonSymlinkChildPath } from "../utils/path-safety.js";
 import { deriveBookIdFromTitle } from "../utils/book-id.js";
 import { normalizePlatformOrOther } from "../models/book.js";
 
@@ -527,13 +527,21 @@ export function createInteractionToolsFromDeps(
       await state.ensureControlDocuments(bookId);
       await writeFile(join(state.bookDir(bookId), "story", "author_intent.md"), content, "utf-8");
     }),
-    writeTruthFile: async (bookId, fileName, content) => withBookMutationLock(state, bookId, async () => {
-      await state.ensureControlDocuments(bookId);
-      const storyDir = join(state.bookDir(bookId), "story");
+    writeTruthFile: async (bookId, fileName, content) => {
       const safeFileName = assertSafeTruthFileName(fileName);
-      const targetPath = safeChildPath(storyDir, safeFileName);
-      await mkdir(dirname(targetPath), { recursive: true });
-      await writeFile(targetPath, content, "utf-8");
-    }),
+      const bookDir = state.bookDir(bookId);
+      const requestedPath = join("story", safeFileName);
+      // Validate before locking so a symlink into another Book never causes us
+      // to acquire only the source Book's lock, then re-check immediately
+      // before the actual write. Do not bootstrap unrelated control documents
+      // here: a malformed or symlinked sibling must not turn a narrow truth-file
+      // write into a broader authority mutation.
+      await safeNonSymlinkChildPath(bookDir, requestedPath);
+      return withBookMutationLock(state, bookId, async () => {
+        const targetPath = await safeNonSymlinkChildPath(bookDir, requestedPath);
+        await mkdir(dirname(targetPath), { recursive: true });
+        await writeFile(targetPath, content, "utf-8");
+      });
+    },
   };
 }

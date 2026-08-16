@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { NarrativeForecast } from "@actalk/inkos-core/forecast/schema";
 import type { ToolExecution } from "../../../store/chat/types";
+import { setAppLanguage } from "../../../lib/app-language";
 import {
   NarrativeForecastPreview,
   buildNarrativeForecastRecheckInstruction,
@@ -67,6 +68,8 @@ function exec(details: unknown, tool = "create_narrative_forecast"): ToolExecuti
   };
 }
 
+afterEach(() => setAppLanguage("zh"));
+
 describe("NarrativeForecastPreview", () => {
   it("extracts create and get tool details without accepting malformed payloads", () => {
     expect(getNarrativeForecastPreviewDetails(exec({
@@ -90,12 +93,92 @@ describe("NarrativeForecastPreview", () => {
       stale: false,
       branchId: "branch-2",
       planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+      arcActivated: true,
+      arc: { id: "arc-fc-1-branch-2", chapterNumbers: [4] },
     }, "select_narrative_branch"))).toEqual({
       kind: "selected",
       stale: false,
       branchId: "branch-2",
       planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+      arcActivated: true,
+      arc: { id: "arc-fc-1-branch-2", chapterNumbers: [4] },
     });
+  });
+
+  it("rejects selected results that cannot safely identify an activated Arc", () => {
+    expect(getNarrativeForecastPreviewDetails(exec({
+      kind: "narrative_branch_selected",
+      stale: false,
+      branchId: "branch-2",
+      planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+      arcActivated: true,
+    }, "select_narrative_branch"))).toBeNull();
+
+    expect(getNarrativeForecastPreviewDetails(exec({
+      kind: "narrative_branch_selected",
+      stale: false,
+      branchId: "branch-2",
+      planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+      arcActivated: false,
+      arc: { id: "arc-fc-1-branch-2", chapterNumbers: [0, 4] },
+    }, "select_narrative_branch"))).toBeNull();
+  });
+
+  it("shows the active Arc id and any non-blocking Rail warning", () => {
+    setAppLanguage("ko");
+    const html = renderToStaticMarkup(React.createElement(NarrativeForecastPreview, {
+      exec: exec({
+        kind: "narrative_branch_selected",
+        stale: false,
+        branchId: "branch-2",
+        planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+        arcActivated: true,
+        arc: { id: "arc-fc-1-branch-2", chapterNumbers: [4, 5] },
+        railWarning: "A/B Rail has no active B; Arc activation continued without binding.",
+      }, "select_narrative_branch"),
+    }));
+
+    expect(html).toContain('data-arc-activated="true"');
+    expect(html).toContain("활성 Arc arc-fc-1-branch-2 · 4, 5화");
+    expect(html).toContain("Rail 연결 경고");
+    expect(html).toContain("Arc activation continued without binding");
+  });
+
+  it("prominently explains ready-B protection when the candidate Arc was saved but not activated", () => {
+    setAppLanguage("ko");
+    const railWarning = "Ready active B B001 is already bound to Arc arc-live; the new Arc draft arc-new was saved but story/arcs/active.json was not changed.";
+    const html = renderToStaticMarkup(React.createElement(NarrativeForecastPreview, {
+      exec: exec({
+        kind: "narrative_branch_selected",
+        stale: false,
+        branchId: "branch-2",
+        planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+        arcActivated: false,
+        arc: { id: "arc-new", chapterNumbers: [4] },
+        railWarning,
+      }, "select_narrative_branch"),
+    }));
+
+    expect(html).toContain('data-arc-activated="false"');
+    expect(html).toContain("후보 Arc arc-new는 저장됐지만 기존 ready B 연결을 보호하기 위해 활성화하지 않았습니다");
+    expect(html).toContain("Rail 연결 경고");
+    expect(html).toContain(railWarning);
+  });
+
+  it("keeps the stale warning without misreporting ready-B protection", () => {
+    setAppLanguage("ko");
+    const html = renderToStaticMarkup(React.createElement(NarrativeForecastPreview, {
+      exec: exec({
+        kind: "narrative_branch_selected",
+        stale: true,
+        branchId: "branch-2",
+        planPath: "story/runtime/narrative-forecasts/fc-1/selected-branch-plan.md",
+        arcActivated: false,
+      }, "select_narrative_branch"),
+    }));
+
+    expect(html).toContain("이 예측은 이전 정본을 기준으로 합니다");
+    expect(html).not.toContain("기존 ready B 연결을 보호하기 위해");
   });
 
   it("renders the divergence, branches, beats, risks and non-canonical boundary", () => {
@@ -139,5 +222,7 @@ describe("NarrativeForecastPreview", () => {
       .toContain("branch-2");
     expect(buildNarrativeForecastRecheckInstruction(forecast.forecastId, "en"))
       .toBe(`Call get_narrative_forecast for forecast ${forecast.forecastId} and report whether it is stale.`);
+    expect(buildNarrativeForecastSelectionInstruction(forecast.forecastId, "branch-2", "ko"))
+      .toContain("활성 Arc 초안");
   });
 });

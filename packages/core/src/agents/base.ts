@@ -3,6 +3,7 @@ import { chatCompletion } from "../llm/provider.js";
 import { appendPromptPackGuidance } from "../prompts/prompt-pack.js";
 import { searchWeb, fetchUrl } from "../utils/web-search.js";
 import type { Logger } from "../utils/logger.js";
+import { CODEX_SERVICE_ID } from "../llm/codex-cli.js";
 
 export interface AgentContext {
   readonly client: LLMClient;
@@ -53,7 +54,7 @@ export abstract class BaseAgent {
     options?: { readonly temperature?: number; readonly maxTokens?: number },
   ): Promise<LLMResponse> {
     // OpenAI has native search — use it directly
-    if (this.ctx.client.provider === "openai") {
+    if (this.ctx.client.provider === "openai" && this.ctx.client.service !== CODEX_SERVICE_ID) {
       return chatCompletion(this.ctx.client, this.ctx.model, messages, {
         ...options,
         webSearch: true,
