@@ -71,6 +71,25 @@ function makeRaw(
 }
 
 describe("parseMemo", () => {
+  it("parses native Korean memo headings without Chinese control labels", () => {
+    const koreanBody = SECTIONS
+      .replaceAll("## 当前任务", "## 현재 작업")
+      .replaceAll("## 读者此刻在等什么", "## 독자가 지금 기다리는 것")
+      .replaceAll("## 该兑现的 / 暂不掀的", "## 이번 화에 지급할 것 / 감출 것")
+      .replaceAll("## 日常/过渡承担什么任务", "## 일상/전환 장면의 기능")
+      .replaceAll("## 关键抉择过三连问", "## 핵심 선택 세 가지 점검")
+      .replaceAll("## 章尾必须发生的改变", "## 화말에 반드시 바뀔 것")
+      .replaceAll("## 本章 hook 账", "## 이번 화 훅 장부")
+      .replaceAll("## 不要做", "## 금지");
+    const raw = `# 12화 메모\n\n## 회차 목표\n현장 물증을 확보한다\n\n## 연결 복선\n- H03\n\n${koreanBody}`;
+
+    const memo = parseMemo(raw, 12, false);
+
+    expect(memo.goal).toBe("현장 물증을 확보한다");
+    expect(memo.threadRefs).toEqual(["H03"]);
+    expect(memo.body).toContain("## 현재 작업");
+  });
+
   it("parses a valid markdown memo without YAML frontmatter", () => {
     const memo = parseMemo(makeRaw({ threadRefs: ["H03", "S004"] }), 12, false);
     expect(memo.chapter).toBe(12);

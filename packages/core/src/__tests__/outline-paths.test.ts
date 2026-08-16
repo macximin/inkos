@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   readCharacterContext,
+  readCurrentStateWithFallback,
   readRhythmPrinciples,
   readRoleCards,
   readStoryFrame,
@@ -93,5 +94,23 @@ describe("outline-paths", () => {
 
     const content = await readRhythmPrinciples(bookDir);
     expect(content).toBe("六条原则");
+  });
+
+  it("derives Korean initial state labels for Korean books", async () => {
+    await writeFile(join(bookDir, "book.json"), JSON.stringify({ language: "ko" }), "utf-8");
+    await writeFile(join(bookDir, "story", "current_state.md"), "# Current State\n\n> Seeded at book creation.", "utf-8");
+    const majorDir = join(bookDir, "story", "roles", "主要角色");
+    await mkdir(majorDir, { recursive: true });
+    await writeFile(
+      join(majorDir, "윤태겸.md"),
+      "## Current_State\n해원정밀 실사 첫날이다.\n",
+      "utf-8",
+    );
+
+    const state = await readCurrentStateWithFallback(bookDir);
+
+    expect(state).toContain("# 초기 상태");
+    expect(state).toContain("윤태겸 (주요): 해원정밀 실사 첫날이다.");
+    expect(state).not.toMatch(/[\u3400-\u9fff]/u);
   });
 });

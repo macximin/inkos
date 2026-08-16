@@ -169,13 +169,33 @@ function renderPersistedPlanMarkdown(
 }
 
 function renderMemoMarkdown(memo: PlanChapterOutput["memo"]): string {
+  const language = memo.body.includes("## 현재 작업")
+    ? "ko"
+    : memo.body.includes("## Current task")
+      ? "en"
+      : "zh";
+  const heading = language === "ko"
+    ? `# ${memo.chapter}화 메모`
+    : language === "en"
+      ? `# Chapter ${memo.chapter} memo`
+      : `# 第 ${memo.chapter} 章 memo`;
+  const goalHeading = language === "ko"
+    ? "## 회차 목표"
+    : language === "en"
+      ? "## Chapter goal"
+      : "## 本章目标";
+  const threadHeading = language === "ko"
+    ? "## 연결 복선"
+    : language === "en"
+      ? "## Thread refs"
+      : "## 关联线索";
   return [
-    `# 第 ${memo.chapter} 章 memo`,
+    heading,
     "",
-    "## 本章目标",
+    goalHeading,
     memo.goal,
     "",
-    "## 关联线索",
+    threadHeading,
     renderList(memo.threadRefs),
     "",
     memo.body.trim(),

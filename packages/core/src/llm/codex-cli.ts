@@ -20,6 +20,15 @@ export const CODEX_SERVICE_ID = "codex";
 export const CODEX_DEFAULT_MODEL = "codex-default";
 export const CODEX_MAX_TOOL_ROUNDS = 8;
 
+export const CODEX_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type CodexReasoningEffort = typeof CODEX_REASONING_EFFORTS[number];
+
+export function parseCodexReasoningEffort(value: unknown): CodexReasoningEffort | undefined {
+  return typeof value === "string" && (CODEX_REASONING_EFFORTS as readonly string[]).includes(value)
+    ? value as CodexReasoningEffort
+    : undefined;
+}
+
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const MAX_STDERR_BYTES = 256 * 1024;
@@ -119,6 +128,7 @@ export type CodexCliResult =
 export interface CodexCliCompletionInput {
   readonly context: PiContext;
   readonly model?: string;
+  readonly reasoningEffort?: CodexReasoningEffort;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly codexBin?: string;
@@ -542,6 +552,9 @@ export async function runCodexCliCompletion(input: CodexCliCompletionInput): Pro
     if (input.model && input.model !== CODEX_DEFAULT_MODEL) {
       args.push("--model", input.model);
     }
+    if (input.reasoningEffort) {
+      args.push("--config", `model_reasoning_effort="${input.reasoningEffort}"`);
+    }
     args.push("-");
 
     const result = await runProcess({
@@ -591,6 +604,9 @@ export function codexCliAgentStream(
         const result = await runCodexCliCompletion({
           context,
           model: model.id,
+          reasoningEffort: parseCodexReasoningEffort(
+            (model as Model<Api> & { readonly codexReasoningEffort?: unknown }).codexReasoningEffort,
+          ),
           signal: options?.signal,
         });
         partial.usage = result.usage;

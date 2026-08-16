@@ -64,6 +64,20 @@ process.stdin.on("end", () => {
     });
     return;
   }
+  if (input.includes("inspect-model-selection")) {
+    const modelIndex = args.indexOf("--model");
+    const configIndex = args.indexOf("--config");
+    emit({
+      kind: "text",
+      text: JSON.stringify({
+        model: modelIndex >= 0 ? args[modelIndex + 1] : null,
+        reasoning: configIndex >= 0 ? args[configIndex + 1] : null,
+      }),
+      name: null,
+      arguments: null,
+    });
+    return;
+  }
   emit({ kind: "text", text: "adapter-ok", name: null, arguments: null });
 });
 `, "utf8");
@@ -150,6 +164,25 @@ process.exit(1);
       if (previous === undefined) delete process.env.INKOS_PRIVATE_TEST_SECRET;
       else process.env.INKOS_PRIVATE_TEST_SECRET = previous;
     }
+  });
+
+  it("passes an explicit model and reasoning effort to Codex", async () => {
+    const result = await runCodexCliCompletion({
+      codexBin: fakeCodex,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "high",
+      context: {
+        messages: [{ role: "user", content: "inspect-model-selection", timestamp: Date.now() }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: "text",
+      text: JSON.stringify({
+        model: "gpt-5.6-terra",
+        reasoning: 'model_reasoning_effort="high"',
+      }),
+    });
   });
 
   it("allows only a declared InkOS tool call", async () => {

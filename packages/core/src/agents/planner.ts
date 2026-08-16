@@ -289,6 +289,44 @@ export class PlannerAgent extends BaseAgent {
     readonly errorMessage: string;
     readonly language: "zh" | "ko" | "en";
   }): string {
+    if (input.language === "ko") {
+      return [
+        `# ${input.chapterNumber}화 메모`,
+        "",
+        "## 회차 목표",
+        input.fallbackGoal || `현재 개요에 따라 ${input.chapterNumber}화를 이어 간다`,
+        "",
+        "## 연결 복선",
+        "없음",
+        "",
+        "## 현재 작업",
+        `현재 회차 목표와 작품 정본을 따라 ${input.chapterNumber}화를 진행하고 임의의 새 방향을 만들지 않는다.`,
+        "",
+        "## 독자가 지금 기다리는 것",
+        "개요와 직전 회차가 만든 기대를 유지하고 현재 압력, 증거, 관계, 목표 가운데 하나를 실제로 전진시킨다.",
+        "",
+        "## 이번 화에 지급할 것 / 감출 것",
+        "근거가 있는 가까운 약속만 지급하고 더 큰 비밀과 종결 정보는 개요가 요구할 때까지 감춘다.",
+        "",
+        "## 일상/전환 장면의 기능",
+        "느린 장면도 압력, 증거, 관계 변화 또는 다음 행동을 준비하는 구체 기능을 맡긴다.",
+        "",
+        "## 핵심 선택 세 가지 점검",
+        "주인공의 핵심 선택에는 이유가 있고 현재 이익과 기존 인물성에 맞아야 한다.",
+        "",
+        "## 화말에 반드시 바뀔 것",
+        "정보, 압력, 관계, 목표, 위험 가운데 하나를 명확히 바꾸어 다음 화를 당긴다.",
+        "",
+        "## 이번 화 훅 장부",
+        "advance: 가까운 약속을 전진시킨다. resolve: 근거가 있는 복선만 결제한다. defer: 큰 줄기는 다음 회차에 유지한다.",
+        "",
+        "## 금지",
+        "기존 사실과 사용자 지시를 어기거나 fallback 메모를 새 장거리 개요로 확대하지 않는다.",
+        "",
+        "## 기획 경고",
+        `모델이 ${MEMO_RETRY_LIMIT}번 연속 유효한 회차 메모를 만들지 못했다. 마지막 오류: ${input.errorMessage}`,
+      ].join("\n");
+    }
     if (input.language !== "zh") {
       return [
         `# Chapter ${input.chapterNumber} memo`,

@@ -16,6 +16,8 @@ import { renderChapterSummariesProjection, renderCurrentStateProjection, renderH
 import { buildLengthSpec } from "../utils/length-metrics.js";
 import { resolveEpubLanguage } from "../interaction/export-artifact.js";
 import { buildStateDegradedIssues, buildStateValidationFeedback } from "../pipeline/chapter-state-recovery.js";
+import { renderChapterHeading } from "../pipeline/runner.js";
+import { parseCurrentStateFacts } from "../utils/story-markdown.js";
 
 describe("native Korean writing contracts", () => {
   it("accepts ko across project, book, interaction, and runtime schemas", () => {
@@ -64,6 +66,22 @@ describe("native Korean writing contracts", () => {
     expect(rendered).toContain("# 회차 요약");
     expect(rendered).toContain("# 현재 상태");
     expect(rendered).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("parses Korean current-state tables without treating headers as facts", () => {
+    const facts = parseCurrentStateFacts(`
+# 현재 상태
+
+| 항목 | 값 |
+| --- | --- |
+| 현재 회차 | 1 |
+| 현재 위치 | 해원정밀 회의실 |
+| 현재 목표 | 전력 기록을 대조한다 |
+`, 1);
+
+    expect(facts).toHaveLength(2);
+    expect(facts.map((fact) => fact.predicate)).toEqual(["현재 위치", "현재 목표"]);
+    expect(facts.every((fact) => fact.subject === "protagonist")).toBe(true);
   });
 
   it("builds a Korean writer route with Korean prose and character-count requirements", () => {
@@ -160,6 +178,10 @@ describe("native Korean writing contracts", () => {
     });
 
     expect(planner).toContain("모든 자연어를 한국어로 작성하세요");
+    expect(planner).toContain("## 회차 목표");
+    expect(planner).toContain("## 현재 작업");
+    expect(planner).toContain("## 이번 화 훅 장부");
+    expect(planner).not.toContain("## 本章目标");
     expect(observer).toContain("모든 관찰 결과를 자연스러운 한국어로 작성하세요");
     expect(observer).not.toMatch(/[\u3400-\u9fff]/u);
     expect(settler).toContain("모든 자연어 값은 자연스러운 한국어로 작성하세요");
@@ -173,6 +195,12 @@ describe("native Korean writing contracts", () => {
     expect(parsed.title).toBe("사라진 장부");
     expect(parsed.content).toBe(body.trim());
     expect(parsed.wordCount).toBe(body.trim().replace(/\r?\n/g, "").length);
+  });
+
+  it("renders Korean chapter headings for draft and revision persistence", () => {
+    expect(renderChapterHeading("ko", 1, "사라진 장부")).toBe("# 1화 사라진 장부");
+    expect(renderChapterHeading("en", 1, "Missing Ledger")).toBe("# Chapter 1: Missing Ledger");
+    expect(renderChapterHeading("zh", 1, "失踪账本")).toBe("# 第1章 失踪账本");
   });
 
   it("advertises the Korean 5000-character default in book creation", () => {

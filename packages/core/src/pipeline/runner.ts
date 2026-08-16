@@ -482,6 +482,16 @@ export interface InitBookOptions {
   readonly currentFocus?: string;
 }
 
+export function renderChapterHeading(
+  language: string | undefined,
+  chapterNumber: number,
+  title: string,
+): string {
+  if (language === "ko") return `# ${chapterNumber}화 ${title}`;
+  if (language === "en") return `# Chapter ${chapterNumber}: ${title}`;
+  return `# 第${chapterNumber}章 ${title}`;
+}
+
 export class PipelineRunner {
   private readonly state: StateManager;
   private readonly config: PipelineConfig;
@@ -1216,9 +1226,7 @@ export class PipelineRunner {
       const filePath = join(chaptersDir, filename);
 
       const resolvedLang = book.language ?? gp.language;
-      const heading = resolvedLang === "en"
-        ? `# Chapter ${chapterNumber}: ${draftOutput.title}`
-        : `# 第${chapterNumber}章 ${draftOutput.title}`;
+      const heading = renderChapterHeading(resolvedLang, chapterNumber, draftOutput.title);
       await writeFile(filePath, `${heading}\n\n${draftOutput.content}`, "utf-8");
 
       // Save truth files
@@ -1654,9 +1662,7 @@ export class PipelineRunner {
         { arcProvenance: chapterMeta.arcProvenance },
       );
       const reviseLang = book.language ?? gp.language;
-      const reviseHeading = reviseLang === "en"
-        ? `# Chapter ${targetChapter}: ${chapterMeta.title}`
-        : `# 第${targetChapter}章 ${chapterMeta.title}`;
+      const reviseHeading = renderChapterHeading(reviseLang, targetChapter, chapterMeta.title);
       await writeFile(
         join(chaptersDir, existingFile),
         `${reviseHeading}\n\n${normalizedRevision.content}`,

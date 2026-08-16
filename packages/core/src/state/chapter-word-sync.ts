@@ -66,7 +66,9 @@ export async function syncChapterWordCounts(
     }
     const content = await readFile(join(chaptersDir, fileName), "utf-8");
     const wordCount = countChapterLength(content, countingMode);
-    if (wordCount === chapter.wordCount) {
+    const telemetryDrifted = chapter.lengthTelemetry !== undefined
+      && chapter.lengthTelemetry.finalCount !== wordCount;
+    if (wordCount === chapter.wordCount && !telemetryDrifted) {
       nextIndex.push(chapter);
       continue;
     }
@@ -76,7 +78,20 @@ export async function syncChapterWordCounts(
       previousWordCount: chapter.wordCount,
       wordCount,
     });
-    nextIndex.push({ ...chapter, wordCount, updatedAt: now });
+    const lengthTelemetry = chapter.lengthTelemetry
+      ? {
+          ...chapter.lengthTelemetry,
+          finalCount: wordCount,
+          lengthWarning: wordCount < chapter.lengthTelemetry.hardMin
+            || wordCount > chapter.lengthTelemetry.hardMax,
+        }
+      : undefined;
+    nextIndex.push({
+      ...chapter,
+      wordCount,
+      updatedAt: now,
+      ...(lengthTelemetry ? { lengthTelemetry } : {}),
+    });
   }
 
   if (changes.length > 0) {

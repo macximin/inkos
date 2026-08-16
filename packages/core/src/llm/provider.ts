@@ -19,7 +19,7 @@ import { fetchWithProxy } from "../utils/proxy-fetch.js";
 import { isApiKeyOptionalForEndpoint } from "../utils/llm-endpoint-auth.js";
 import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
 import { createLeadingThinkTagStripper, stripLeadingThinkBlock } from "./think-tag-stripper.js";
-import { CODEX_SERVICE_ID, runCodexCliCompletion } from "./codex-cli.js";
+import { CODEX_SERVICE_ID, parseCodexReasoningEffort, runCodexCliCompletion } from "./codex-cli.js";
 import {
   agentTrajectoryHeaders,
   beginAgentModelCall,
@@ -319,6 +319,9 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   const preset = resolveServicePreset(serviceName);
   const inkosProvider = getEndpoint(serviceName);
   const modelCard = lookupModel(serviceName, config.model);
+  const codexReasoningEffort = inkosProvider?.id === CODEX_SERVICE_ID
+    ? parseCodexReasoningEffort(config.extra?.codexReasoningEffort)
+    : undefined;
 
   const piApi = resolvePiApi(serviceName, config.apiFormat, (inkosProvider?.api ?? preset?.api) as PiApi) as PiApi;
   const baseUrl = config.baseUrl || inkosProvider?.baseUrl || preset?.baseUrl || "";
@@ -357,6 +360,7 @@ export function createLLMClient(config: LLMConfig): LLMClient {
     maxTokens: modelCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
     ...(extraHeaders ? { headers: extraHeaders } : {}),
     ...(compat ? { compat } : {}),
+    ...(codexReasoningEffort ? { codexReasoningEffort } : {}),
   };
 
   return {
@@ -1442,6 +1446,7 @@ export async function chatCompletion(
                   }),
           },
           model,
+          reasoningEffort: parseCodexReasoningEffort(client.defaults.extra.codexReasoningEffort),
           signal,
         });
         if (result.kind !== "text") {

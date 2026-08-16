@@ -136,7 +136,7 @@ export class StateManager {
     try {
       const raw = await readFile(join(this.bookDir(bookId), "book.json"), "utf-8");
       const parsed = JSON.parse(raw) as { language?: unknown };
-      return parsed.language === "zh" ? "zh" : "en";
+      return parsed.language === "zh" ? "zh" : parsed.language === "ko" ? "ko" : "en";
     } catch {
       return "en";
     }

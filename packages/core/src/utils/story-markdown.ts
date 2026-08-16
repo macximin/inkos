@@ -208,20 +208,22 @@ export function parseMarkdownTableRows(markdown: string): string[][] {
 export function isStateTableHeaderRow(row: ReadonlyArray<string>): boolean {
   const first = (row[0] ?? "").trim().toLowerCase();
   const second = (row[1] ?? "").trim().toLowerCase();
-  return (first === "字段" && second === "值") || (first === "field" && second === "value");
+  return (first === "字段" && second === "值")
+    || (first === "항목" && second === "값")
+    || (first === "field" && second === "value");
 }
 
 export function isCurrentChapterLabel(label: string): boolean {
-  return /^(当前章节|current chapter)$/i.test(label.trim());
+  return /^(当前章节|현재 회차|current chapter)$/i.test(label.trim());
 }
 
 export function inferFactSubject(label: string): string {
-  if (/^(当前位置|current location)$/i.test(label)) return "protagonist";
-  if (/^(主角状态|protagonist state)$/i.test(label)) return "protagonist";
-  if (/^(当前目标|current goal)$/i.test(label)) return "protagonist";
-  if (/^(当前限制|current constraint)$/i.test(label)) return "protagonist";
-  if (/^(当前敌我|current alliances|current relationships)$/i.test(label)) return "protagonist";
-  if (/^(当前冲突|current conflict)$/i.test(label)) return "protagonist";
+  if (/^(当前位置|현재 위치|current location)$/i.test(label)) return "protagonist";
+  if (/^(主角状态|주인공 상태|protagonist state)$/i.test(label)) return "protagonist";
+  if (/^(当前目标|현재 목표|current goal)$/i.test(label)) return "protagonist";
+  if (/^(当前限制|현재 제약|current constraint)$/i.test(label)) return "protagonist";
+  if (/^(当前敌我|현재 관계|current alliances|current relationships)$/i.test(label)) return "protagonist";
+  if (/^(当前冲突|현재 갈등|current conflict)$/i.test(label)) return "protagonist";
   return "current_state";
 }
 

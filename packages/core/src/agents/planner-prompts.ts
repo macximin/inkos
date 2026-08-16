@@ -254,18 +254,38 @@ const PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX = `## 한국어 출력 규칙
 
 `;
 
+function localizePlannerMemoStructureToKorean(prompt: string): string {
+  return prompt
+    .replaceAll("# Chapter 12 memo", "# 12화 메모")
+    .replaceAll("## Chapter goal", "## 회차 목표")
+    .replaceAll("## Thread refs", "## 연결 복선")
+    .replaceAll("## Current task", "## 현재 작업")
+    .replaceAll("## What the reader is waiting for right now", "## 독자가 지금 기다리는 것")
+    .replaceAll("## To pay off / to keep buried", "## 이번 화에 지급할 것 / 감출 것")
+    .replaceAll("## What the slow / transitional beats carry", "## 일상/전환 장면의 기능")
+    .replaceAll("## Three-question check on the key choice", "## 핵심 선택 세 가지 점검")
+    .replaceAll("## Required end-of-chapter change", "## 화말에 반드시 바뀔 것")
+    .replaceAll("## Hook ledger for this chapter", "## 이번 화 훅 장부")
+    .replaceAll("## Do not", "## 금지")
+    .replaceAll("## Planner warning", "## 기획 경고");
+}
+
 /**
  * Phase hotfix 4: select the language-appropriate planner system prompt.
  * Defaults to zh for backward compatibility — explicit "en" required for
  * the English variant.
  */
 export function getPlannerMemoSystemPrompt(language: "zh" | "ko" | "en" = "zh"): string {
-  if (language === "ko") return PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX + PLANNER_MEMO_SYSTEM_PROMPT_EN;
+  if (language === "ko") {
+    return PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX
+      + localizePlannerMemoStructureToKorean(PLANNER_MEMO_SYSTEM_PROMPT_EN);
+  }
   return language === "en" ? PLANNER_MEMO_SYSTEM_PROMPT_EN : PLANNER_MEMO_SYSTEM_PROMPT;
 }
 
 export function getPlannerMemoUserTemplate(language: "zh" | "ko" | "en" = "zh"): string {
-  return language !== "zh" ? PLANNER_MEMO_USER_TEMPLATE_EN : PLANNER_MEMO_USER_TEMPLATE;
+  if (language === "ko") return localizePlannerMemoStructureToKorean(PLANNER_MEMO_USER_TEMPLATE_EN);
+  return language === "en" ? PLANNER_MEMO_USER_TEMPLATE_EN : PLANNER_MEMO_USER_TEMPLATE;
 }
 
 export const PLANNER_MEMO_USER_TEMPLATE = `# 第 {{chapterNumber}} 章 memo 请求

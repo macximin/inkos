@@ -25,23 +25,24 @@ export class PlannerParseError extends Error {
 //   only need to ensure the section is not whitespace-only.
 interface RequiredSection {
   readonly zh: string;
+  readonly ko: string;
   readonly en: string;
   readonly minContentChars: number;
 }
 
 const REQUIRED_SECTIONS: ReadonlyArray<RequiredSection> = [
-  { zh: "## 当前任务", en: "## Current task", minContentChars: 20 },
-  { zh: "## 读者此刻在等什么", en: "## What the reader is waiting for right now", minContentChars: 20 },
-  { zh: "## 该兑现的 / 暂不掀的", en: "## To pay off / to keep buried", minContentChars: 20 },
-  { zh: "## 日常/过渡承担什么任务", en: "## What the slow / transitional beats carry", minContentChars: 20 },
-  { zh: "## 关键抉择过三连问", en: "## Three-question check on the key choice", minContentChars: 20 },
-  { zh: "## 章尾必须发生的改变", en: "## Required end-of-chapter change", minContentChars: 20 },
-  { zh: "## 本章 hook 账", en: "## Hook ledger for this chapter", minContentChars: 20 },
-  { zh: "## 不要做", en: "## Do not", minContentChars: 1 },
+  { zh: "## 当前任务", ko: "## 현재 작업", en: "## Current task", minContentChars: 20 },
+  { zh: "## 读者此刻在等什么", ko: "## 독자가 지금 기다리는 것", en: "## What the reader is waiting for right now", minContentChars: 20 },
+  { zh: "## 该兑现的 / 暂不掀的", ko: "## 이번 화에 지급할 것 / 감출 것", en: "## To pay off / to keep buried", minContentChars: 20 },
+  { zh: "## 日常/过渡承担什么任务", ko: "## 일상/전환 장면의 기능", en: "## What the slow / transitional beats carry", minContentChars: 20 },
+  { zh: "## 关键抉择过三连问", ko: "## 핵심 선택 세 가지 점검", en: "## Three-question check on the key choice", minContentChars: 20 },
+  { zh: "## 章尾必须发生的改变", ko: "## 화말에 반드시 바뀔 것", en: "## Required end-of-chapter change", minContentChars: 20 },
+  { zh: "## 本章 hook 账", ko: "## 이번 화 훅 장부", en: "## Hook ledger for this chapter", minContentChars: 20 },
+  { zh: "## 不要做", ko: "## 금지", en: "## Do not", minContentChars: 1 },
 ];
 
-const GOAL_HEADINGS = ["## 本章目标", "## Chapter goal"] as const;
-const THREAD_HEADINGS = ["## 关联线索", "## Thread refs", "## Related threads"] as const;
+const GOAL_HEADINGS = ["## 本章目标", "## 회차 목표", "## Chapter goal"] as const;
+const THREAD_HEADINGS = ["## 关联线索", "## 연결 복선", "## Thread refs", "## Related threads"] as const;
 
 /**
  * Extract the content between `heading` and the next `## ...` heading (or
@@ -73,7 +74,7 @@ function dropLeadingProse(raw: string): string {
     "# Chapter ",
     ...GOAL_HEADINGS,
     ...THREAD_HEADINGS,
-    ...REQUIRED_SECTIONS.flatMap((section) => [section.zh, section.en]),
+    ...REQUIRED_SECTIONS.flatMap((section) => [section.zh, section.ko, section.en]),
   ];
   let first = -1;
   for (const marker of markers) {
@@ -112,7 +113,7 @@ function extractThreadRefs(body: string): string[] {
 
 function extractMemoBody(markdown: string): string {
   const starts = REQUIRED_SECTIONS
-    .flatMap((section) => [section.zh, section.en])
+    .flatMap((section) => [section.zh, section.ko, section.en])
     .map((heading) => markdown.indexOf(heading))
     .filter((index) => index >= 0);
   if (starts.length === 0) return markdown.trim();
@@ -126,7 +127,11 @@ function makeDisplayGoal(goal: string): string {
 
 function prependFullGoalIfNeeded(markdown: string, body: string, fullGoal: string, displayGoal: string): string {
   if (fullGoal === displayGoal) return body;
-  const heading = markdown.includes("## Chapter goal") ? "## Chapter goal" : "## 本章目标";
+  const heading = markdown.includes("## 회차 목표")
+    ? "## 회차 목표"
+    : markdown.includes("## Chapter goal")
+      ? "## Chapter goal"
+      : "## 本章目标";
   return `${heading}\n${fullGoal}\n\n${body}`;
 }
 
@@ -162,7 +167,7 @@ export function parseMemo(
   const displayGoal = makeDisplayGoal(goal);
 
   const missing = REQUIRED_SECTIONS.filter(
-    (section) => !body.includes(section.zh) && !body.includes(section.en),
+    (section) => !body.includes(section.zh) && !body.includes(section.ko) && !body.includes(section.en),
   );
   if (missing.length > 0) {
     // Report by zh heading (canonical) so the LLM-feedback loop stays stable.
@@ -177,7 +182,11 @@ export function parseMemo(
   // 20 chars (one short sentence) while "## 不要做" / "## Do not" allows 5
   // (e.g. "无", "N/A") since "no extra prohibitions" is a legitimate state.
   const empty = REQUIRED_SECTIONS.filter((section) => {
-    const heading = body.includes(section.zh) ? section.zh : section.en;
+    const heading = body.includes(section.zh)
+      ? section.zh
+      : body.includes(section.ko)
+        ? section.ko
+        : section.en;
     const content = extractSectionContent(body, heading);
     return content.length < section.minContentChars;
   });

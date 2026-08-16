@@ -307,17 +307,31 @@ export async function readCurrentStateWithFallback(
     return raw;
   }
 
-  const [cards, pendingHooks] = await Promise.all([
+  const [cards, pendingHooks, bookConfigRaw] = await Promise.all([
     readRoleCards(bookDir),
     readOr(join(storyDir, "pending_hooks.md"), ""),
+    readOr(join(bookDir, "book.json"), ""),
   ]);
+
+  let language: "zh" | "ko" | "en" = "zh";
+  try {
+    const parsed = JSON.parse(bookConfigRaw) as { language?: unknown };
+    if (parsed.language === "ko" || parsed.language === "en") language = parsed.language;
+  } catch {
+    // Legacy or damaged book config: retain the historical Chinese fallback.
+  }
 
   const roleLines = cards
     .map((card) => {
       const state = extractCurrentStateFromRole(card.content);
       if (!state) return null;
-      const tierLabel = card.tier === "major" ? "主要" : "次要";
-      return `- ${card.name}（${tierLabel}）：${state.replace(/\s+/g, " ")}`;
+      const tierLabel = language === "ko"
+        ? (card.tier === "major" ? "주요" : "보조")
+        : language === "en"
+          ? (card.tier === "major" ? "major" : "minor")
+          : (card.tier === "major" ? "主要" : "次要");
+      const punctuation = language === "zh" ? ["（", "）："] : [" (", "): "];
+      return `- ${card.name}${punctuation[0]}${tierLabel}${punctuation[1]}${state.replace(/\s+/g, " ")}`;
     })
     .filter((line): line is string => line !== null);
 
@@ -327,13 +341,25 @@ export async function readCurrentStateWithFallback(
     return raw.trim() ? raw : fallbackPlaceholder;
   }
 
-  const parts: string[] = ["# 初始状态（第 0 章，由 roles + 种子伏笔派生）"];
+  const parts: string[] = [language === "ko"
+    ? "# 초기 상태 (0화, roles와 씨앗 복선에서 파생)"
+    : language === "en"
+      ? "# Initial state (chapter 0, derived from roles and seed hooks)"
+      : "# 初始状态（第 0 章，由 roles + 种子伏笔派生）"];
   if (roleLines.length > 0) {
-    parts.push("\n## 角色初始位置 / 处境");
+    parts.push(language === "ko"
+      ? "\n## 인물의 초기 위치 / 상황"
+      : language === "en"
+        ? "\n## Initial character positions / situations"
+        : "\n## 角色初始位置 / 处境");
     parts.push(...roleLines);
   }
   if (hookLines.length > 0) {
-    parts.push("\n## 种子伏笔（startChapter = 0）");
+    parts.push(language === "ko"
+      ? "\n## 씨앗 복선 (startChapter = 0)"
+      : language === "en"
+        ? "\n## Seed hooks (startChapter = 0)"
+        : "\n## 种子伏笔（startChapter = 0）");
     parts.push(...hookLines.map((line) => `- ${line}`));
   }
   return parts.join("\n");

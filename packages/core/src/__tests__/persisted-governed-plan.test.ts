@@ -91,6 +91,35 @@ function buildArcProvenance(chapter: number): ChapterArcProvenance {
 }
 
 describe("persisted-governed-plan round trip", () => {
+  it("persists and reloads Korean memo headings without Chinese labels", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "inkos-plan-ko-"));
+    await mkdir(join(dir, "story", "runtime"), { recursive: true });
+    await writeFile(join(dir, "story", "runtime", "chapter-0001.intent.md"), "# 회차 의도\n", "utf-8");
+    const plan = buildPlan(1);
+    const koreanBody = plan.memo.body
+      .replaceAll("## 当前任务", "## 현재 작업")
+      .replaceAll("## 读者此刻在等什么", "## 독자가 지금 기다리는 것")
+      .replaceAll("## 该兑现的 / 暂不掀的", "## 이번 화에 지급할 것 / 감출 것")
+      .replaceAll("## 日常/过渡承担什么任务", "## 일상/전환 장면의 기능")
+      .replaceAll("## 关键抉择过三连问", "## 핵심 선택 세 가지 점검")
+      .replaceAll("## 章尾必须发生的改变", "## 화말에 반드시 바뀔 것")
+      .replaceAll("## 本章 hook 账", "## 이번 화 훅 장부")
+      .replaceAll("## 不要做", "## 금지");
+    const koreanPlan: PlanChapterOutput = {
+      ...plan,
+      memo: { ...plan.memo, goal: "장부를 확보한다", body: koreanBody },
+    };
+
+    await savePersistedPlan(dir, koreanPlan);
+
+    const persisted = await readFile(join(dir, "story", "runtime", "chapter-0001.plan.md"), "utf-8");
+    expect(persisted).toContain("# 1화 메모");
+    expect(persisted).toContain("## 회차 목표");
+    expect(persisted).toContain("## 연결 복선");
+    expect(persisted).not.toContain("## 本章目标");
+    expect((await loadPersistedPlan(dir, 1))?.memo).toEqual(koreanPlan.memo);
+  });
+
   it("savePersistedPlan + loadPersistedPlan returns equal memo", async () => {
     const dir = await mkdtemp(join(tmpdir(), "inkos-plan-"));
     await mkdir(join(dir, "story", "runtime"), { recursive: true });

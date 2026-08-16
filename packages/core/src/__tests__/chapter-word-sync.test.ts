@@ -75,6 +75,78 @@ describe("syncChapterWordCounts", () => {
     expect(savedIndex.find((c) => c.number === 2)?.wordCount).toBe(10);
   });
 
+  it("updates final length telemetry when a hand-edited chapter is recounted", async () => {
+    const entry = chapterEntry(1, "대조", 3000);
+    const withTelemetry: ChapterMeta = {
+      ...entry,
+      lengthTelemetry: {
+        target: 5000,
+        softMin: 4300,
+        softMax: 5700,
+        hardMin: 3600,
+        hardMax: 6400,
+        countingMode: "ko_chars",
+        writerCount: 4100,
+        postWriterNormalizeCount: 0,
+        postReviseCount: 4200,
+        finalCount: 4200,
+        normalizeApplied: false,
+        lengthWarning: false,
+      },
+    };
+    const body = "가".repeat(5000);
+    const { root, bookDir } = await setupBook({
+      bookId: "telemetrybook",
+      language: "ko",
+      chapters: [{ file: "0001_대조.md", content: `# 1화 대조\n\n${body}` }],
+      index: [withTelemetry],
+    });
+
+    await syncChapterWordCounts(new StateManager(root), "telemetrybook");
+
+    const saved = JSON.parse(
+      await readFile(join(bookDir, "chapters", "index.json"), "utf-8"),
+    ) as ChapterMeta[];
+    expect(saved[0]?.wordCount).toBe(5000);
+    expect(saved[0]?.lengthTelemetry?.finalCount).toBe(5000);
+    expect(saved[0]?.lengthTelemetry?.lengthWarning).toBe(false);
+  });
+
+  it("repairs telemetry drift even when the top-level word count already matches", async () => {
+    const entry = chapterEntry(1, "대조", 5000);
+    const withTelemetry: ChapterMeta = {
+      ...entry,
+      lengthTelemetry: {
+        target: 5000,
+        softMin: 4300,
+        softMax: 5700,
+        hardMin: 3600,
+        hardMax: 6400,
+        countingMode: "ko_chars",
+        writerCount: 4200,
+        postWriterNormalizeCount: 0,
+        postReviseCount: 4300,
+        finalCount: 4300,
+        normalizeApplied: false,
+        lengthWarning: false,
+      },
+    };
+    const { root, bookDir } = await setupBook({
+      bookId: "telemetry-only-book",
+      language: "ko",
+      chapters: [{ file: "0001_대조.md", content: `# 1화 대조\n\n${"가".repeat(5000)}` }],
+      index: [withTelemetry],
+    });
+
+    const result = await syncChapterWordCounts(new StateManager(root), "telemetry-only-book");
+    const saved = JSON.parse(
+      await readFile(join(bookDir, "chapters", "index.json"), "utf-8"),
+    ) as ChapterMeta[];
+
+    expect(result.changes).toEqual([{ number: 1, title: "대조", previousWordCount: 5000, wordCount: 5000 }]);
+    expect(saved[0]?.lengthTelemetry?.finalCount).toBe(5000);
+  });
+
   it("reports no changes when the index already matches the files", async () => {
     const { root } = await setupBook({
       bookId: "steadybook",
