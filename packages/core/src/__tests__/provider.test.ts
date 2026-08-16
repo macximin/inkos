@@ -5,6 +5,7 @@ import {
   chatCompletion,
   type LLMClient,
 } from "../llm/provider.js";
+import { runWithAgentTrajectory } from "../llm/agent-trajectory.js";
 
 // ── Mock @mariozechner/pi-ai ──────────────────────────────────────────────────
 // We intercept streamSimple so tests don't hit the network.
@@ -88,6 +89,18 @@ function makeErrorStream(message: string): AsyncIterable<Record<string, unknown>
       return {
         async next() {
           throw new Error(message);
+        },
+      };
+    },
+  };
+}
+
+function makeNeverStream(): AsyncIterable<Record<string, unknown>> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Record<string, unknown>> {
+      return {
+        async next() {
+          return new Promise<IteratorResult<Record<string, unknown>>>(() => {});
         },
       };
     },
@@ -233,7 +246,7 @@ describe("chatCompletion via pi-ai", () => {
     expect(opts.maxTokens).toBe(256);
   });
 
-  it("passes the caller AbortSignal to pi-ai", async () => {
+  it("propagates caller aborts through the guarded signal passed to pi-ai", async () => {
     mockStreamSimple.mockReturnValue(makeTextStream("ok"));
     const controller = new AbortController();
 
@@ -242,7 +255,24 @@ describe("chatCompletion via pi-ai", () => {
     });
 
     const opts = mockStreamSimple.mock.calls[0]?.[2] as Record<string, unknown>;
-    expect(opts.signal).toBe(controller.signal);
+    const signal = opts.signal as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+    controller.abort();
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("honors a caller-specific first-event deadline", async () => {
+    mockStreamSimple.mockReturnValue(makeNeverStream());
+
+    const error = await captureError(
+      chatCompletion(makeClient(), "test-model", [{ role: "user", content: "hi" }], {
+        firstEventTimeoutMs: 10,
+        retry: false,
+      }),
+    );
+
+    expect(error.message).toContain("LLM stream produced no event within 10ms");
   });
 
   it("drops non-ByteString headers before calling pi-ai", async () => {
@@ -420,6 +450,51 @@ describe("chatCompletion via pi-ai", () => {
     });
     expect(init.headers).not.toHaveProperty("X-Bad");
 
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps one model-call id while incrementing kkaiapi client retry attempts", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: "Unavailable",
+        headers: new Headers(),
+        text: async () => JSON.stringify({ error: { message: "temporary unavailable" } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "recovered" } }],
+          usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = makeClient(0.7, {
+      service: "kkaiapi",
+      stream: false,
+      _piModel: { ...MOCK_PI_MODEL, baseUrl: "https://api.kkaiapi.com/v1" },
+    });
+
+    const result = await runWithAgentTrajectory({
+      conversationId: "inkos-conv",
+      runId: "run-7",
+      agentRole: "workflow",
+    }, () => chatCompletion(client, "deepseek-v4-flash", [{ role: "user", content: "write" }]));
+
+    expect(result.content).toBe("recovered");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const first = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    const second = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(first["X-InkOS-Model-Call-ID"]).toBeTruthy();
+    expect(second["X-InkOS-Model-Call-ID"]).toBe(first["X-InkOS-Model-Call-ID"]);
+    expect(first["X-InkOS-Client-Attempt"]).toBe("1");
+    expect(second["X-InkOS-Client-Attempt"]).toBe("2");
+    expect(second).toMatchObject({
+      "X-InkOS-Conversation-ID": "inkos-conv",
+      "X-InkOS-Run-ID": "run-7",
+      "X-InkOS-Agent-Role": "workflow",
+    });
     vi.unstubAllGlobals();
   });
 

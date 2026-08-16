@@ -93,7 +93,7 @@ export async function retrySettlementAfterValidationFailure(
     }
   }
 
-  if (retryValidation.passed) {
+  if (retryValidation.passed && !retryValidation.repairRequired) {
     return {
       kind: "recovered",
       output: retryOutput,

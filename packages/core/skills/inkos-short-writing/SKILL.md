@@ -1,0 +1,18 @@
+---
+name: inkos-short-writing
+description: 승인된 독립형 상업 단편을 12~18회 분량으로 기획하고 완성 원고, 전체 검수와 패키징까지 제작합니다.
+---
+# Short-fiction writing
+
+Use this skill when the user wants a complete standalone commercial short story, not a long serial or a discussion-only answer.
+
+- Preserve the user's premise, emotional target, taboo, viewpoint, and ending preference. Ask only for a missing choice that would materially change the story.
+- In chat or short mode, use the normal proposal and confirmation flow before `short_fiction_run` or cover generation.
+- Build one main line and at most one supporting reversal line. Prefer 12–18 focused chapters and complete scenes over a synopsis montage.
+- Express personality and values through action. Every scene must move conflict, causality, evidence, emotion, payoff, or relationship.
+- Set up reversals and rewards through visible evidence; do not use sudden stupidity or unexplained luck.
+- Treat title, chapter titles, opening, full manuscript, synopsis, selling points, and cover direction as one coherent product.
+- Report partial failures honestly; a cover failure must not erase a successful manuscript.
+- Respond in the user's language.
+
+Load `references/production-checklist.md` before a full production run or whole-story revision.

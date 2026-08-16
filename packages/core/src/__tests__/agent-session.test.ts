@@ -21,7 +21,7 @@ const {
   codexLoopControl,
 } = vi.hoisted(() => ({
   agentInstances: [] as any[],
-  streamCalls: [] as Array<{ model: any; context: any }>,
+  streamCalls: [] as Array<{ model: any; context: any; options: any }>,
   heldStreamCompletions: [] as Array<() => void>,
   heldStreamWaiters: [] as Array<() => void>,
   codexStreamCalls: [] as Array<{ model: any; context: any }>,
@@ -126,8 +126,8 @@ vi.mock("@mariozechner/pi-ai", async () => {
     };
   }
 
-  const streamSimple = vi.fn((model: any, context: any) => {
-    streamCalls.push({ model: clone(model), context: clone(context) });
+  const streamSimple = vi.fn((model: any, context: any, options: any) => {
+    streamCalls.push({ model: clone(model), context: clone(context), options: clone(options) });
     const stream = actual.createAssistantMessageEventStream();
     const last = context.messages.at(-1);
     const prompt = lastVisibleUserText(context.messages);
@@ -273,6 +273,7 @@ import {
 } from "../interaction/session-transcript.js";
 import { restoreAgentMessagesFromTranscript } from "../interaction/session-transcript-restore.js";
 import { PlayStore } from "../play/play-store.js";
+import { opaqueConversationId } from "../llm/agent-trajectory.js";
 
 async function writeProjectAgentSkill(
   projectRoot: string,
@@ -327,6 +328,7 @@ describe("runAgentSession cache — bookId switch", () => {
     evictAgentCache("s-project-root-cache");
     evictAgentCache("s-interleave-seq");
     evictAgentCache("s-context-window");
+    evictAgentCache("trace-session");
     evictAgentCache("book-create-session");
     evictAgentCache("book-create-confirmed-session");
     evictAgentCache("short-session");
@@ -619,6 +621,34 @@ describe("runAgentSession cache — bookId switch", () => {
 
     expect(agentInstances).toHaveLength(2);
     expect(streamCalls.at(-1)?.model.baseUrl).toBe("https://two.example/v1");
+  });
+
+  it("adds main-agent trajectory metadata only for kkaiapi streams", async () => {
+    const pipeline = {} as any;
+    const model = {
+      provider: "openai",
+      id: "deepseek-v4-flash",
+      api: "openai-completions",
+      baseUrl: "https://api.kkaiapi.com/v1",
+      input: ["text"],
+    } as any;
+
+    await runAgentSession(
+      { sessionId: "trace-session", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
+      "hi",
+    );
+
+    const headers = streamCalls.at(-1)?.options?.headers;
+    expect(headers).toMatchObject({
+      "X-InkOS-Trace-Version": "1",
+      "X-InkOS-Scaffold": "pi-inkos",
+      "X-InkOS-Conversation-ID": opaqueConversationId("trace-session"),
+      "X-InkOS-Agent-Role": "main",
+      "X-InkOS-Pi-Turn-Index": "1",
+      "X-InkOS-Client-Attempt": "1",
+    });
+    expect(headers["X-InkOS-Run-ID"]).toBeTruthy();
+    expect(headers["X-InkOS-Model-Call-ID"]).toBeTruthy();
   });
 
   it("rebuilds cached Agent when transcript committed seq changes outside cache", async () => {
@@ -1206,6 +1236,7 @@ describe("runAgentSession cache — bookId switch", () => {
       "research_web",
       "ingest_material",
       "retrieve_material",
+      "manage_book_reference",
       "import_chapters",
       "create_narrative_forecast",
       "get_narrative_forecast",
@@ -1233,6 +1264,7 @@ describe("runAgentSession cache — bookId switch", () => {
       "research_web",
       "ingest_material",
       "retrieve_material",
+      "manage_book_reference",
       "create_narrative_forecast",
       "get_narrative_forecast",
       "select_narrative_branch",
@@ -1263,6 +1295,7 @@ describe("runAgentSession cache — bookId switch", () => {
       "research_web",
       "ingest_material",
       "retrieve_material",
+      "manage_book_reference",
       "import_chapters",
       "create_narrative_forecast",
       "get_narrative_forecast",
@@ -1292,6 +1325,7 @@ describe("runAgentSession cache — bookId switch", () => {
       "delete_latest_chapter",
       "ingest_material",
       "retrieve_material",
+      "manage_book_reference",
       "grep",
       "ls",
       "use_skill",

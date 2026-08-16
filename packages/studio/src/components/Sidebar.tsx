@@ -615,7 +615,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
               label={t("nav.import")}
               icon={<FileInput size={16} />}
               active={activePage === "import"}
-              onClick={nav.toImport}
+              onClick={() => nav.toImport()}
             />
             <SidebarItem
               label={t("nav.radar")}
