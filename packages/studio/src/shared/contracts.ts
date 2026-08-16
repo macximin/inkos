@@ -42,7 +42,7 @@ export interface BookSummary {
 export interface BookDetail extends BookSummary {
   readonly createdAt: string;
   readonly chapterWordCount: number;
-  readonly language: "zh" | "en" | null;
+  readonly language: "zh" | "ko" | "en" | null;
 }
 
 // --- Chapters ---

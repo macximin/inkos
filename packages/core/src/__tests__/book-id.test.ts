@@ -5,9 +5,11 @@ describe("book id safety", () => {
   it("accepts ids produced by InkOS title derivation", () => {
     expect(deriveBookIdFromTitle("夜港账本")).toBe("夜港账本");
     expect(deriveBookIdFromTitle(" Harbor: Ledger! ")).toBe("harbor-ledger");
+    expect(deriveBookIdFromTitle(" 감사의 밤 ")).toBe("감사의-밤");
     expect(isSafeBookId("harbor-ledger")).toBe(true);
     expect(isSafeBookId("夜港账本")).toBe(true);
     expect(isSafeBookId("天机破诡：仙帝重生救苍生")).toBe(true);
+    expect(isSafeBookId("감사의-밤")).toBe(true);
   });
 
   it("rejects prompt injection and path traversal shapes", () => {

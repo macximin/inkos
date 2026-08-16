@@ -53,7 +53,7 @@ const ENGLISH_STOP_WORDS = new Set([
 
 export function analyzeChapterCadence(params: {
   readonly rows: ReadonlyArray<CadenceSummaryRow>;
-  readonly language: "zh" | "en";
+  readonly language: "zh" | "ko" | "en";
 }): ChapterCadenceAnalysis {
   const recentRows = [...params.rows]
     .sort((left, right) => left.chapter - right.chapter)
@@ -142,7 +142,7 @@ function analyzeMoodPressure(
 
 function analyzeTitlePressure(
   rows: ReadonlyArray<CadenceSummaryRow>,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): TitleCadencePressure | undefined {
   const titles = rows
     .map((row) => row.title.trim())
@@ -179,7 +179,7 @@ function analyzeTitlePressure(
   return undefined;
 }
 
-function extractTitleTokens(title: string, language: "zh" | "en"): string[] {
+function extractTitleTokens(title: string, language: "zh" | "ko" | "en"): string[] {
   if (language === "en") {
     const words = title.match(/[a-z]{4,}/gi) ?? [];
     return [...new Set(
@@ -187,6 +187,19 @@ function extractTitleTokens(title: string, language: "zh" | "en"): string[] {
         .map((word) => word.toLowerCase())
         .filter((word) => !ENGLISH_STOP_WORDS.has(word)),
     )];
+  }
+
+  if (language === "ko") {
+    const segments = title.match(/[가-힣]{2,}/g) ?? [];
+    const tokens = new Set<string>();
+    for (const segment of segments) {
+      for (let size = 2; size <= Math.min(4, segment.length); size += 1) {
+        for (let index = 0; index <= segment.length - size; index += 1) {
+          tokens.add(segment.slice(index, index + size));
+        }
+      }
+    }
+    return [...tokens];
   }
 
   const segments = title.match(/[\u4e00-\u9fff]{2,}/g) ?? [];

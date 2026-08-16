@@ -37,7 +37,7 @@ export class StateValidatorAgent extends BaseAgent {
     newState: string,
     oldHooks: string,
     newHooks: string,
-    language: "zh" | "en" = "zh",
+    language: "zh" | "ko" | "en" = "zh",
     authorityContext?: StateValidationAuthorityContext,
   ): Promise<ValidationResult> {
     const stateDiff = this.computeDiff(oldState, newState, "State Card");
@@ -48,7 +48,9 @@ export class StateValidatorAgent extends BaseAgent {
       return { warnings: [], passed: true, repairRequired: false };
     }
 
-    const langInstruction = language === "en"
+    const langInstruction = language === "ko"
+      ? "경고의 category와 설명을 자연스러운 한국어로 작성하세요. 판정 토큰 PASS, REPAIR, FAIL은 그대로 유지하세요."
+      : language === "en"
       ? "Respond in English."
       : "用中文回答。";
 

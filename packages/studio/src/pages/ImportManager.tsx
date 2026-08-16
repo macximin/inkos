@@ -308,9 +308,10 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
                 <option value="urban">{tr("都市", "Urban", "현대물")}</option>
                 <option value="xianxia">{tr("仙侠", "Xianxia", "선협")}</option>
               </select>
-              <select value={ffLang} onChange={(e) => setFfLang(e.target.value as "zh" | "en")}
+              <select value={ffLang} onChange={(e) => setFfLang(e.target.value as "zh" | "ko" | "en")}
                 className="px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm">
                 <option value="zh">{tr("中文", "Chinese", "중국어")}</option>
+                <option value="ko">한국어</option>
                 <option value="en">English</option>
               </select>
             </div>
@@ -363,9 +364,10 @@ export function ImportManager({ nav, theme, t, initialTab }: { nav: Nav; theme: 
                 <option value="urban">{tr("都市", "Urban", "현대물")}</option>
                 <option value="xianxia">{tr("仙侠", "Xianxia", "선협")}</option>
               </select>
-              <select value={imLang} onChange={(e) => setImLang(e.target.value as "zh" | "en")}
+              <select value={imLang} onChange={(e) => setImLang(e.target.value as "zh" | "ko" | "en")}
                 className="px-3 py-2 rounded-lg bg-secondary/30 border border-border text-sm">
                 <option value="zh">{tr("中文", "Chinese", "중국어")}</option>
+                <option value="ko">한국어</option>
                 <option value="en">English</option>
               </select>
             </div>

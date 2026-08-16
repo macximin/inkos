@@ -22,7 +22,7 @@ function chapterEntry(number: number, title: string, wordCount: number): Chapter
 
 async function setupBook(params: {
   readonly bookId: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly chapters: ReadonlyArray<{ readonly file: string; readonly content: string }>;
   readonly index: ReadonlyArray<ChapterMeta>;
 }): Promise<{ readonly root: string; readonly bookDir: string }> {

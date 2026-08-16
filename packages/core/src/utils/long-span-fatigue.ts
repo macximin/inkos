@@ -18,7 +18,7 @@ export interface AnalyzeLongSpanFatigueInput {
   readonly chapterNumber: number;
   readonly chapterContent: string;
   readonly chapterSummary?: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
 }
 
 export interface EnglishVarianceBrief {
@@ -208,12 +208,21 @@ function parseSummaryRow(line: string): SummaryRow | null {
 
 function buildChapterTypeIssue(
   cadence: ReturnType<typeof analyzeChapterCadence>,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): LongSpanFatigueIssue | null {
   if (cadence.scenePressure?.pressure !== "high") {
     return null;
   }
   const { repeatedType, streak } = cadence.scenePressure;
+
+  if (language === "ko") {
+    return {
+      severity: "warning",
+      category: "전개 단조로움",
+      description: `최근 ${streak}회차의 유형이 계속 "${repeatedType}"에 머물러 장기 전개가 굳어질 수 있습니다.`,
+      suggestion: "같은 박자를 연장하지 말고 다음 회차의 기능을 전환하세요. 축적, 회수, 반전, 후속 파장을 의도적으로 순환하세요.",
+    };
+  }
 
   if (language === "en") {
     return {
@@ -234,12 +243,21 @@ function buildChapterTypeIssue(
 
 function buildMoodIssue(
   cadence: ReturnType<typeof analyzeChapterCadence>,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): LongSpanFatigueIssue | null {
   if (cadence.moodPressure?.pressure !== "high") {
     return null;
   }
   const { highTensionStreak, recentMoods } = cadence.moodPressure;
+
+  if (language === "ko") {
+    return {
+      severity: "warning",
+      category: "정서 단조로움",
+      description: `최근 ${highTensionStreak}회차가 계속 고압 정서에 머물렀습니다(${recentMoods.join(" -> ")}). 뚜렷한 감정 해소가 없습니다.`,
+      suggestion: "다시 긴장을 높이기 전에 이완, 온기, 유머, 친밀감 또는 성찰의 정적을 배치하세요.",
+    };
+  }
 
   if (language === "en") {
     return {
@@ -260,12 +278,21 @@ function buildMoodIssue(
 
 function buildTitleIssue(
   cadence: ReturnType<typeof analyzeChapterCadence>,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): LongSpanFatigueIssue | null {
   if (cadence.titlePressure?.pressure !== "high") {
     return null;
   }
   const { repeatedToken, count } = cadence.titlePressure;
+
+  if (language === "ko") {
+    return {
+      severity: "warning",
+      category: "제목 반복",
+      description: `최근 제목이 "${repeatedToken}" 주변으로 반복됩니다(현재 구간 ${count}회). 회차명이 공식처럼 보일 수 있습니다.`,
+      suggestion: "다음 제목은 새 이미지, 행동, 결과 또는 인물 초점을 사용하세요.",
+    };
+  }
 
   if (language === "en") {
     return {
@@ -315,7 +342,7 @@ async function loadRecentChapterBodies(
 function buildSentencePatternIssue(
   chapterBodies: ReadonlyArray<string>,
   boundary: "opening" | "ending",
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): LongSpanFatigueIssue | null {
   if (chapterBodies.length < LONG_SPAN_FATIGUE_THRESHOLDS.boundaryPatternMinBodies) return null;
 
@@ -340,6 +367,19 @@ function buildSentencePatternIssue(
 
   const sample = summarizeSentence(sentences[2]!, language);
   const pairText = similarities.map((value) => value.toFixed(2)).join("/");
+
+  if (language === "ko") {
+    const category = boundary === "opening" ? "도입부 패턴 반복" : "결말 패턴 반복";
+    const position = boundary === "opening" ? "도입부" : "결말";
+    return {
+      severity: "warning",
+      category,
+      description: `최근 3회차의 ${position} 문장 구조가 매우 비슷합니다(인접 유사도 ${pairText}). 현재 패턴: "${sample}".`,
+      suggestion: boundary === "opening"
+        ? "다음 회차는 행동, 결과 또는 이상 징후처럼 다른 진입점을 사용하세요."
+        : "다음 회차는 행동의 결과, 인물의 결단 또는 새 변수로 마무리하세요.",
+    };
+  }
 
   if (language === "en") {
     const category = boundary === "opening" ? "Opening Pattern Repetition" : "Ending Pattern Repetition";
@@ -458,7 +498,7 @@ function extractBoundarySentence(content: string, boundary: "opening" | "ending"
   return boundary === "opening" ? sentences[0]! : sentences[sentences.length - 1]!;
 }
 
-function normalizeSentence(sentence: string, language: "zh" | "en"): string {
+function normalizeSentence(sentence: string, language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return sentence
       .toLowerCase()
@@ -471,7 +511,7 @@ function normalizeSentence(sentence: string, language: "zh" | "en"): string {
     .toLowerCase();
 }
 
-function summarizeSentence(sentence: string, language: "zh" | "en"): string {
+function summarizeSentence(sentence: string, language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     const words = sentence
       .toLowerCase()

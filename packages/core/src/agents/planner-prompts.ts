@@ -107,7 +107,7 @@ defer:
 // ---------------------------------------------------------------------------
 // English variants — Phase hotfix 4
 // Same 7-section structure, same placeholders, same sparse-memo legality.
-// Used when book.language === "en" so English-language books no longer
+// Used when book.language !== "zh" so English-language books no longer
 // receive a Chinese system prompt + Chinese user template.
 // ---------------------------------------------------------------------------
 
@@ -246,17 +246,26 @@ export const PLANNER_MEMO_USER_TEMPLATE_EN = `# Chapter {{chapterNumber}} memo r
 
 Produce the memo for chapter {{chapterNumber}}. Strictly emit the plain Markdown section format above.`;
 
+const PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX = `## 한국어 출력 규칙
+
+- chapter_memo의 모든 자연어를 한국어로 작성하세요.
+- 고유 ID, hook_id, Markdown 구조와 기계 판독용 키는 그대로 유지하세요.
+- 아래 영어 지침은 작업 규칙이며, 영어 문장이나 중국어 문장을 결과물에 복사하지 마세요.
+
+`;
+
 /**
  * Phase hotfix 4: select the language-appropriate planner system prompt.
  * Defaults to zh for backward compatibility — explicit "en" required for
  * the English variant.
  */
-export function getPlannerMemoSystemPrompt(language: "zh" | "en" = "zh"): string {
+export function getPlannerMemoSystemPrompt(language: "zh" | "ko" | "en" = "zh"): string {
+  if (language === "ko") return PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX + PLANNER_MEMO_SYSTEM_PROMPT_EN;
   return language === "en" ? PLANNER_MEMO_SYSTEM_PROMPT_EN : PLANNER_MEMO_SYSTEM_PROMPT;
 }
 
-export function getPlannerMemoUserTemplate(language: "zh" | "en" = "zh"): string {
-  return language === "en" ? PLANNER_MEMO_USER_TEMPLATE_EN : PLANNER_MEMO_USER_TEMPLATE;
+export function getPlannerMemoUserTemplate(language: "zh" | "ko" | "en" = "zh"): string {
+  return language !== "zh" ? PLANNER_MEMO_USER_TEMPLATE_EN : PLANNER_MEMO_USER_TEMPLATE;
 }
 
 export const PLANNER_MEMO_USER_TEMPLATE = `# 第 {{chapterNumber}} 章 memo 请求
@@ -311,14 +320,14 @@ export interface PlannerUserMessageInput {
   readonly brief?: string;
   readonly chapterContext?: string;
   readonly arcContext?: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
 }
 
 export function buildPlannerUserMessage(input: PlannerUserMessageInput): string {
   const language = input.language ?? "zh";
   const template = getPlannerMemoUserTemplate(language);
-  const yesText = language === "en" ? "yes" : "是";
-  const noText = language === "en" ? "no" : "否";
+  const yesText = language === "ko" ? "예" : language === "en" ? "yes" : "是";
+  const noText = language === "ko" ? "아니요" : language === "en" ? "no" : "否";
 
   const briefBlock = buildBriefBlock(input.brief ?? "", language);
   const chapterContextBlock = buildChapterContextBlock(input.chapterContext ?? "", language);
@@ -351,10 +360,10 @@ export function buildPlannerUserMessage(input: PlannerUserMessageInput): string 
  *
  * Returns "" when no brief exists (legacy books without brief.md).
  */
-function buildBriefBlock(brief: string, language: "zh" | "en"): string {
+function buildBriefBlock(brief: string, language: "zh" | "ko" | "en"): string {
   const trimmed = brief.trim();
   if (!trimmed) return "";
-  if (language === "en") {
+  if (language !== "zh") {
     return `## Creative brief (user's original intent — authoritative)
 ${trimmed}
 
@@ -366,10 +375,10 @@ ${trimmed}
 brief 是用户的直接指令。本章规划时，必须优先兑现 brief 里写明的核心设定（主角设定、世界前提、开场机制、样本章回钩子等）。如果 brief 里指定了内容比例、双主线权重或某条关系线必须占比，本章 memo 要把它拆成可见场面，而不是只在总结里提一句。**不要把 brief 里的核心设定推迟到后面的章节**——该在前几章落地的必须落地。`;
 }
 
-function buildChapterContextBlock(chapterContext: string, language: "zh" | "en"): string {
+function buildChapterContextBlock(chapterContext: string, language: "zh" | "ko" | "en"): string {
   const trimmed = chapterContext.trim();
   if (!trimmed) return "";
-  if (language === "en") {
+  if (language !== "zh") {
     return `## Per-chapter user instruction (highest priority for this chapter)
 ${trimmed}
 
@@ -381,10 +390,10 @@ ${trimmed}
 这是用户对当前章节的直接指令。memo 必须优先遵守它，再参考卷纲兜底。如果用户指定了章节标题，必须在 memo 中原样保留该标题，供写手作为 CHAPTER_TITLE 使用。若它与卷纲不完全一致，保持连续性，但以本章用户指令为准。`;
 }
 
-function buildArcContextBlock(arcContext: string, language: "zh" | "en"): string {
+function buildArcContextBlock(arcContext: string, language: "zh" | "ko" | "en"): string {
   const trimmed = arcContext.trim();
   if (!trimmed) return "";
-  if (language === "en") {
+  if (language !== "zh") {
     return `## Active Arc production plan (subordinate authority)
 ${trimmed}
 
@@ -404,11 +413,11 @@ ${trimmed}
 
 export function buildGoldenOpeningGuidance(
   chapterNumber: number,
-  language: "zh" | "en" = "zh",
+  language: "zh" | "ko" | "en" = "zh",
 ): string {
   if (chapterNumber > 3) return "";
 
-  if (language === "en") {
+  if (language !== "zh") {
     return `## Golden Opening Guidance — Chapter ${chapterNumber}
 
 This is chapter ${chapterNumber} of the opening three — the chapters that decide whether a reader stays. The Golden Three Chapters rule assigns each chapter a load-bearing slot: chapter 1 must throw the reader straight into the core conflict (the protagonist enters already facing the main contradiction — chase, dead-end, dispossession, transmigration-as-crisis), not a paragraph of background, family tree, weather, or dynastic preamble. Chapter 2 must put the protagonist's edge — the system, the power, the rebirth-memory, the information advantage — on the stage through one concrete event (not "he awakened a power" narrated, but "he used it for X and Y happened"). Chapter 3 must lock in a concrete short-term goal achievable within the next 3-10 chapters (build the first stake of capital, take down the small antagonist, save someone), giving the story forward pull.

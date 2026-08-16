@@ -36,7 +36,7 @@ const KO_RHETORICAL_PATTERNS: ReadonlyArray<{ readonly name: string; readonly re
 export function analyzeStyle(
   text: string,
   sourceName?: string,
-  language: "zh" | "en" | "ko" = "zh",
+  language: "zh" | "ko" | "en" = "zh",
 ): StyleProfile {
   const isEn = language === "en";
   const isKo = language === "ko";

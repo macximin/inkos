@@ -164,33 +164,35 @@ export class ReviserAgent extends BaseAgent {
       ? styleGuideRaw
       : (legacyRulesBody || "(无文风指南)");
 
-    const isEnglish = (bookLanguage ?? gp.language) === "en";
-    const resolvedLanguage = isEnglish ? "en" : "zh";
+    const resolvedLanguage = bookLanguage ?? gp.language;
+    const usesEnglishControl = resolvedLanguage !== "zh";
 
     const issueList = mode === "auto"
-      ? buildTieredIssueList(issues, isEnglish)
+      ? buildTieredIssueList(issues, usesEnglishControl)
       : issues
-          .map((i) => `- [${i.severity}] ${i.category}: ${i.description}\n  ${isEnglish ? "Suggestion" : "建议"}: ${i.suggestion}`)
+          .map((i) => `- [${i.severity}] ${i.category}: ${i.description}\n  ${usesEnglishControl ? "Suggestion" : "建议"}: ${i.suggestion}`)
           .join("\n");
 
     const numericalRule = gp.numericalSystem
-      ? (isEnglish
+      ? (usesEnglishControl
           ? "\n3. Numerical errors must be fixed precisely — cross-check before and after"
           : "\n3. 数值错误必须精确修正，前后对账")
       : "";
     const protagonistBlock = bookRules?.protagonist
-      ? (isEnglish
+      ? (usesEnglishControl
           ? `\n\nProtagonist lock: ${bookRules.protagonist.name} — ${bookRules.protagonist.personalityLock.join(", ")}. Revisions must not violate the protagonist profile.`
           : `\n\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}。修改不得违反人设。`)
       : "";
     // Length guardrail only used by legacy modes (manual CLI revise).
     // Auto mode delegates length to normalize, not reviser.
     const lengthGuardrail = mode !== "auto" && options?.lengthSpec
-      ? (isEnglish
+      ? (usesEnglishControl
           ? "\n8. Keep the chapter word count within the target range; only allow minor deviation when fixing critical issues truly requires it"
           : "\n8. 保持章节字数在目标区间内；只有在修复关键问题确实需要时才允许轻微偏离")
       : "";
-    const langPrefix = isEnglish
+    const langPrefix = resolvedLanguage === "ko"
+      ? `【언어 우선 규칙】FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS의 자연어를 모두 한국어로 작성하세요. 영어 지침은 작업 규칙일 뿐이며 결과에 영어 또는 중국어 문장을 복사하지 마세요.\n\n`
+      : usesEnglishControl
       ? `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS) MUST be in English.\n\n`
       : "";
     const governedMode = Boolean(options?.chapterIntent && options?.contextPackage && options?.ruleStack);
@@ -403,13 +405,13 @@ ${chapterContent}`;
     protagonistBlock: string;
     numericalRule: string;
     lengthGuardrail: string;
-    resolvedLanguage: "zh" | "en";
+    resolvedLanguage: "zh" | "ko" | "en";
     lengthSpec?: LengthSpec;
     autoOutputMode: AutoOutputMode;
   }): string {
     const { langPrefix, gp, protagonistBlock, numericalRule, resolvedLanguage, lengthSpec, autoOutputMode } = params;
     // lengthGuardrail intentionally not used in auto mode — length constraint is embedded in REVISED_CONTENT description
-    const en = resolvedLanguage === "en";
+    const en = resolvedLanguage !== "zh";
     const ledgerSection = gp.numericalSystem
       ? (en ? "\n=== UPDATED_LEDGER ===\n(Full updated resource ledger)" : "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)")
       : "";
@@ -536,7 +538,7 @@ ${ledgerSection}
     numericalRule: string;
     lengthGuardrail: string;
     mode: ReviseMode;
-    resolvedLanguage: "zh" | "en";
+    resolvedLanguage: "zh" | "ko" | "en";
   }): string {
     const { langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode } = params;
     const modeDesc = MODE_DESCRIPTIONS[mode];

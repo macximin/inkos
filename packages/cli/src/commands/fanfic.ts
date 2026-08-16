@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve, basename } from "node:path";
-import { deriveBookIdFromTitle, normalizePlatformOrOther, PipelineRunner, type BookConfig, type FanficMode } from "@actalk/inkos-core";
+import { defaultChapterLength, deriveBookIdFromTitle, normalizePlatformOrOther, PipelineRunner, type BookConfig, type FanficMode, type WritingLanguage } from "@actalk/inkos-core";
 import { loadConfig, buildPipelineConfig, findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 import { resolveCliLanguage } from "../localization.js";
 import {
@@ -23,13 +23,20 @@ fanficCommand
   .option("--genre <genre>", "Genre", "other")
   .option("--platform <platform>", "Target platform", "other")
   .option("--target-chapters <n>", "Target chapter count", "100")
-  .option("--chapter-words <n>", "Words per chapter", "3000")
-  .option("--lang <language>", "Writing language: zh or en. Defaults from genre.")
+  .option("--chapter-words <n>", "Words/characters per chapter (language default when omitted)")
+  .option("--lang <language>", "Writing language: zh, ko, or en. Defaults from project.")
   .option("--json", "Output JSON")
   .action(async (opts) => {
     try {
       const config = await loadConfig();
       const root = findProjectRoot();
+      const writingLanguage: WritingLanguage = opts.lang === "ko"
+        ? "ko"
+        : opts.lang === "en"
+          ? "en"
+          : opts.lang === "zh"
+            ? "zh"
+            : config.language;
 
       const mode = opts.mode as FanficMode;
       if (!["canon", "au", "ooc", "cp"].includes(mode)) {
@@ -55,8 +62,10 @@ fanficCommand
         genre: opts.genre,
         status: "outlining",
         targetChapters: parseInt(opts.targetChapters, 10),
-        chapterWordCount: parseInt(opts.chapterWords, 10),
-        language: opts.lang ?? config.language,
+        chapterWordCount: opts.chapterWords === undefined
+          ? defaultChapterLength(writingLanguage)
+          : parseInt(opts.chapterWords, 10),
+        language: writingLanguage,
         createdAt: now,
         updatedAt: now,
         fanficMode: mode,

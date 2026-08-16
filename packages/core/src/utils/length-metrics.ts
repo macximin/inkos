@@ -1,6 +1,6 @@
 import type { LengthCountingMode, LengthNormalizeMode, LengthSpec } from "../models/length-governance.js";
 
-export type LengthLanguage = "zh" | "en";
+export type LengthLanguage = "zh" | "ko" | "en";
 
 const REFERENCE_TARGET = 2200;
 const SOFT_RANGE_DELTA = 300;
@@ -14,7 +14,7 @@ export const DEFAULT_CHAPTER_LENGTH_EN = 2000;
 // Korean webnovel platforms conventionally measure the visible Korean text in
 // characters (공백 포함), rather than English-style words.
 
-export function defaultChapterLength(language: LengthLanguage | "ko" = "zh"): number {
+export function defaultChapterLength(language: LengthLanguage = "zh"): number {
   if (language === "en") return DEFAULT_CHAPTER_LENGTH_EN;
   return language === "ko" ? 5000 : DEFAULT_CHAPTER_LENGTH_ZH;
 }
@@ -30,20 +30,26 @@ export function countChapterLength(
     return words?.length ?? 0;
   }
 
+  if (countingMode === "ko_chars") {
+    return normalized.replace(/\r?\n/g, "").length;
+  }
+
   return normalized.replace(/\s+/g, "").length;
 }
 
 export function resolveLengthCountingMode(
   language: LengthLanguage = "zh",
 ): LengthCountingMode {
-  return language === "en" ? "en_words" : "zh_chars";
+  if (language === "en") return "en_words";
+  return language === "ko" ? "ko_chars" : "zh_chars";
 }
 
 export function formatLengthCount(
   count: number,
   countingMode: LengthCountingMode,
 ): string {
-  return countingMode === "en_words" ? `${count} words` : `${count}字`;
+  if (countingMode === "en_words") return `${count} words`;
+  return countingMode === "ko_chars" ? `${count}자` : `${count}字`;
 }
 
 export function buildLengthSpec(

@@ -271,10 +271,10 @@ export function extractRelevantThreads(pendingHooksRaw: string, subplotBoardRaw:
 export function formatRecyclableHooks(
   hooks: ReadonlyArray<StoredHook>,
   chapterNumber: number,
-  language: "zh" | "en" = "zh",
+  language: "zh" | "ko" | "en" = "zh",
 ): string {
   if (hooks.length === 0) {
-    return language === "en"
+    return language !== "zh"
       ? "(no stale hooks — the ledger is clean)"
       : "（暂无陈旧 hook——账本干净）";
   }
@@ -284,13 +284,13 @@ export function formatRecyclableHooks(
     const lastTouch = Math.max(hook.startChapter, hook.lastAdvancedChapter);
     const silence = lastTouch <= 0 ? chapterNumber : Math.max(0, chapterNumber - lastTouch);
     const payoff = hook.expectedPayoff?.trim() || hook.notes?.trim() || "";
-    const core = hook.coreHook === true ? (language === "en" ? " [core]" : " [核心]") : "";
-    return language === "en"
+    const core = hook.coreHook === true ? (language !== "zh" ? " [core]" : " [核心]") : "";
+    return language !== "zh"
       ? `- ${hook.hookId} "${payoff}" — status=${hook.status}, silent ${silence} ch${core}`
       : `- ${hook.hookId} "${payoff}" — 状态=${hook.status}，已沉默 ${silence} 章${core}`;
   });
 
-  const header = language === "en"
+  const header = language !== "zh"
     ? "The planner MUST place each of these under advance / resolve / defer in the hook ledger (deferring requires an explicit reason):"
     : "规划时必须把以下每个 hook 放入 advance / resolve / defer（若 defer，必须写出理由）：";
   return [header, ...lines].join("\n");

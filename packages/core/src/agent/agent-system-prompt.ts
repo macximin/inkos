@@ -641,8 +641,11 @@ export function buildAgentSystemPrompt(
   options: AgentSystemPromptOptions = {},
 ): string {
   const isZh = language === "zh";
+  const withLanguageRule = (prompt: string) => language === "ko"
+    ? `## 한국어 응답 규칙\n\n사용자에게 보이는 모든 설명, 질문, 확인 문구를 한국어로 작성하세요. 아래 영어 지침은 동작 규칙이며 영어 답변을 요구하지 않습니다. 한국어 장편의 기본값은 200회차, 회차당 공백 포함 5000자입니다.\n\n${prompt.replaceAll("200/3000", "200/5000")}`
+    : prompt;
   const withSkills = (prompt: string) => appendSkillGuidance(
-    prompt,
+    withLanguageRule(prompt),
     isZh,
     options.skills,
     options.allowIntentSkillSelection === true,

@@ -112,12 +112,12 @@ export function buildStateValidationFeedback(
   language: LengthLanguage,
 ): string {
   if (warnings.length === 0) {
-    return language === "en"
+    return language !== "zh"
       ? "The previous settlement contradicted the chapter text. Reconcile truth files strictly to the body."
       : "上一次状态结算与正文矛盾。请严格以正文为准修正 truth files。";
   }
 
-  if (language === "en") {
+  if (language !== "zh") {
     return [
       "The previous settlement failed validation. Fix these contradictions against the chapter body:",
       ...warnings.map((warning) => `- [${warning.category}] ${warning.description}`),
@@ -139,7 +139,7 @@ export function buildStateDegradedIssues(
       severity: "warning" as const,
       category: "state-validation",
       description: warning.description,
-      suggestion: language === "en"
+      suggestion: language !== "zh"
         ? "Repair chapter state from the persisted body before continuing."
         : "请先基于已保存正文修复本章 state，再继续后续章节。",
     }));
@@ -148,10 +148,10 @@ export function buildStateDegradedIssues(
   return [{
     severity: "warning",
     category: "state-validation",
-    description: language === "en"
+    description: language !== "zh"
       ? "State validation still failed after settlement retry."
       : "状态结算重试后仍未通过校验。",
-    suggestion: language === "en"
+    suggestion: language !== "zh"
       ? "Repair chapter state from the persisted body before continuing."
       : "请先基于已保存正文修复本章 state，再继续后续章节。",
   }];

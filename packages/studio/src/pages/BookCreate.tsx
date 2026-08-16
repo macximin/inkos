@@ -34,7 +34,7 @@ export interface BookCreatePayload {
   readonly title: string;
   readonly genre: string;
   readonly platform: string;
-  readonly language: "zh" | "en";
+  readonly language: "zh" | "ko" | "en";
   readonly targetChapters: number;
   readonly chapterWordCount: number;
   readonly blurb: string;
@@ -130,7 +130,11 @@ const PLATFORMS_EN: ReadonlyArray<PlatformOption> = [
   { value: "other", label: "Other" },
 ];
 
-const PAGE_COPY: Record<"zh" | "en", PlatformCopy> = {
+const PLATFORMS_KO: ReadonlyArray<PlatformOption> = [
+  { value: "other", label: "한국 웹소설 플랫폼 / 기타" },
+];
+
+const PAGE_COPY: Record<"zh" | "ko" | "en", PlatformCopy> = {
   zh: {
     idleTitle: "从一句模糊想法开始",
     idleBody: "先填清楚书名、题材和故事核心，系统会生成基础设定并进入新书工作台。",
@@ -166,6 +170,42 @@ const PAGE_COPY: Record<"zh" | "en", PlatformCopy> = {
     syncedHint: "这份草案和 TUI / Studio Chat 共享。",
     helperTitle: "建议这样推进",
     helperBody: "先定世界观和主角，再定核心冲突、简介和卷一方向。想看当前草案时，可以在 TUI 里用 /draft。",
+  },
+  ko: {
+    idleTitle: "거친 아이디어에서 시작하기",
+    idleBody: "작품명, 장르, 이야기 핵심을 먼저 적으면 InkOS가 작품 기반을 만들고 새 작업 공간을 엽니다.",
+    formHeading: "작품 기본 정보",
+    formHint: "이 항목들은 작품 생성 과정에 바로 들어갑니다. 소개가 구체적일수록 작품 기반이 안정적입니다.",
+    titleLabel: "작품명",
+    titlePlaceholder: "예: 감사의 밤",
+    genreLabel: "장르 / 유형",
+    genrePlaceholder: "예: 현대 재벌물, 기업 스릴러, 로맨스 판타지",
+    platformLabel: "목표 플랫폼",
+    targetChaptersLabel: "목표 회차",
+    chapterWordCountLabel: "회차당 글자 수",
+    briefLabel: "작품 소개 / 핵심 설정",
+    briefPlaceholder: "세계관, 주인공, 목표, 핵심 갈등과 첫 Arc의 방향을 적어 주세요.",
+    createBook: "작품 생성",
+    creatingBook: "생성 중…",
+    creationStatus: "작품을 생성하고 있습니다. 완료되면 작업 공간으로 자동 이동합니다.",
+    creationSteps: ["작품 설정 저장", "작품 기반 생성", "작업 공간 준비"],
+    assistantHeading: "AI와 먼저 설정을 다듬을까요?",
+    assistantHint: "선택 사항입니다. 쓸 만한 초안이 만들어지면 왼쪽 입력 양식에 적용할 수 있습니다.",
+    applyDraft: "초안 적용",
+    promptLabel: "작품 더 다듬기",
+    promptPlaceholder: "예: 재벌가 비자금을 추적하는 내부 감사인이 주인공인 기업 스릴러를 쓰고 싶어.",
+    promptPlaceholderFollowup: "예: 첫 Arc는 장부 추적과 후계 구도 충돌에 집중해 줘.",
+    submit: "초안 갱신",
+    submitting: "처리 중…",
+    create: "현재 초안으로 작품 생성",
+    creating: "생성 중…",
+    discard: "초안 버리기",
+    draftHeading: "현재 작품 기반 초안",
+    missingHeading: "아직 필요한 정보",
+    missingHint: "모든 항목을 한 번에 채울 필요는 없지만, 핵심 기반이 비어 있을 때는 생성을 서두르지 마세요.",
+    syncedHint: "이 초안은 TUI 및 Studio 대화와 공유됩니다.",
+    helperTitle: "추천 진행 순서",
+    helperBody: "세계와 주인공을 먼저 확정하고 핵심 갈등, 작품 소개, 첫 Arc 방향을 정하세요.",
   },
   en: {
     idleTitle: "Start from a rough idea",
@@ -212,11 +252,11 @@ export function pickValidValue(current: string, available: ReadonlyArray<string>
   return available[0] ?? "";
 }
 
-export function defaultChapterWordsForLanguage(language: "zh" | "en"): string {
-  return language === "en" ? "2000" : "3000";
+export function defaultChapterWordsForLanguage(language: "zh" | "ko" | "en"): string {
+  return language === "ko" ? "5000" : language === "en" ? "2000" : "3000";
 }
 
-export function defaultBookCreateForm(language: "zh" | "en"): BookCreateFormState {
+export function defaultBookCreateForm(language: "zh" | "ko" | "en"): BookCreateFormState {
   return {
     title: "",
     genre: "",
@@ -227,8 +267,8 @@ export function defaultBookCreateForm(language: "zh" | "en"): BookCreateFormStat
   };
 }
 
-export function platformOptionsForLanguage(language: "zh" | "en"): ReadonlyArray<PlatformOption> {
-  return language === "en" ? PLATFORMS_EN : PLATFORMS_ZH;
+export function platformOptionsForLanguage(language: "zh" | "ko" | "en"): ReadonlyArray<PlatformOption> {
+  return language === "ko" ? PLATFORMS_KO : language === "en" ? PLATFORMS_EN : PLATFORMS_ZH;
 }
 
 function parsePositiveInteger(value: string): number | null {
@@ -248,12 +288,12 @@ export function isBookCreateFormReady(form: BookCreateFormState): boolean {
 
 export function buildBookCreatePayload(
   form: BookCreateFormState,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): BookCreatePayload {
   const targetChapters = parsePositiveInteger(form.targetChapters);
   const chapterWordCount = parsePositiveInteger(form.chapterWordCount);
   if (!targetChapters || !chapterWordCount || !isBookCreateFormReady(form)) {
-    throw new Error(language === "zh" ? "请先补齐建书表单。" : "Complete the book creation form first.");
+    throw new Error(language === "ko" ? "작품 생성 양식을 먼저 채워 주세요." : language === "zh" ? "请先补齐建书表单。" : "Complete the book creation form first.");
   }
   return {
     title: form.title.trim(),
@@ -292,7 +332,7 @@ export function canCreateFromDraft(draft?: BookCreationDraft): boolean {
   );
 }
 
-const DRAFT_STAGE_LABELS: Record<"zh" | "en", Record<string, string>> = {
+const DRAFT_STAGE_LABELS: Record<"zh" | "ko" | "en", Record<string, string>> = {
   zh: {
     basic: "基础信息",
     world: "世界观与规则",
@@ -315,6 +355,29 @@ const DRAFT_STAGE_LABELS: Record<"zh" | "en", Record<string, string>> = {
     volumeOutline: "卷纲方向",
     currentFocus: "当前重点",
     constraints: "写作约束",
+  },
+  ko: {
+    basic: "기본 정보",
+    world: "세계와 규칙",
+    characters: "주인공과 등장인물",
+    conflict: "갈등과 보상",
+    structure: "구조와 집필 제약",
+    title: "작품명",
+    genre: "장르",
+    platform: "플랫폼",
+    language: "언어",
+    targetChapters: "목표 회차",
+    chapterWordCount: "회차당 글자 수",
+    worldPremise: "세계관",
+    settingNotes: "설정 보충",
+    protagonist: "주인공",
+    supportingCast: "조연",
+    conflictCore: "핵심 갈등",
+    blurb: "작품 소개",
+    authorIntent: "작가 의도",
+    volumeOutline: "장기 전개 방향",
+    currentFocus: "현재 집중점",
+    constraints: "집필 제약",
   },
   en: {
     basic: "Basics",
@@ -365,7 +428,7 @@ function draftValueAsText(value: unknown): string | null {
 
 export function buildCreationDraftStages(
   draft: BookCreationDraft,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): ReadonlyArray<DraftSummaryStage> {
   const labels = DRAFT_STAGE_LABELS[language];
   const missingSet = new Set(draft.missingFields ?? []);
@@ -399,9 +462,19 @@ export function buildCreationDraftStages(
 
 export function buildCreationDraftSummary(
   draft: BookCreationDraft,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): ReadonlyArray<DraftSummaryRow> {
-  const rows = language === "en"
+  const rows = language === "ko"
+    ? [
+        draft.title ? { key: "title", label: "작품명", value: draft.title } : undefined,
+        draft.worldPremise ? { key: "worldPremise", label: "세계관", value: draft.worldPremise } : undefined,
+        draft.protagonist ? { key: "protagonist", label: "주인공", value: draft.protagonist } : undefined,
+        draft.conflictCore ? { key: "conflictCore", label: "핵심 갈등", value: draft.conflictCore } : undefined,
+        draft.volumeOutline ? { key: "volumeOutline", label: "장기 전개", value: draft.volumeOutline } : undefined,
+        draft.blurb ? { key: "blurb", label: "작품 소개", value: draft.blurb } : undefined,
+        draft.nextQuestion ? { key: "nextQuestion", label: "다음 질문", value: draft.nextQuestion } : undefined,
+      ]
+    : language === "en"
     ? [
         draft.title ? { key: "title", label: "Title", value: draft.title } : undefined,
         draft.worldPremise ? { key: "worldPremise", label: "World", value: draft.worldPremise } : undefined,
@@ -579,7 +652,7 @@ export async function waitForBookReady(
 export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunction }) {
   const c = useColors(theme);
   const { data: project } = useApi<{ language: string }>("/project");
-  const projectLang = (project?.language ?? "zh") as "zh" | "en";
+  const projectLang = (project?.language ?? "zh") as "zh" | "ko" | "en";
   const copy = PAGE_COPY[projectLang];
   const platformChoices = platformOptionsForLanguage(projectLang);
 
@@ -741,7 +814,7 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
         body: JSON.stringify(payload),
       });
       if (!data.bookId) {
-        throw new Error(projectLang === "zh" ? "创建请求没有返回书籍 ID。" : "Create request did not return a book id.");
+        throw new Error(projectLang === "ko" ? "작품 생성 요청에서 작품 ID를 받지 못했습니다." : projectLang === "zh" ? "创建请求没有返回书籍 ID。" : "Create request did not return a book id.");
       }
       await waitForBookReady(data.bookId);
       nav.toBook(data.bookId);
@@ -764,7 +837,7 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
       const data = await runAgentInstruction("/create");
       const bookId = data.session?.activeBookId;
       if (!bookId) {
-        throw new Error(projectLang === "zh" ? "创建完成后没有返回书籍 ID。" : "Create succeeded but no book id was returned.");
+        throw new Error(projectLang === "ko" ? "작품 생성은 완료됐지만 작품 ID를 받지 못했습니다." : projectLang === "zh" ? "创建完成后没有返回书籍 ID。" : "Create succeeded but no book id was returned.");
       }
       setStatus(data.response ?? null);
       setDraft(undefined);
@@ -961,7 +1034,7 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
             </div>
 
             {loadingDraft ? (
-              <div className="text-sm text-muted-foreground">{projectLang === "zh" ? "读取草案中…" : "Loading draft…"}</div>
+              <div className="text-sm text-muted-foreground">{projectLang === "ko" ? "초안을 불러오는 중…" : projectLang === "zh" ? "读取草案中…" : "Loading draft…"}</div>
             ) : draft ? (
               <div className="space-y-4">
                 {summaryStages.some((stage) => stage.rows.length > 0) ? (
@@ -972,10 +1045,10 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
                           <div className="text-[10px] uppercase text-muted-foreground font-semibold">{stage.label}</div>
                           <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground">
                             {stage.status === "complete"
-                              ? (projectLang === "zh" ? "已补齐" : "Ready")
+                              ? (projectLang === "ko" ? "완료" : projectLang === "zh" ? "已补齐" : "Ready")
                               : stage.status === "partial"
-                                ? (projectLang === "zh" ? "待补充" : "Partial")
-                                : (projectLang === "zh" ? "未开始" : "Missing")}
+                                ? (projectLang === "ko" ? "일부 필요" : projectLang === "zh" ? "待补充" : "Partial")
+                                : (projectLang === "ko" ? "미작성" : projectLang === "zh" ? "未开始" : "Missing")}
                           </span>
                         </div>
                         {stage.rows.length > 0 ? (

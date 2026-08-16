@@ -26,8 +26,8 @@ type ImportResultShape = {
   readonly continueBookId: string;
 };
 
-function lengthMode(language: CliLanguage): "zh_chars" | "en_words" {
-  return resolveLengthCountingMode(language === "zh" ? "zh" : "en");
+function lengthMode(language: CliLanguage): "zh_chars" | "ko_chars" | "en_words" {
+  return resolveLengthCountingMode(language);
 }
 
 function localize(language: CliLanguage, messages: { zh: string; ko?: string; en: string }): string {
@@ -521,7 +521,7 @@ export function formatChapterSyncNoChanges(language: CliLanguage, checked: numbe
 export function formatChapterSyncChange(
   language: CliLanguage,
   change: { number: number; title: string; previousWordCount: number; wordCount: number },
-  countingMode: "zh_chars" | "en_words",
+  countingMode: "zh_chars" | "ko_chars" | "en_words",
 ): string {
   const from = formatLengthCount(change.previousWordCount, countingMode);
   const to = formatLengthCount(change.wordCount, countingMode);

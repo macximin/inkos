@@ -7,23 +7,25 @@ import { initializeProjectDirectory } from "../project-bootstrap.js";
 export const initCommand = new Command("init")
   .description("Initialize an InkOS project (current directory by default)")
   .argument("[name]", "Project name (creates subdirectory). Omit to init current directory.")
-  .option("--lang <language>", "Default writing language: zh (Chinese) or en (English)", "zh")
+  .option("--lang <language>", "Default writing language: zh (Chinese), ko (Korean), or en (English)", "zh")
   .action(async (name: string | undefined, opts: { lang?: string }) => {
     const projectDir = name ? resolve(process.cwd(), name) : process.cwd();
 
     try {
       await mkdir(projectDir, { recursive: true });
       await initializeProjectDirectory(projectDir, {
-        language: (opts.lang === "en" ? "en" : "zh"),
+        language: opts.lang === "ko" ? "ko" : opts.lang === "en" ? "en" : "zh",
         overwriteSupportFiles: true,
       });
 
       log(`Project initialized at ${projectDir}`);
       log("");
-      const isEnglish = (opts.lang ?? "zh") === "en";
-      const exampleCreateLines = isEnglish
+      const language = opts.lang === "ko" ? "ko" : opts.lang === "en" ? "en" : "zh";
+      const exampleCreateLines = language === "en"
         ? ["  inkos book create --title 'My Novel' --genre progression --platform royalroad --lang en"]
-        : [
+        : language === "ko"
+          ? ["  inkos book create --title '감사의 밤' --genre urban --platform other --lang ko"]
+          : [
           "  inkos book create --title '我的小说' --genre xuanhuan --platform tomato",
           "  # English project? Re-run with: inkos init --lang en",
         ];

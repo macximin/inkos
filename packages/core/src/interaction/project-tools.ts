@@ -87,7 +87,7 @@ function buildBookConfig(input: {
   readonly title: string;
   readonly genre?: string;
   readonly platform?: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly chapterWordCount?: number;
   readonly targetChapters?: number;
 }): BookConfig {
@@ -99,7 +99,7 @@ function buildBookConfig(input: {
     genre: input.genre ?? "other",
     status: "outlining",
     targetChapters: input.targetChapters ?? 200,
-    chapterWordCount: input.chapterWordCount ?? defaultChapterLength(input.language === "en" ? "en" : "zh"),
+    chapterWordCount: input.chapterWordCount ?? defaultChapterLength(input.language ?? "zh"),
     ...(input.language ? { language: input.language } : {}),
     createdAt: now,
     updatedAt: now,
@@ -115,16 +115,18 @@ function buildCreationExternalContext(input: {
   readonly conflictCore?: string;
   readonly volumeOutline?: string;
   readonly constraints?: string;
+  readonly language?: "zh" | "ko" | "en";
 }): string | undefined {
+  const heading = (zh: string, ko: string, en: string) => input.language === "ko" ? ko : input.language === "en" ? en : zh;
   const sections = [
-    input.worldPremise ? `## 世界观与核心设定\n${input.worldPremise}` : undefined,
-    input.settingNotes ? `## 补充设定\n${input.settingNotes}` : undefined,
-    input.protagonist ? `## 主角设定\n${input.protagonist}` : undefined,
-    input.supportingCast ? `## 关键角色与势力\n${input.supportingCast}` : undefined,
-    input.conflictCore ? `## 核心冲突\n${input.conflictCore}` : undefined,
-    input.volumeOutline ? `## 卷纲方向\n${input.volumeOutline}` : undefined,
-    input.blurb ? `## 简介卖点\n${input.blurb}` : undefined,
-    input.constraints ? `## 创作约束\n${input.constraints}` : undefined,
+    input.worldPremise ? `## ${heading("世界观与核心设定", "세계관과 핵심 설정", "World and core premise")}\n${input.worldPremise}` : undefined,
+    input.settingNotes ? `## ${heading("补充设定", "추가 설정", "Additional setting notes")}\n${input.settingNotes}` : undefined,
+    input.protagonist ? `## ${heading("主角设定", "주인공 설정", "Protagonist")}\n${input.protagonist}` : undefined,
+    input.supportingCast ? `## ${heading("关键角色与势力", "주요 인물과 세력", "Key cast and factions")}\n${input.supportingCast}` : undefined,
+    input.conflictCore ? `## ${heading("核心冲突", "핵심 갈등", "Core conflict")}\n${input.conflictCore}` : undefined,
+    input.volumeOutline ? `## ${heading("卷纲方向", "권 구성 방향", "Volume direction")}\n${input.volumeOutline}` : undefined,
+    input.blurb ? `## ${heading("简介卖点", "작품 소개와 판매 포인트", "Blurb and selling points")}\n${input.blurb}` : undefined,
+    input.constraints ? `## ${heading("创作约束", "창작 제약", "Creative constraints")}\n${input.constraints}` : undefined,
   ].filter((section): section is string => Boolean(section?.trim()));
 
   if (sections.length === 0) {
@@ -371,7 +373,11 @@ export function createInteractionToolsFromDeps(
         bookId: book.id,
         title: book.title,
         __interaction: {
-          responseText: `Created ${book.title} (${book.id}).`,
+          responseText: input.language === "ko"
+            ? `${book.title} (${book.id}) 작품을 만들었습니다.`
+            : input.language === "zh"
+              ? `已创建《${book.title}》（${book.id}）。`
+              : `Created ${book.title} (${book.id}).`,
           details: {
             kind: "book_created",
             bookId: book.id,

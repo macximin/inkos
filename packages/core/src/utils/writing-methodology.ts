@@ -6,11 +6,50 @@
  * Injected once during initBook/generateStyleGuide, then read by
  * writer on every chapter as part of the style_guide context.
  */
-export function buildWritingMethodologySection(language: "zh" | "en"): string {
+export function buildWritingMethodologySection(language: "zh" | "ko" | "en"): string {
+  if (language === "ko") {
+    return buildKoreanMethodology();
+  }
   if (language === "en") {
     return buildEnglishMethodology();
   }
   return buildChineseMethodology();
+}
+
+function buildKoreanMethodology(): string {
+  return `---
+
+# 집필 방법론 참고
+
+## 1. 감정을 행동으로 보여 주기
+
+- 감정 이름을 직접 붙이기보다 손동작, 시선, 호흡, 말의 속도로 드러냅니다.
+- 인과 접속사를 반복하지 말고 인물의 다음 행동으로 장면을 전환합니다.
+- 같은 길이의 문단을 이어 붙이지 말고 충격은 짧게, 몰입 묘사는 길게 조절합니다.
+
+## 2. 인물 행동의 여섯 단계
+
+1. 현재 처지와 가진 패를 확인합니다.
+2. 가장 원하는 것과 가장 두려운 것을 확인합니다.
+3. 인물이 아는 정보와 모르는 정보를 나눕니다.
+4. 성격과 과거가 반응을 어떻게 바꾸는지 확인합니다.
+5. 그 조건에서 실제로 선택할 행동을 정합니다.
+6. 선택의 감정을 몸짓, 표정, 말투로 외화합니다.
+
+## 3. 조연과 갈등
+
+- 조연도 자기 이해관계와 반격 수단을 가져야 합니다.
+- 주인공은 멍청한 상대를 짓밟는 대신 영리한 상대보다 한 수 앞서야 합니다.
+- 군중의 반응을 한 문장으로 뭉개지 말고 1-2명의 구체적인 반응을 골라 씁니다.
+
+## 4. 회차 전 점검
+
+1. 이번 회차가 어느 기획 노드를 실제로 전진시키는가?
+2. 주인공의 선택이 현재 이익과 인물성에 맞는가?
+3. 상대에게 명확한 요구와 대응이 있는가?
+4. 정보 경계를 어긴 인물이 없는가?
+5. 회차 끝에 다음 회차를 당기는 변화나 질문이 남는가?
+6. 일상 장면도 복선, 관계, 대비 가운데 하나를 수행하는가?`;
 }
 
 function buildChineseMethodology(): string {

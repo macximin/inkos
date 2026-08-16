@@ -5781,7 +5781,7 @@ describe("PipelineRunner", () => {
           bookDir: string;
           chapterContent: string;
           chapterNumber: number;
-          language: "zh" | "en";
+          language: "zh" | "ko" | "en";
         }) => Promise<{
           auditResult: AuditResult;
           aiTellCount: number;
@@ -5838,7 +5838,7 @@ describe("PipelineRunner", () => {
           bookDir: string;
           chapterContent: string;
           chapterNumber: number;
-          language: "zh" | "en";
+          language: "zh" | "ko" | "en";
         }) => Promise<{
           auditResult: AuditResult;
           aiTellCount: number;

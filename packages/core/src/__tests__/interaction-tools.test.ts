@@ -388,6 +388,44 @@ describe("interaction tools", () => {
     );
   });
 
+  it("creates Korean books with a Korean id, 5000-character default, and Korean foundation headings", async () => {
+    const pipeline = {
+      initBook: vi.fn(async () => undefined),
+      writeNextChapter: vi.fn(),
+      reviseDraft: vi.fn(),
+    };
+    const state = {
+      ensureControlDocuments: vi.fn(async () => {}),
+      bookDir: vi.fn((bookId: string) => join(projectRoot, "books", bookId)),
+      loadBookConfig: vi.fn(),
+      loadChapterIndex: vi.fn(async () => []),
+      saveChapterIndex: vi.fn(async () => undefined),
+      listBooks: vi.fn(async () => []),
+      acquireBookLock: noopBookLock(),
+    };
+
+    const tools = createInteractionToolsFromDeps(pipeline, state);
+    const result = await tools.createBook?.({
+      title: "감사의 밤",
+      genre: "urban",
+      language: "ko",
+      worldPremise: "재벌가 내부 감사실이 비자금 장부를 추적한다.",
+    });
+
+    expect(pipeline.initBook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "감사의-밤",
+        language: "ko",
+        chapterWordCount: 5000,
+      }),
+      expect.objectContaining({
+        externalContext: expect.stringContaining("## 세계관과 핵심 설정"),
+      }),
+    );
+    expect((result as { __interaction?: { responseText?: string } }).__interaction?.responseText)
+      .toContain("작품을 만들었습니다");
+  });
+
   it("builds a reusable chapter lookup from a single directory listing", () => {
     const lookup = buildChapterFileLookup([
       "0001_First.md",

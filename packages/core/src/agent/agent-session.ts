@@ -320,7 +320,7 @@ function agentCacheKey(projectRoot: string, sessionId: string): string {
 
 function buildAttachmentUserBlock(attachments: ReadonlyArray<AgentSessionAttachment> | undefined, language: string): string {
   if (!attachments?.length) return "";
-  const isEn = language === "en";
+  const isEn = language !== "zh";
   const lines = [
     isEn
       ? "\n\n## Uploaded Files (host-provided, user-authorized)"
@@ -596,6 +596,9 @@ function looksLikeChapterRevisionPlan(text: string): boolean {
 }
 
 function bookRawChapterBoundaryText(language: string): string {
+  if (language === "ko") {
+    return "모델이 저장 도구를 호출하지 않고 회차 원고처럼 보이는 내용을 대화에 출력했습니다. InkOS는 대화 속 원고를 저장된 회차로 취급하지 않습니다. 새 회차를 추가하려면 ‘다음 회차를 써 줘’라고 요청하고, 기존 회차를 고치려면 ‘N화를 수정/재작성해 줘 + 구체적인 요구’를 보내세요.";
+  }
   return language === "zh"
     ? "这次模型输出了疑似章节正文的聊天文本，但没有调用落盘工具。InkOS 不会把聊天正文当成已保存章节：如果要续写新章，请发送“继续写下一章”；如果要修改旧章，请发送“重写/修订第 N 章 + 具体要求”，系统会走 reviser/writer 管线落盘。"
     : "The model produced chapter-like prose in chat without calling a persistence tool. InkOS will not treat chat prose as a saved chapter. Ask to write the next chapter only when you want to append; ask to rewrite/revise chapter N with concrete requirements when you want to change existing chapters.";
@@ -853,8 +856,8 @@ function createAgentToolsForMode(params: CreateAgentToolsForModeParams) {
 }
 
 function createModeTools(params: CreateAgentToolsForModeParams) {
-  const lang = params.language === "zh" ? "zh" : "en";
-  const surfaceLanguage = params.language === "ko" ? "ko" : lang;
+  const lang = params.language === "zh" ? "zh" : params.language === "ko" ? "ko" : "en";
+  const surfaceLanguage = lang;
   const subAgentTool = createSubAgentTool(params.pipeline, params.bookId, params.projectRoot, {
     actionPayload: params.actionPayload,
     language: surfaceLanguage,

@@ -71,4 +71,28 @@ describe("project interaction control", () => {
     expect(persisted.activeBookId).toBe("night-harbor");
   });
 
+  it("detects Korean project language without folding it into Chinese", async () => {
+    await writeFile(join(projectRoot, "inkos.json"), JSON.stringify({ language: "ko" }), "utf-8");
+    await persistProjectSession(projectRoot, createProjectSession(projectRoot));
+
+    const result = await processProjectInteractionRequest({
+      projectRoot,
+      request: { intent: "list_books" },
+      tools: {
+        listBooks: vi.fn(async () => ["harbor"]),
+        writeNextChapter: vi.fn(async () => ({ ok: true })),
+        reviseDraft: vi.fn(async () => ({ ok: true })),
+        patchChapterText: vi.fn(async () => ({ ok: true })),
+        replaceChapterText: vi.fn(async () => ({ ok: true })),
+        renameEntity: vi.fn(async () => ({ ok: true })),
+        updateCurrentFocus: vi.fn(async () => ({ ok: true })),
+        updateAuthorIntent: vi.fn(async () => ({ ok: true })),
+        writeTruthFile: vi.fn(async () => ({ ok: true })),
+      },
+    });
+
+    expect(result.request.language).toBe("ko");
+    expect(result.responseText).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
 });

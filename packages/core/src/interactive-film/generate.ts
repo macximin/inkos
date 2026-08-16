@@ -43,7 +43,7 @@ export async function generateStoryGraph(
   client: LLMClient,
   model: string,
   input: GenerateStoryGraphInput,
-  options?: { readonly maxTokens?: number; readonly language?: "zh" | "en" },
+  options?: { readonly maxTokens?: number; readonly language?: "zh" | "ko" | "en" },
 ): Promise<StoryGraph> {
   const language = options?.language ?? "zh";
   const systemPrompt = language === "en" ? SYSTEM_PROMPT_EN : SYSTEM_PROMPT_ZH;

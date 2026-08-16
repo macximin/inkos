@@ -13,7 +13,7 @@ import {
 } from "./session.js";
 
 type ReviseMode = "local-fix" | "rewrite";
-type RuntimeLanguage = "zh" | "en";
+type RuntimeLanguage = "zh" | "ko" | "en";
 
 export interface InteractionRuntimeTools {
   readonly listBooks: () => Promise<ReadonlyArray<string>>;
@@ -21,7 +21,7 @@ export interface InteractionRuntimeTools {
     readonly title: string;
     readonly genre?: string;
     readonly platform?: string;
-    readonly language?: "zh" | "en";
+    readonly language?: "zh" | "ko" | "en";
     readonly chapterWordCount?: number;
     readonly targetChapters?: number;
     readonly blurb?: string;
@@ -110,16 +110,24 @@ function extractToolMetadata(value: unknown): InteractionToolMetadata {
 }
 
 function resolveRuntimeLanguage(request: InteractionRequest): RuntimeLanguage {
-  return request.language === "en" ? "en" : "zh";
+  return request.language === "ko" ? "ko" : request.language === "en" ? "en" : "zh";
 }
 
 function localize<T>(language: RuntimeLanguage, messages: { zh: T; en: T }): T {
-  return language === "en" ? messages.en : messages.zh;
+  return language === "zh" ? messages.zh : messages.en;
 }
 
 function localizeMode(mode: AutomationMode, language: RuntimeLanguage): string {
   if (language === "en") {
     return mode;
+  }
+
+  if (language === "ko") {
+    return {
+      auto: "자동",
+      semi: "반자동",
+      manual: "수동",
+    }[mode] ?? mode;
   }
 
   return {

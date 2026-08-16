@@ -42,7 +42,7 @@ export const CreateBookActionPayloadSchema = z.object({
   title: z.string().min(1).optional(),
   genre: z.string().min(1).optional(),
   platform: z.enum(["tomato", "qidian", "feilu", "other"]).optional(),
-  language: z.enum(["zh", "en"]).optional(),
+  language: z.enum(["zh", "ko", "en"]).optional(),
   targetChapters: z.number().int().min(1).optional(),
   chapterWordCount: z.number().int().min(1).optional(),
 }).strict();
@@ -53,7 +53,7 @@ export const WriteNextActionPayloadSchema = z.object({
 
 // charsPerChapter 的单位随语言变化：zh 是每章汉字数（900-1200），en 是每章英文单词数（600-800）。
 // 这两个区间与 short-fiction-runner 的执行层校验共用同一组常量，保证确认卡和执行层不再各说各话。
-export function shortRunCharsPerChapterRange(language: "zh" | "en"): {
+export function shortRunCharsPerChapterRange(language: "zh" | "ko" | "en"): {
   readonly min: number;
   readonly max: number;
 } {
@@ -62,12 +62,16 @@ export function shortRunCharsPerChapterRange(language: "zh" | "en"): {
     : { min: SHORT_FICTION_MIN_CHARS_PER_CHAPTER, max: SHORT_FICTION_MAX_CHARS_PER_CHAPTER };
 }
 
-export function shortRunCharsPerChapterError(value: number, language: "zh" | "en"): string {
+export function shortRunCharsPerChapterError(value: number, language: "zh" | "ko" | "en"): string {
   const { min, max } = shortRunCharsPerChapterRange(language);
-  return language === "en"
-    ? `charsPerChapter=${value} 超出英文短篇的合法范围（每章 ${min}-${max} 个英文单词）。`
+  if (language === "en") {
+    return `charsPerChapter=${value} 超出英文短篇的合法范围（每章 ${min}-${max} 个英文单词）。`
       + `charsPerChapter=${value} is outside the valid range for English shorts (${min}-${max} words per chapter).`
-    : `charsPerChapter=${value} 超出中文短篇的合法范围（每章 ${min}-${max} 个汉字）。`
+  }
+  if (language === "ko") {
+    return `charsPerChapter=${value}은 한국어 단편의 허용 범위(회차당 ${min}-${max}자)를 벗어났습니다.`;
+  }
+  return `charsPerChapter=${value} 超出中文短篇的合法范围（每章 ${min}-${max} 个汉字）。`
       + `charsPerChapter=${value} is outside the valid range for Chinese shorts (${min}-${max} characters per chapter).`;
 }
 
@@ -78,7 +82,7 @@ export const ShortRunActionPayloadSchema = z.object({
   direction: z.string().min(1).optional(),
   reference: z.string().min(1).optional(),
   storyId: z.string().min(1).optional(),
-  language: z.enum(["zh", "en"]).optional(),
+  language: z.enum(["zh", "ko", "en"]).optional(),
   chapters: z.number().int().min(12).max(18).optional(),
   charsPerChapter: z.number().int().min(600).max(1200).optional(),
   cover: z.boolean().optional(),

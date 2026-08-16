@@ -13,7 +13,7 @@ import { appendPromptPackGuidance } from "../prompts/prompt-pack.js";
 export interface PlayActionInterpreterInput {
   readonly input: string;
   readonly sceneBrief: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
 }
 
 export interface PlayWorldMutatorInput {
@@ -21,7 +21,7 @@ export interface PlayWorldMutatorInput {
   readonly input: string;
   readonly action: PlayActionIntentInput;
   readonly context: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
 }
 
 export interface PlaySceneRenderInput {
@@ -30,7 +30,7 @@ export interface PlaySceneRenderInput {
   readonly mutationSummary: string;
   readonly stateBrief: string;
   readonly replayContext?: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   // The world's premise — a persistent anchor so the scene stays in the
   // established era/setting/genre and doesn't drift (a modern shop must not grow
   // night-watchmen and oil lamps).
@@ -45,7 +45,7 @@ export interface PlaySceneReconcileInput {
   readonly sceneText: string;
   readonly context: string;
   readonly stateBrief: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly worldPremise?: string;
 }
 
@@ -285,7 +285,7 @@ function emptyReconciliation(turn: number, actionKind: PlayActionIntent["actionK
   };
 }
 
-function buildSceneReconcilerSystemPrompt(language: "zh" | "en"): string {
+function buildSceneReconcilerSystemPrompt(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return [
       "You reconcile an interactive-fiction scene with the world graph.",
@@ -306,7 +306,7 @@ function buildSceneReconcilerSystemPrompt(language: "zh" | "en"): string {
   ].join("\n");
 }
 
-function buildSceneReconcilerUserPrompt(input: PlaySceneReconcileInput, language: "zh" | "en"): string {
+function buildSceneReconcilerUserPrompt(input: PlaySceneReconcileInput, language: "zh" | "ko" | "en"): string {
   const actionKind = PlayActionIntentSchema.parse(input.action).actionKind;
   const eventId = `evt-${input.turn}`;
   if (language === "en") {
@@ -355,7 +355,7 @@ function buildSceneReconcilerUserPrompt(input: PlaySceneReconcileInput, language
   ].join("\n");
 }
 
-function buildActionInterpreterSystemPrompt(language: "zh" | "en"): string {
+function buildActionInterpreterSystemPrompt(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return [
       "You are an interactive-fiction action interpreter.",
@@ -374,7 +374,7 @@ function buildActionInterpreterSystemPrompt(language: "zh" | "en"): string {
   ].join("\n");
 }
 
-function buildActionInterpreterUserPrompt(input: PlayActionInterpreterInput, language: "zh" | "en"): string {
+function buildActionInterpreterUserPrompt(input: PlayActionInterpreterInput, language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return [
       "Current scene:",
@@ -397,7 +397,7 @@ function buildActionInterpreterUserPrompt(input: PlayActionInterpreterInput, lan
   ].join("\n");
 }
 
-function buildWorldMutatorSystemPrompt(language: "zh" | "en"): string {
+function buildWorldMutatorSystemPrompt(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return [
       "You are an interactive-fiction world-state drafter.",
@@ -452,7 +452,7 @@ function buildWorldMutatorSystemPrompt(language: "zh" | "en"): string {
   ].join("\n");
 }
 
-function buildWorldMutatorUserPrompt(input: PlayWorldMutatorInput, language: "zh" | "en"): string {
+function buildWorldMutatorUserPrompt(input: PlayWorldMutatorInput, language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return [
       `turn: ${input.turn}`,
@@ -483,7 +483,7 @@ function buildWorldMutatorUserPrompt(input: PlayWorldMutatorInput, language: "zh
   ].join("\n");
 }
 
-export function buildSceneRendererSystemPrompt(mode: "open" | "guided" = "open", language: "zh" | "en" = "zh"): string {
+export function buildSceneRendererSystemPrompt(mode: "open" | "guided" = "open", language: "zh" | "ko" | "en" = "zh"): string {
   if (language === "en") {
     const base = [
       "You are an interactive-fiction scene-response author.",
@@ -534,7 +534,7 @@ export function buildSceneRendererSystemPrompt(mode: "open" | "guided" = "open",
   return [...base, actionsRule, "输出严格 JSON：sceneText, suggestedActions。"].join("\n");
 }
 
-function buildSceneRendererUserPrompt(input: PlaySceneRenderInput, language: "zh" | "en"): string {
+function buildSceneRendererUserPrompt(input: PlaySceneRenderInput, language: "zh" | "ko" | "en"): string {
   const premise = input.worldPremise?.trim();
   if (language === "en") {
     return [

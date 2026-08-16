@@ -1,7 +1,7 @@
 // Bilingual prompt builders for the narrative forecast agent, organized the
 // same way as prompts/short-fiction.ts: each builder switches on language.
 
-export type ForecastLanguage = "zh" | "en";
+export type ForecastLanguage = "zh" | "ko" | "en";
 
 export interface ForecastPromptInput {
   readonly contextMarkdown: string;

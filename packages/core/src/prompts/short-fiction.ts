@@ -1,4 +1,4 @@
-export type ShortFictionLanguage = "zh" | "en";
+export type ShortFictionLanguage = "zh" | "ko" | "en";
 
 export interface ShortFictionReferencePromptInput {
   readonly text?: string;

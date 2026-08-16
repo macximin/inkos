@@ -4153,7 +4153,7 @@ describe("createStudioServer daemon lifecycle", () => {
             title: "야간 배송",
             genre: "urban",
             platform: "other",
-            language: "en",
+            language: "ko",
           },
         },
       }),
@@ -4164,6 +4164,13 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(task?.execution.label).toBe("작품 생성");
     expect(task?.execution.result).toContain("작품을 만들었습니다");
     expect(`${task?.execution.label}\n${task?.execution.result}`).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(initBookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "야간 배송",
+        language: "ko",
+      }),
+      { externalContext: "한국어 기업물 작품의 기반을 만들어 줘." },
+    );
   });
 
   it("infers English before directly executing a confirmed short action", async () => {

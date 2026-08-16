@@ -6,10 +6,10 @@ export function buildSettlerSystemPrompt(
   book: BookConfig,
   genreProfile: GenreProfile,
   bookRules: BookRules | null,
-  language?: "zh" | "en",
+  language?: "zh" | "ko" | "en",
 ): string {
   const resolvedLang = language ?? genreProfile.language;
-  const isEnglish = resolvedLang === "en";
+  const usesEnglishControl = resolvedLang !== "zh";
   const numericalBlock = genreProfile.numericalSystem
     ? `\n- 本题材有数值/资源体系，你必须在 UPDATED_LEDGER 中追踪正文中出现的所有资源变动
 - 数值验算铁律：期初 + 增量 = 期末，三项必须可验算`
@@ -31,7 +31,9 @@ export function buildSettlerSystemPrompt(
     ? `\n## 全员追踪\nPOST_SETTLEMENT 必须额外包含：本章出场角色清单、角色间关系变动、未出场但被提及的角色。`
     : "";
 
-  const langPrefix = isEnglish
+  const langPrefix = resolvedLang === "ko"
+    ? `【언어 우선 규칙】상태 카드, 복선, 요약, 서브플롯, 감정선, 인물 관계표를 모두 자연스러운 한국어로 작성하세요. 아래 중국어 지침과 예시는 작업 규칙일 뿐이며 결과에 중국어 문장을 복사하지 마세요. === TAG === 표식과 JSON 키는 그대로 유지하세요.\n\n`
+    : usesEnglishControl
     ? `【LANGUAGE OVERRIDE】ALL output (state card, hooks, summaries, subplots, emotional arcs, character matrix) MUST be in English. The === TAG === markers remain unchanged.\n\n`
     : "";
 

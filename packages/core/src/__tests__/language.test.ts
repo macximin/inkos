@@ -10,6 +10,14 @@ describe("inferLanguage", () => {
     expect(inferLanguage("一个修仙者重生回到宗门入门那年。")).toBe("zh");
   });
 
+  it("infers ko for Hangul-dominant briefs even with English names", () => {
+    expect(inferLanguage("주인공 Mina가 재벌가의 내부 감사를 시작하는 한국 웹소설.")).toBe("ko");
+  });
+
+  it("does not let incidental Hangul override an English brief", () => {
+    expect(inferLanguage("A corporate thriller set in Seoul (서울) with a forensic accountant protagonist.")).toBe("en");
+  });
+
   it("stays zh when CJK dominates despite an English name", () => {
     expect(inferLanguage("主角叫 Jack，一部都市重生爽文。")).toBe("zh");
   });

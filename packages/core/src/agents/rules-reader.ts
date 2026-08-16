@@ -130,7 +130,7 @@ export async function readBookRules(bookDir: string): Promise<ParsedBookRules | 
   return null;
 }
 
-export async function readBookLanguage(bookDir: string): Promise<"zh" | "en" | undefined> {
+export async function readBookLanguage(bookDir: string): Promise<"zh" | "ko" | "en" | undefined> {
   const raw = await tryReadFile(join(bookDir, "book.json"));
   if (!raw) return undefined;
 

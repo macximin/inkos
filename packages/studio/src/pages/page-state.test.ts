@@ -40,6 +40,12 @@ describe("platformOptionsForLanguage", () => {
     expect(new Set(values).size).toBe(values.length);
     expect(values).toEqual(["royal-road", "kindle-unlimited", "scribble-hub", "other"]);
   });
+
+  it("offers a neutral Korean web-fiction target", () => {
+    expect(platformOptionsForLanguage("ko")).toEqual([
+      { value: "other", label: "한국 웹소설 플랫폼 / 기타" },
+    ]);
+  });
 });
 
 describe("book create form", () => {
@@ -51,6 +57,13 @@ describe("book create form", () => {
       targetChapters: "200",
       chapterWordCount: "3000",
       brief: "",
+    });
+  });
+
+  it("starts Korean projects with native character-count defaults", () => {
+    expect(defaultBookCreateForm("ko")).toMatchObject({
+      platform: "other",
+      chapterWordCount: "5000",
     });
   });
 
@@ -84,6 +97,22 @@ describe("book create form", () => {
       targetChapters: 120,
       chapterWordCount: 2600,
       blurb: "主角查账洗白，旧案回潮。",
+    });
+  });
+
+  it("keeps Korean as the content language in direct create payloads", () => {
+    expect(buildBookCreatePayload({
+      title: " 감사의 밤 ",
+      genre: " 현대 재벌물 ",
+      platform: "other",
+      targetChapters: "120",
+      chapterWordCount: "5000",
+      brief: " 내부 감사인이 비자금 장부를 추적한다. ",
+    }, "ko")).toMatchObject({
+      title: "감사의 밤",
+      language: "ko",
+      chapterWordCount: 5000,
+      blurb: "내부 감사인이 비자금 장부를 추적한다.",
     });
   });
 });

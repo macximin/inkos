@@ -53,13 +53,15 @@ export class BookWriteLockError extends Error {
 export class StateManager {
   constructor(private readonly projectRoot: string) {}
 
-  private static defaultAuthorIntent(language: "zh" | "en"): string {
+  private static defaultAuthorIntent(language: "zh" | "ko" | "en"): string {
+    if (language === "ko") return "# 작가 의도\n\n(이 작품의 장기 창작 방향을 적으세요.)\n";
     return language === "zh"
       ? "# 作者意图\n\n（在这里描述这本书的长期创作方向。）\n"
       : "# Author Intent\n\n(Describe the long-horizon vision for this book here.)\n";
   }
 
-  private static defaultCurrentFocus(language: "zh" | "en"): string {
+  private static defaultCurrentFocus(language: "zh" | "ko" | "en"): string {
+    if (language === "ko") return "# 현재 집중점\n\n## 우선 전개\n\n(앞으로 1-3화에서 가장 먼저 진행할 내용을 적으세요.)\n";
     return language === "zh"
       ? "# 当前聚焦\n\n## 当前重点\n\n（描述接下来 1-3 章最需要优先推进的内容。）\n"
       : "# Current Focus\n\n## Active Focus\n\n(Describe what the next 1-3 chapters should prioritize.)\n";
@@ -72,7 +74,7 @@ export class StateManager {
 
   async ensureControlDocumentsAt(
     bookDir: string,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
     authorIntent?: string,
   ): Promise<void> {
     const storyDir = join(bookDir, "story");
@@ -103,7 +105,7 @@ export class StateManager {
     const styleGuidePath = join(storyDir, "style_guide.md");
     try {
       const existing = await readFile(styleGuidePath, "utf-8");
-      if (!existing.includes("写作方法论") && !existing.includes("Writing Methodology")) {
+      if (!existing.includes("写作方法论") && !existing.includes("Writing Methodology") && !existing.includes("집필 방법론")) {
         const { buildWritingMethodologySection } = await import("../utils/writing-methodology.js");
         await writeFile(styleGuidePath, `${existing}\n\n${buildWritingMethodologySection(language)}`, "utf-8");
       }
@@ -130,7 +132,7 @@ export class StateManager {
     return { authorIntent, currentFocus, runtimeDir };
   }
 
-  private async resolveControlDocumentLanguage(bookId: string): Promise<"zh" | "en"> {
+  private async resolveControlDocumentLanguage(bookId: string): Promise<"zh" | "ko" | "en"> {
     try {
       const raw = await readFile(join(this.bookDir(bookId), "book.json"), "utf-8");
       const parsed = JSON.parse(raw) as { language?: unknown };

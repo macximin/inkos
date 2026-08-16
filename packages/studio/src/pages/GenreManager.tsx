@@ -11,7 +11,7 @@ interface GenreInfo {
   readonly id: string;
   readonly name: string;
   readonly source: "project" | "builtin";
-  readonly language: "zh" | "en";
+  readonly language: "zh" | "ko" | "en";
 }
 
 interface GenreDetail {
@@ -33,7 +33,7 @@ interface GenreDetail {
 interface GenreFormData {
   readonly id: string;
   readonly name: string;
-  readonly language: "zh" | "en";
+  readonly language: "zh" | "ko" | "en";
   readonly chapterTypes: string;
   readonly fatigueWords: string;
   readonly numericalSystem: boolean;
@@ -108,10 +108,11 @@ function GenreForm({
         <label className="text-xs text-muted-foreground uppercase tracking-wide">{t("create.language")}</label>
         <select
           value={form.language}
-          onChange={(e) => set("language", e.target.value as "zh" | "en")}
+          onChange={(e) => set("language", e.target.value as "zh" | "ko" | "en")}
           className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
         >
           <option value="zh">zh</option>
+          <option value="ko">ko</option>
           <option value="en">en</option>
         </select>
       </div>
@@ -235,7 +236,7 @@ export function GenreManager({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFu
     setForm({
       id: detail.profile.id,
       name: detail.profile.name,
-      language: detail.profile.language as "zh" | "en",
+      language: detail.profile.language as "zh" | "ko" | "en",
       chapterTypes: detail.profile.chapterTypes.join(", "),
       fatigueWords: detail.profile.fatigueWords.join(", "),
       numericalSystem: detail.profile.numericalSystem,

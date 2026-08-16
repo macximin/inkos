@@ -63,6 +63,13 @@ function fallbackExtractContent(raw: string, countingMode: LengthCountingMode): 
     }
   }
 
+  if (countingMode === "ko_chars") {
+    const koreanHeadingMatch = raw.match(/^#\s*\d+화(?::|\s+)([^\n]*)\n+([\s\S]+)/m);
+    if (koreanHeadingMatch) {
+      return koreanHeadingMatch[2]!.trim();
+    }
+  }
+
   // Try "正文" or "内容" labeled section
   const labelMatch = raw.match(/(?:正文|内容|章节内容)[：:]\s*\n+([\s\S]+)/);
   if (labelMatch) {
@@ -73,6 +80,14 @@ function fallbackExtractContent(raw: string, countingMode: LengthCountingMode): 
     const englishLabelMatch = raw.match(/(?:content|chapter content)[：:]\s*\n+([\s\S]+)/i);
     if (englishLabelMatch) {
       return englishLabelMatch[1]!.trim();
+    }
+  }
+
+
+  if (countingMode === "ko_chars") {
+    const koreanLabelMatch = raw.match(/(?:본문|내용|회차 내용)[：:]\s*\n+([\s\S]+)/);
+    if (koreanLabelMatch) {
+      return koreanLabelMatch[1]!.trim();
     }
   }
 
@@ -107,6 +122,12 @@ function fallbackExtractTitle(
     const englishHeadingMatch = raw.match(/^#\s*Chapter\s+\d+(?::|\s+)\s*(.+)/im);
     if (englishHeadingMatch) {
       return englishHeadingMatch[1]!.trim();
+    }
+  }
+  if (countingMode === "ko_chars") {
+    const koreanHeadingMatch = raw.match(/^#\s*\d+화(?::|\s+)\s*(.+)/m);
+    if (koreanHeadingMatch) {
+      return koreanHeadingMatch[1]!.trim();
     }
   }
   // Try: 章节标题：Title or CHAPTER_TITLE: Title (without === delimiters)
@@ -162,17 +183,21 @@ function defaultChapterTitle(
   chapterNumber: number,
   countingMode: LengthCountingMode,
 ): string {
+  if (countingMode === "ko_chars") return `${chapterNumber}화`;
   return countingMode === "en_words" ? `Chapter ${chapterNumber}` : `第${chapterNumber}章`;
 }
 
 function defaultStatePlaceholder(countingMode: LengthCountingMode): string {
+  if (countingMode === "ko_chars") return "(상태 카드가 갱신되지 않음)";
   return countingMode === "en_words" ? "(state card not updated)" : "(状态卡未更新)";
 }
 
 function defaultLedgerPlaceholder(countingMode: LengthCountingMode): string {
+  if (countingMode === "ko_chars") return "(원장 미갱신)";
   return countingMode === "en_words" ? "(ledger not updated)" : "(账本未更新)";
 }
 
 function defaultHooksPlaceholder(countingMode: LengthCountingMode): string {
+  if (countingMode === "ko_chars") return "(복선 목록 미갱신)";
   return countingMode === "en_words" ? "(hooks pool not updated)" : "(伏笔池未更新)";
 }

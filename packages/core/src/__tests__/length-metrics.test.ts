@@ -17,6 +17,11 @@ describe("length metrics", () => {
     expect(countChapterLength("He looked at the sky.", "en_words")).toBe(5);
   });
 
+  it("counts Korean chapter length including spaces", () => {
+    expect(countChapterLength("그는 하늘을 올려다봤다.", "ko_chars")).toBe("그는 하늘을 올려다봤다.".length);
+    expect(countChapterLength("그는 하늘을\n올려다봤다.", "ko_chars")).toBe("그는 하늘을올려다봤다.".length);
+  });
+
   it("defaults chapter length to the language-native unit", () => {
     expect(defaultChapterLength("zh")).toBe(3000);
     expect(defaultChapterLength("en")).toBe(2000);
@@ -60,6 +65,13 @@ describe("length metrics", () => {
     expect(spec.softMax).toBe(2500);
     expect(spec.hardMin).toBe(1600);
     expect(spec.hardMax).toBe(2800);
+  });
+
+  it("builds a Korean character-count length spec", () => {
+    const spec = buildLengthSpec(5000, "ko");
+
+    expect(spec.countingMode).toBe("ko_chars");
+    expect(spec.target).toBe(5000);
   });
 
   it("scales the conservative bands for smaller targets", () => {

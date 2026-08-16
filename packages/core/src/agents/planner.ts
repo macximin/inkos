@@ -193,7 +193,7 @@ export class PlannerAgent extends BaseAgent {
     readonly chapterContext?: string;
     readonly arcContext?: string;
     readonly recyclableHooks?: ReadonlyArray<StoredHook>;
-    readonly language?: "zh" | "en";
+    readonly language?: "zh" | "ko" | "en";
   }): Promise<ChapterMemo> {
     const [characterMatrix, subplotBoard, emotionalArcs, pendingHooks, bookRulesRaw] = await Promise.all([
       readCharacterMatrix(input.storyDir),
@@ -204,16 +204,16 @@ export class PlannerAgent extends BaseAgent {
     ]);
 
     const language = input.language ?? "zh";
-    const noPriorChapter = language === "en"
+    const noPriorChapter = language !== "zh"
       ? "(this is the opening chapter — no prior chapter)"
       : "（本章为起始章，无前章）";
-    const noBookRules = language === "en"
+    const noBookRules = language !== "zh"
       ? "(no book_rules entries)"
       : "（暂无 book_rules 条目）";
-    const retryFeedbackHeader = language === "en"
+    const retryFeedbackHeader = language !== "zh"
       ? "## Error from previous output"
       : "## 上次输出的错误";
-    const retryFeedbackTrailer = language === "en"
+    const retryFeedbackTrailer = language !== "zh"
       ? "Fix and re-emit."
       : "请修正后重新输出。";
 
@@ -287,9 +287,9 @@ export class PlannerAgent extends BaseAgent {
     readonly isGoldenOpening: boolean;
     readonly fallbackGoal: string;
     readonly errorMessage: string;
-    readonly language: "zh" | "en";
+    readonly language: "zh" | "ko" | "en";
   }): string {
-    if (input.language === "en") {
+    if (input.language !== "zh") {
       return [
         `# Chapter ${input.chapterNumber} memo`,
         "",
@@ -512,15 +512,15 @@ export class PlannerAgent extends BaseAgent {
     return this.extractListItems(focusSection, limit);
   }
 
-  private renderHookBudget(activeCount: number, language: "zh" | "en"): string {
+  private renderHookBudget(activeCount: number, language: "zh" | "ko" | "en"): string {
     const cap = 12;
     if (activeCount < 10) {
-      return language === "en"
+      return language !== "zh"
         ? `### Hook Budget\n- ${activeCount} active hooks (capacity: ${cap})`
         : `### 伏笔预算\n- 当前 ${activeCount} 条活跃伏笔（容量：${cap}）`;
     }
     const remaining = Math.max(0, cap - activeCount);
-    return language === "en"
+    return language !== "zh"
       ? `### Hook Budget\n- ${activeCount} active hooks — approaching capacity (${cap}). Only ${remaining} new hook(s) allowed. Prioritize resolving existing debt over opening new threads.`
       : `### 伏笔预算\n- 当前 ${activeCount} 条活跃伏笔——接近容量上限（${cap}）。仅剩 ${remaining} 个新坑位。优先回收旧债，不要轻易开新线。`;
   }
@@ -803,7 +803,7 @@ export class PlannerAgent extends BaseAgent {
   private renderIntentMarkdown(
     intent: ChapterIntent,
     memo: ChapterMemo,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
     pendingHooks: string,
     chapterSummaries: string,
     activeHookCount: number,

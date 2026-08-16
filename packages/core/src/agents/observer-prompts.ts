@@ -9,19 +9,22 @@ import type { GenreProfile } from "../models/genre-profile.js";
 export function buildObserverSystemPrompt(
   book: BookConfig,
   genreProfile: GenreProfile,
-  language?: "zh" | "en",
+  language?: "zh" | "ko" | "en",
 ): string {
-  const isEnglish = (language ?? genreProfile.language) === "en";
+  const resolvedLanguage = language ?? genreProfile.language;
+  const isEnglishControl = resolvedLanguage !== "zh";
 
-  const langPrefix = isEnglish
+  const langPrefix = resolvedLanguage === "ko"
+    ? "【언어 우선 규칙】모든 관찰 결과를 자연스러운 한국어로 작성하세요. 영어 지침은 작업 규칙일 뿐이며 결과에 영어 또는 중국어 문장을 복사하지 마세요.\n\n"
+    : isEnglishControl
     ? "【LANGUAGE OVERRIDE】ALL output MUST be in English.\n\n"
     : "";
 
-  return `${langPrefix}${isEnglish ? "You are" : "你是"}${isEnglish ? " a fact extraction specialist" : "一个事实提取专家"}。${isEnglish ? "Read the chapter text and extract EVERY observable fact change." : "阅读章节正文，提取每一个可观察到的事实变化。"}
+  return `${langPrefix}${isEnglishControl ? "You are" : "你是"}${isEnglishControl ? " a fact extraction specialist" : "一个事实提取专家"}。${isEnglishControl ? "Read the chapter text and extract EVERY observable fact change." : "阅读章节正文，提取每一个可观察到的事实变化。"}
 
-${isEnglish ? "## Extraction Categories" : "## 提取类别"}
+${isEnglishControl ? "## Extraction Categories" : "## 提取类别"}
 
-${isEnglish ? `1. **Character actions**: Who did what, to whom, why
+${isEnglishControl ? `1. **Character actions**: Who did what, to whom, why
 2. **Location changes**: Who moved where, from where
 3. **Resource changes**: Items gained, lost, consumed, quantities
 4. **Relationship changes**: New encounters, trust/distrust shifts, alliances, betrayals
@@ -39,9 +42,9 @@ ${isEnglish ? `1. **Character actions**: Who did what, to whom, why
 8. **时间推进**：过了多少时间，提到的时间标记
 9. **身体状态**：受伤、恢复、疲劳、战力变化`}
 
-${isEnglish ? "## Rules" : "## 规则"}
+${isEnglishControl ? "## Rules" : "## 规则"}
 
-${isEnglish ? `- Extract from the TEXT ONLY — do not infer what might happen
+${isEnglishControl ? `- Extract from the TEXT ONLY — do not infer what might happen
 - Over-extract: if unsure whether something is significant, include it
 - Be specific: "Lin Chen's left arm fractured" not "Lin Chen got hurt"
 - Include chapter-internal time markers
@@ -51,11 +54,11 @@ ${isEnglish ? `- Extract from the TEXT ONLY — do not infer what might happen
 - 记录章节内的时间标记
 - 标注每个场景中在场的角色`}
 
-${isEnglish ? "## Output Format" : "## 输出格式"}
+${isEnglishControl ? "## Output Format" : "## 输出格式"}
 
 === OBSERVATIONS ===
 
-${isEnglish ? `[CHARACTERS]
+${isEnglishControl ? `[CHARACTERS]
 - <name>: <action/state change> (scene: <location>)
 
 [LOCATIONS]
@@ -118,9 +121,9 @@ export function buildObserverUserPrompt(
   chapterNumber: number,
   title: string,
   content: string,
-  language?: "zh" | "en",
+  language?: "zh" | "ko" | "en",
 ): string {
-  const isEnglish = language === "en";
+  const isEnglish = language !== "zh";
   return isEnglish
     ? `Extract all facts from Chapter ${chapterNumber} "${title}":\n\n${content}`
     : `请提取第${chapterNumber}章「${title}」中的所有事实：\n\n${content}`;

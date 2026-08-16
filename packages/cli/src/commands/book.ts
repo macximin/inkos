@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { access, readFile, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { join, resolve } from "node:path";
-import { deriveBookIdFromTitle, normalizePlatformOrOther, PipelineRunner, StateManager, type BookConfig } from "@actalk/inkos-core";
+import { defaultChapterLength, deriveBookIdFromTitle, normalizePlatformOrOther, PipelineRunner, StateManager, type BookConfig, type WritingLanguage } from "@actalk/inkos-core";
 import {
   formatBookBackupCreated,
   formatBookBackupListEmpty,
@@ -27,9 +27,9 @@ bookCommand
   .option("--genre <genre>", "Genre", "xuanhuan")
   .option("--platform <platform>", "Target platform", "tomato")
   .option("--target-chapters <n>", "Target chapter count", "200")
-  .option("--chapter-words <n>", "Words per chapter", "3000")
+  .option("--chapter-words <n>", "Words/characters per chapter (language default when omitted)")
   .option("--brief <path>", "Path to creative brief file (.md/.txt) — Architect builds from your ideas instead of generating from scratch")
-  .option("--lang <language>", "Writing language: zh (Chinese) or en (English). Defaults from genre.")
+  .option("--lang <language>", "Writing language: zh (Chinese), ko (Korean), or en (English). Defaults from project.")
   .option("--json", "Output JSON")
   .action(async (opts) => {
     try {
@@ -51,6 +51,13 @@ bookCommand
       }
 
       const config = await loadConfig();
+      const writingLanguage: WritingLanguage = opts.lang === "ko"
+        ? "ko"
+        : opts.lang === "en"
+          ? "en"
+          : opts.lang === "zh"
+            ? "zh"
+            : config.language;
       const now = new Date().toISOString();
       const book: BookConfig = {
         id: bookId,
@@ -59,8 +66,10 @@ bookCommand
         genre: opts.genre,
         status: "outlining",
         targetChapters: parseInt(opts.targetChapters, 10),
-        chapterWordCount: parseInt(opts.chapterWords, 10),
-        language: opts.lang ?? config.language,
+        chapterWordCount: opts.chapterWords === undefined
+          ? defaultChapterLength(writingLanguage)
+          : parseInt(opts.chapterWords, 10),
+        language: writingLanguage,
         createdAt: now,
         updatedAt: now,
       };
@@ -109,7 +118,7 @@ bookCommand
   .option("--chapter-words <n>", "Words per chapter")
   .option("--target-chapters <n>", "Target chapter count")
   .option("--status <status>", "Book status (outlining/active/paused/completed)")
-  .option("--lang <language>", "Writing language: zh or en")
+  .option("--lang <language>", "Writing language: zh, ko, or en")
   .option("--json", "Output JSON")
   .action(async (bookIdArg: string | undefined, opts) => {
     try {

@@ -20,7 +20,7 @@ export interface StudioBookConfigDraft {
   readonly status: "outlining";
   readonly targetChapters: number;
   readonly chapterWordCount: number;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -33,7 +33,7 @@ export function buildStudioBookConfig(body: StudioCreateBookBody, now: string): 
   return {
     id: body.title
       .toLowerCase()
-      .replace(/[^a-z0-9\u4e00-\u9fff]/g, "-")
+      .replace(/[^a-z0-9\u4e00-\u9fff\uac00-\ud7a3]/g, "-")
       .replace(/-+/g, "-")
       .slice(0, 30),
     title: body.title,
@@ -41,8 +41,12 @@ export function buildStudioBookConfig(body: StudioCreateBookBody, now: string): 
     genre: body.genre,
     status: "outlining",
     targetChapters: body.targetChapters ?? 200,
-    chapterWordCount: body.chapterWordCount ?? defaultChapterLength(body.language === "en" ? "en" : "zh"),
-    ...(body.language === "en"
+    chapterWordCount: body.chapterWordCount ?? defaultChapterLength(
+      body.language === "ko" ? "ko" : body.language === "en" ? "en" : "zh",
+    ),
+    ...(body.language === "ko"
+      ? { language: "ko" as const }
+      : body.language === "en"
       ? { language: "en" as const }
       : body.language === "zh"
         ? { language: "zh" as const }

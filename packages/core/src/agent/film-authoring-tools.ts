@@ -185,7 +185,7 @@ const FillNodeParams = Type.Object({
   instruction: Type.String({ description: "what this scene should contain (beats, who speaks, choices)" }),
 });
 
-export type FilmAuthoringLanguage = "zh" | "en";
+export type FilmAuthoringLanguage = "zh" | "ko" | "en";
 
 const NODE_SYSTEM_ZH = `你是互动影游编剧。根据当前图上下文和指令，为指定节点生成 JSON（单个 StoryNode：type/title/sceneDesc/dialogue[]/choices[]），只输出 JSON。choices[].targetNodeId 必须指向已存在的节点 id。`;
 const NODE_SYSTEM_EN = `You are an interactive film scriptwriter. Using the current graph context and the instruction, generate JSON for the specified node (a single StoryNode: type/title/sceneDesc/dialogue[]/choices[]). Output JSON only. Every choices[].targetNodeId must point to an existing node id.`;

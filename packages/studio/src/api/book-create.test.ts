@@ -51,6 +51,25 @@ describe("buildStudioBookConfig", () => {
     expect(config.language).toBe("en");
     expect(config.id).toBe("english-book");
   });
+
+  it("preserves Korean titles and applies the Korean character-count default", () => {
+    const config = buildStudioBookConfig(
+      {
+        title: "감사의 밤",
+        genre: "urban",
+        language: "ko",
+      },
+      "2026-08-16T00:00:00.000Z",
+    );
+
+    expect(config).toMatchObject({
+      id: "감사의-밤",
+      title: "감사의 밤",
+      platform: "other",
+      language: "ko",
+      chapterWordCount: 5000,
+    });
+  });
 });
 
 describe("waitForStudioBookReady", () => {

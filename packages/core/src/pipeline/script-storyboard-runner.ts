@@ -34,7 +34,7 @@ export interface ScriptCreationRunOptions {
   readonly requirements?: string;
   readonly episodeCount?: number;
   readonly episodeDuration?: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly projectId?: string;
   readonly outDir?: string;
   readonly onProgress?: (message: string) => void;
@@ -53,7 +53,7 @@ export interface StoryboardCreationRunOptions {
   readonly aspectRatio?: string;
   readonly granularity?: string;
   readonly maxShots?: number;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly projectId?: string;
   readonly outDir?: string;
   readonly onProgress?: (message: string) => void;
@@ -73,7 +73,7 @@ export interface InteractiveFilmCreationRunOptions {
   readonly episodeDuration?: string;
   readonly budget?: string;
   readonly referenceMode?: string;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly projectId?: string;
   readonly outDir?: string;
   readonly onProgress?: (message: string) => void;
@@ -590,7 +590,7 @@ async function ensureProjectDir(projectRoot: string, relativePath: string): Prom
 function mergeRequirements(
   instruction: string,
   requirements: string | undefined,
-  language: "zh" | "en" = "zh",
+  language: "zh" | "ko" | "en" = "zh",
 ): string {
   const extraLabel = language === "en" ? "Additional requirements:" : "补充要求：";
   return [

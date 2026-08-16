@@ -5,7 +5,7 @@ export interface PolishChapterInput {
   readonly chapterContent: string;
   readonly chapterNumber: number;
   readonly chapterMemo?: ChapterMemo;
-  readonly language?: "zh" | "en";
+  readonly language?: "zh" | "ko" | "en";
   readonly temperature?: number;
 }
 
@@ -36,7 +36,7 @@ export class PolisherAgent extends BaseAgent {
 
   async polishChapter(input: PolishChapterInput): Promise<PolishChapterOutput> {
     const language = input.language ?? "zh";
-    const isEnglish = language === "en";
+    const isEnglish = language !== "zh";
 
     const memoBlock = input.chapterMemo
       ? isEnglish
@@ -44,11 +44,16 @@ export class PolisherAgent extends BaseAgent {
         : `\n\n## 章节备忘（润色不得偏离此目标）\ngoal：${input.chapterMemo.goal}\n\n${input.chapterMemo.body}`
       : "";
 
-    const systemPrompt = isEnglish
+    const systemPromptBase = isEnglish
       ? buildEnglishSystemPrompt()
       : buildChineseSystemPrompt();
+    const systemPrompt = language === "ko"
+      ? `모든 결과를 자연스러운 한국어 소설 문장으로 작성하세요. 아래 영어 지침은 윤문 규칙일 뿐이며 영어 결과를 요구하지 않습니다.\n\n${systemPromptBase}`
+      : systemPromptBase;
 
-    const userPrompt = isEnglish
+    const userPrompt = language === "ko"
+      ? `${input.chapterNumber}화를 윤문하세요. 윤문한 회차 전문만 반환하고 JSON, 제목, 설명은 쓰지 마세요.${memoBlock}\n\n## 윤문 대상 회차\n${input.chapterContent}`
+      : isEnglish
       ? `Polish chapter ${input.chapterNumber}. Return the polished chapter in full, nothing else — no JSON, no headers, no commentary.${memoBlock}\n\n## Chapter Under Polish\n${input.chapterContent}`
       : `请润色第${input.chapterNumber}章。只返回完整的润色后正文，不要 JSON、不要标题、不要解释。${memoBlock}\n\n## 待润色章节\n${input.chapterContent}`;
 

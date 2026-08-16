@@ -1,10 +1,10 @@
 import { useState } from "react";
 
-export function LanguageSelector({ onSelect }: { onSelect: (lang: "zh" | "en") => void }) {
-  const [hovering, setHovering] = useState<"zh" | "en" | null>(null);
-  const [selected, setSelected] = useState<"zh" | "en" | null>(null);
+export function LanguageSelector({ onSelect }: { onSelect: (lang: "zh" | "ko" | "en") => void }) {
+  const [hovering, setHovering] = useState<"zh" | "ko" | "en" | null>(null);
+  const [selected, setSelected] = useState<"zh" | "ko" | "en" | null>(null);
 
-  const handleSelect = (lang: "zh" | "en") => {
+  const handleSelect = (lang: "zh" | "ko" | "en") => {
     setSelected(lang);
     // Brief pause for the selection animation before transitioning
     setTimeout(() => onSelect(lang), 400);
@@ -23,6 +23,27 @@ export function LanguageSelector({ onSelect }: { onSelect: (lang: "zh" | "en") =
 
       {/* Language cards — generous, distinct, immersive */}
       <div className="flex gap-8 mb-16">
+        <button
+          onClick={() => handleSelect("ko")}
+          onMouseEnter={() => setHovering("ko")}
+          onMouseLeave={() => setHovering(null)}
+          className={`group w-80 border rounded-lg p-10 text-left transition-all duration-300 ${
+            selected === "ko"
+              ? "border-primary bg-primary/10 scale-[1.02]"
+              : hovering === "ko"
+                ? "border-primary/50 bg-card"
+                : "border-border bg-card/50"
+          }`}
+        >
+          <div className="font-serif text-3xl mb-4 text-foreground">한국어 창작</div>
+          <div className="text-base text-foreground/70 leading-relaxed mb-6">
+            현대물 · 판타지 · 로맨스 · 미스터리 · 장르소설
+          </div>
+          <div className="text-sm text-muted-foreground">
+            한국 웹소설 집필 · 회차당 글자 수 기준
+          </div>
+        </button>
+
         <button
           onClick={() => handleSelect("zh")}
           onMouseEnter={() => setHovering("zh")}
@@ -67,7 +88,7 @@ export function LanguageSelector({ onSelect }: { onSelect: (lang: "zh" | "en") =
       </div>
 
       <div className="text-sm text-muted-foreground">
-        可在设置中更改 · Can be changed in Settings
+        설정에서 변경 가능 · 可在设置中更改 · Can be changed in Settings
       </div>
     </div>
   );

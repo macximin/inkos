@@ -49,6 +49,14 @@ describe("project bootstrap", () => {
     expect(gitignore).toContain(".DS_Store\n");
   });
 
+  it("persists Korean as a native project writing language", async () => {
+    const { ensureProjectDirectoryInitialized } = await import("../project-bootstrap.js");
+    await ensureProjectDirectoryInitialized(tempDir, { language: "ko" });
+
+    const config = JSON.parse(await readFile(join(tempDir, "inkos.json"), "utf-8"));
+    expect(config.language).toBe("ko");
+  });
+
   it("preserves an existing .gitignore when explicitly initializing", async () => {
     await writeFile(join(tempDir, ".gitignore"), "dist/\n# keep me\n", "utf-8");
 

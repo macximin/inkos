@@ -167,6 +167,19 @@ describe("CLI integration", () => {
         await rm(englishDir, { recursive: true, force: true });
       }
     });
+
+    it("creates a native Korean project with --lang ko", async () => {
+      const koreanDir = await mkdtemp(join(tmpdir(), "inkos-cli-ko-init-"));
+
+      try {
+        const output = run(["init", koreanDir, "--lang", "ko"]);
+        const config = JSON.parse(await readFile(join(koreanDir, "inkos.json"), "utf-8"));
+        expect(config.language).toBe("ko");
+        expect(output).toContain("inkos book create --title '감사의 밤'");
+      } finally {
+        await rm(koreanDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("inkos config set", () => {

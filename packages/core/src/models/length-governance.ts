@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const LengthCountingModeSchema = z.enum(["zh_chars", "en_words"]);
+export const LengthCountingModeSchema = z.enum(["zh_chars", "ko_chars", "en_words"]);
 export type LengthCountingMode = z.infer<typeof LengthCountingModeSchema>;
 
 export const LengthNormalizeModeSchema = z.enum(["expand", "compress", "none"]);

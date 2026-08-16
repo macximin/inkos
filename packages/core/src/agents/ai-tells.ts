@@ -19,15 +19,17 @@ export interface AITellResult {
   readonly issues: ReadonlyArray<AITellIssue>;
 }
 
-type AITellLanguage = "zh" | "en";
+type AITellLanguage = "zh" | "ko" | "en";
 
 const HEDGE_WORDS: Record<AITellLanguage, ReadonlyArray<string>> = {
   zh: ["似乎", "可能", "或许", "大概", "某种程度上", "一定程度上", "在某种意义上"],
+  ko: ["어쩌면", "아마", "듯했다", "것 같았다", "어느 정도", "어떤 의미에서는"],
   en: ["seems", "seemed", "perhaps", "maybe", "apparently", "in some ways", "to some extent"],
 };
 
 const TRANSITION_WORDS: Record<AITellLanguage, ReadonlyArray<string>> = {
   zh: ["然而", "不过", "与此同时", "另一方面", "尽管如此", "话虽如此", "但值得注意的是"],
+  ko: ["그러나", "하지만", "한편", "동시에", "그럼에도", "그렇기는 해도", "주목할 점은"],
   en: ["however", "meanwhile", "on the other hand", "nevertheless", "even so", "still"],
 };
 
@@ -38,7 +40,8 @@ const TRANSITION_WORDS: Record<AITellLanguage, ReadonlyArray<string>> = {
 export function analyzeAITells(content: string, language: AITellLanguage = "zh"): AITellResult {
   const issues: AITellIssue[] = [];
   const isEnglish = language === "en";
-  const joiner = isEnglish ? ", " : "、";
+  const isKorean = language === "ko";
+  const joiner = language === "zh" ? "、" : ", ";
 
   const paragraphs = content
     .split(/\n\s*\n/)
@@ -56,12 +59,16 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
       if (cv < 0.15) {
         issues.push({
           severity: "warning",
-          category: isEnglish ? "Paragraph uniformity" : "段落等长",
+          category: isEnglish ? "Paragraph uniformity" : isKorean ? "문단 길이 획일화" : "段落等长",
           description: isEnglish
             ? `Paragraph-length coefficient of variation is only ${cv.toFixed(3)} (threshold <0.15), which suggests unnaturally uniform paragraph sizing`
+            : isKorean
+              ? `문단 길이 변동계수가 ${cv.toFixed(3)}(기준 <0.15)에 불과해 문단 크기가 지나치게 균일합니다.`
             : `段落长度变异系数仅${cv.toFixed(3)}（阈值<0.15），段落长度过于均匀，呈现AI生成特征`,
           suggestion: isEnglish
             ? "Increase paragraph-length contrast: use shorter beats for impact and longer blocks for immersive detail"
+            : isKorean
+              ? "충격과 속도감에는 짧은 문단을, 몰입 묘사에는 긴 문단을 사용해 길이 대비를 키우세요."
             : "增加段落长度差异：短段落用于节奏加速或冲击，长段落用于沉浸描写",
         });
       }
@@ -81,12 +88,16 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
     if (hedgeDensity > 3) {
       issues.push({
         severity: "warning",
-        category: isEnglish ? "Hedge density" : "套话密度",
+        category: isEnglish ? "Hedge density" : isKorean ? "모호 표현 밀도" : "套话密度",
         description: isEnglish
           ? `Hedge-word density is ${hedgeDensity.toFixed(1)} per 1k characters (threshold >3), making the prose sound overly tentative`
+          : isKorean
+            ? `모호 표현 밀도가 1천 자당 ${hedgeDensity.toFixed(1)}회(기준 >3)로, 서술이 지나치게 유보적으로 들립니다.`
           : `套话词（似乎/可能/或许等）密度为${hedgeDensity.toFixed(1)}次/千字（阈值>3），语气过于模糊犹豫`,
         suggestion: isEnglish
           ? "Replace hedges with firmer narration: remove vague qualifiers and use concrete detail instead"
+          : isKorean
+            ? "모호한 한정어를 덜어 내고 구체적인 행동과 감각 정보로 바꾸세요."
           : "用确定性叙述替代模糊表达：去掉「似乎」直接描述状态，用具体细节替代「可能」",
       });
     }

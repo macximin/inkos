@@ -142,11 +142,13 @@ export function computeHookDiagnostics(params: {
  */
 export function renderHookDiagnosticMarker(
   diagnostics: HookDiagnostics,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): string {
   const tokens: string[] = [];
   if (diagnostics.stale) {
-    tokens.push(language === "en"
+    tokens.push(language === "ko"
+      ? `장기 미진전 (거리=${diagnostics.distance}/반감기=${diagnostics.halfLife})`
+      : language === "en"
       ? `stale (d=${diagnostics.distance}/half=${diagnostics.halfLife})`
       : `过期 (距=${diagnostics.distance}/半衰=${diagnostics.halfLife})`);
   }
@@ -156,11 +158,15 @@ export function renderHookDiagnosticMarker(
     // threshold without guessing. Token format is load-bearing — it's read by
     // the reviewer prompt verbatim.
     const distanceToken = diagnostics.blockedDistance > 0
-      ? (language === "en"
+      ? (language === "ko"
+        ? ` (${diagnostics.blockedDistance}회차 차단)`
+        : language === "en"
         ? ` (blocked ${diagnostics.blockedDistance} chapters)`
         : ` (已阻 ${diagnostics.blockedDistance} 章)`)
       : "";
-    tokens.push(language === "en"
+    tokens.push(language === "ko"
+      ? `${missing}에 의해 차단${distanceToken}`
+      : language === "en"
       ? `blocked on ${missing}${distanceToken}`
       : `受阻于 ${missing}${distanceToken}`);
   }

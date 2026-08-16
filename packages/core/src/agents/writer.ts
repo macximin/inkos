@@ -20,7 +20,7 @@ import { analyzeAITells } from "./ai-tells.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { LengthSpec } from "../models/length-governance.js";
 import type { RuntimeStateDelta } from "../models/runtime-state.js";
-import { buildLengthSpec, countChapterLength } from "../utils/length-metrics.js";
+import { buildLengthSpec, countChapterLength, resolveLengthCountingMode } from "../utils/length-metrics.js";
 import {
   capContextBlock,
   filterHooks,
@@ -152,15 +152,15 @@ export class WriterAgent extends BaseAgent {
     return "writer";
   }
 
-  private localize(language: "zh" | "en", messages: { zh: string; en: string }): string {
-    return language === "en" ? messages.en : messages.zh;
+  private localize(language: "zh" | "ko" | "en", messages: { zh: string; en: string }): string {
+    return language !== "zh" ? messages.en : messages.zh;
   }
 
-  private logInfo(language: "zh" | "en", messages: { zh: string; en: string }): void {
+  private logInfo(language: "zh" | "ko" | "en", messages: { zh: string; en: string }): void {
     this.ctx.logger?.info(this.localize(language, messages));
   }
 
-  private logWarn(language: "zh" | "en", messages: { zh: string; en: string }): void {
+  private logWarn(language: "zh" | "ko" | "en", messages: { zh: string; en: string }): void {
     this.ctx.logger?.warn(this.localize(language, messages));
   }
 
@@ -211,6 +211,17 @@ export class WriterAgent extends BaseAgent {
     const hasParentCanon = parentCanon !== "(文件尚未创建)";
     const hasFanficCanon = fanficCanonRaw !== "(文件尚未创建)";
     const resolvedLanguage = book.language ?? genreProfile.language;
+    const promptGenreProfile = resolvedLanguage === "ko"
+      ? {
+          ...genreProfile,
+          name: book.genre.replace(/[_-]+/g, " "),
+          language: "ko" as const,
+          chapterTypes: ["일반 회차"],
+          fatigueWords: [],
+          satisfactionTypes: [],
+        }
+      : genreProfile;
+    const promptGenreBody = resolvedLanguage === "ko" ? "" : genreBody;
     const targetWords = input.lengthSpec?.target ?? input.wordCountOverride ?? book.chapterWordCount;
     const resolvedLengthSpec = input.lengthSpec ?? buildLengthSpec(targetWords, resolvedLanguage);
     // Arc is author-controlled planning context, not canonical state. It is
@@ -249,7 +260,7 @@ export class WriterAgent extends BaseAgent {
 
     // ── Phase 1: Creative writing (temperature 0.7) ──
     const creativeSystemPrompt = await this.withPromptPackGuidance(buildWriterSystemPrompt(
-      book, genreProfile, bookRules, bookRulesBody, genreBody, styleGuide, styleFingerprint,
+      book, promptGenreProfile, bookRules, bookRulesBody, promptGenreBody, styleGuide, styleFingerprint,
       chapterNumber, "creative", fanficContext, resolvedLanguage,
       input.chapterMemo ? "governed" : "legacy",
       resolvedLengthSpec,
@@ -558,7 +569,7 @@ export class WriterAgent extends BaseAgent {
       content: input.content,
       wordCount: countChapterLength(
         input.content,
-        resolvedLanguage === "en" ? "en_words" : "zh_chars",
+        resolveLengthCountingMode(resolvedLanguage),
       ),
       preWriteCheck: "",
       postSettlement: settlement.postSettlement,
@@ -726,7 +737,7 @@ export class WriterAgent extends BaseAgent {
     bookDir: string,
     output: WriteChapterOutput,
     numericalSystem: boolean = true,
-    language: "zh" | "en" = "zh",
+    language: "zh" | "ko" | "en" = "zh",
   ): Promise<void> {
     const chaptersDir = join(bookDir, "chapters");
     await mkdir(chaptersDir, { recursive: true });
@@ -737,9 +748,11 @@ export class WriterAgent extends BaseAgent {
     const supersededChapterFiles = existingChapterFiles
       .filter((file) => file.startsWith(`${paddedNum}_`) && file.endsWith(".md") && file !== filename);
 
-    const heading = language === "en"
-      ? `# Chapter ${output.chapterNumber}: ${output.title}`
-      : `# 第${output.chapterNumber}章 ${output.title}`;
+    const heading = language === "ko"
+      ? `# ${output.chapterNumber}화 ${output.title}`
+      : language === "en"
+        ? `# Chapter ${output.chapterNumber}: ${output.title}`
+        : `# 第${output.chapterNumber}章 ${output.title}`;
     const chapterContent = [
       heading,
       "",
@@ -820,7 +833,7 @@ export class WriterAgent extends BaseAgent {
     readonly dialogueFingerprints?: string;
     readonly relevantSummaries?: string;
     readonly parentCanon?: string;
-    readonly language?: "zh" | "en";
+    readonly language?: "zh" | "ko" | "en";
   }): string {
     const currentState = this.capLegacyContext("current_state", params.currentState, LEGACY_WRITER_CONTEXT_BUDGET.currentState);
     const ledger = this.capLegacyContext("particle_ledger", params.ledger, LEGACY_WRITER_CONTEXT_BUDGET.ledger);
@@ -842,7 +855,7 @@ export class WriterAgent extends BaseAgent {
       ? this.capLegacyContext("parent_canon", params.parentCanon, LEGACY_WRITER_CONTEXT_BUDGET.parentCanon)
       : undefined;
     const contextBlock = params.externalContext
-      ? params.language === "en"
+      ? params.language !== "zh"
         ? `\n## Per-chapter user instruction (highest priority)\n${params.externalContext}\n\nObey this direct instruction for the current chapter before optional planning guidance.\n`
         : `\n## 本章用户指令（最高优先级）\n${params.externalContext}\n\n这是用户对当前章节的直接指令，必须优先于可选规划提示。\n`
       : "";
@@ -886,7 +899,7 @@ ${parentCanon}\n`
       : "";
     const lengthRequirementBlock = this.buildLengthRequirementBlock(params.lengthSpec, params.language ?? "zh");
 
-    if (params.language === "en") {
+    if (params.language !== "zh") {
       return `Write chapter ${params.chapterNumber}.
 ${contextBlock}${arcGuidanceBlock}
 ## Current State
@@ -938,7 +951,7 @@ ${lengthRequirementBlock}
     readonly externalContext?: string;
     readonly arcContext?: string;
     readonly lengthSpec: LengthSpec;
-    readonly language?: "zh" | "en";
+    readonly language?: "zh" | "ko" | "en";
     readonly varianceBrief?: string;
     readonly selectedEvidenceBlock?: string;
   }): string {
@@ -955,7 +968,7 @@ ${lengthRequirementBlock}
     );
     const contextSections = renderNarrativeSelectedContext(otherEntries, language);
     const userDirectionBlock = directionEntries.length > 0
-      ? (language === "en"
+      ? (language !== "zh"
           ? `## User direction (overrides model defaults — must follow)\n${renderNarrativeSelectedContext(directionEntries, language)}\n`
           : `## 用户方向（优先于模型默认，必须遵循）\n${renderNarrativeSelectedContext(directionEntries, language)}\n`)
       : "";
@@ -975,7 +988,7 @@ ${lengthRequirementBlock}
     const arcGuidanceBlock = this.buildArcGuidanceBlock(params.arcContext, language);
     const briefNarrative = renderMemoAsNarrativeBlock(params.chapterMemo, params.chapterIntentData, language);
 
-    if (params.language === "en") {
+    if (params.language !== "zh") {
       return `Write chapter ${params.chapterNumber}.
 
 ${chapterContextBlock}
@@ -1022,10 +1035,10 @@ ${lengthRequirementBlock}
 - 只需输出 PRE_WRITE_CHECK、CHAPTER_TITLE、CHAPTER_CONTENT 三个区块`;
   }
 
-  private buildChapterContextBlock(externalContext: string | undefined, language: "zh" | "en"): string {
+  private buildChapterContextBlock(externalContext: string | undefined, language: "zh" | "ko" | "en"): string {
     const trimmed = externalContext?.trim();
     if (!trimmed) return "";
-    if (language === "en") {
+    if (language !== "zh") {
       return `## Per-chapter user instruction (highest priority)
 ${trimmed}
 
@@ -1037,10 +1050,10 @@ ${trimmed}
 这是用户对当前章节的直接指令。若其中指定章节标题，CHAPTER_TITLE 必须原样使用该标题。保持连续性，但不要用卷纲兜底替换这条指令。`;
   }
 
-  private buildArcGuidanceBlock(arcContext: string | undefined, language: "zh" | "en"): string {
+  private buildArcGuidanceBlock(arcContext: string | undefined, language: "zh" | "ko" | "en"): string {
     const trimmed = arcContext?.trim();
     if (!trimmed) return "";
-    if (language === "en") {
+    if (language !== "zh") {
       return `## Active Arc planning guidance (subordinate authority)
 ${trimmed}
 
@@ -1076,7 +1089,7 @@ ${trimmed}
     chapterIntent: string,
     contextPackage: ContextPackage,
     ruleStack: RuleStack,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
   ): string {
     const selectedContext = renderNarrativeSelectedContext(contextPackage.selectedContext, language)
       .replace(/^### /gm, "- ");
@@ -1087,7 +1100,7 @@ ${trimmed}
       : "- none";
     const narrativeIntent = buildNarrativeIntentBrief(chapterIntent, language);
 
-    if (language === "en") {
+    if (language !== "zh") {
       return `\n## Chapter Control Inputs
 ${narrativeIntent || "(none)"}
 
@@ -1129,7 +1142,7 @@ ${overrides}\n`;
   private verifyPreWriteCheckAlignsWithMemo(
     preWriteCheck: string,
     chapterNumber: number,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
   ): void {
     if (!preWriteCheck || preWriteCheck.trim().length === 0) {
       this.logWarn(language, {
@@ -1139,7 +1152,7 @@ ${overrides}\n`;
       return;
     }
 
-    const required = language === "en"
+    const required = language !== "zh"
       ? [
           { needle: "Current task", label: "Current task" },
           { needle: "Do not", label: "Do not" },
@@ -1160,7 +1173,12 @@ ${overrides}\n`;
     }
   }
 
-  private buildLengthRequirementBlock(lengthSpec: LengthSpec, language: "zh" | "en"): string {
+  private buildLengthRequirementBlock(lengthSpec: LengthSpec, language: "zh" | "ko" | "en"): string {
+    if (language === "ko") {
+      return `분량 기준:
+- 목표: ${lengthSpec.target}자(공백 포함)
+- 허용 범위: ${lengthSpec.softMin}-${lengthSpec.softMax}자`;
+    }
     if (language === "en") {
       return `Requirements:
 - Target length: ${lengthSpec.target} words
@@ -1212,7 +1230,7 @@ ${overrides}\n`;
   async saveNewTruthFiles(
     bookDir: string,
     output: WriteChapterOutput,
-    language: "zh" | "en" = "zh",
+    language: "zh" | "ko" | "en" = "zh",
   ): Promise<void> {
     const storyDir = join(bookDir, "story");
     const writes: Array<Promise<void>> = [];
@@ -1316,7 +1334,7 @@ ${overrides}\n`;
   private async buildRuntimeStateArtifactsIfPresent(
     bookDir: string,
     delta: RuntimeStateDelta | undefined,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
     authoritativeChapterNumber?: number,
     allowReapply?: boolean,
   ): Promise<RuntimeStateArtifacts | null> {
@@ -1335,7 +1353,7 @@ ${overrides}\n`;
   private async resolveRuntimeStateArtifactsForOutput(
     bookDir: string,
     output: WriteChapterOutput,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
   ): Promise<RuntimeStateArtifacts | null> {
     if (!output.runtimeStateDelta) return null;
     const safeDelta = this.normalizeRuntimeStateDeltaChapter(
@@ -1368,7 +1386,7 @@ ${overrides}\n`;
   private async appendChapterSummary(
     storyDir: string,
     summary: string,
-    language: "zh" | "en",
+    language: "zh" | "ko" | "en",
   ): Promise<void> {
     const summaryPath = join(storyDir, "chapter_summaries.md");
     let existing = "";
@@ -1376,9 +1394,11 @@ ${overrides}\n`;
       existing = await readFile(summaryPath, "utf-8");
     } catch {
       // File doesn't exist yet — start with header
-      existing = language === "en"
-        ? "# Chapter Summaries\n\n| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n"
-        : "# 章节摘要\n\n| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |\n|------|------|----------|----------|----------|----------|----------|----------|\n";
+      existing = language === "ko"
+        ? "# 회차 요약\n\n| 회차 | 제목 | 등장인물 | 주요 사건 | 상태 변화 | 복선 변화 | 정서 | 회차 유형 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        : language === "en"
+          ? "# Chapter Summaries\n\n| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+          : "# 章节摘要\n\n| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |\n|------|------|----------|----------|----------|----------|----------|----------|\n";
     }
 
     // Extract only the data row(s) from the summary (skip header lines)

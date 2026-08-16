@@ -27,15 +27,16 @@ export function buildWriterSystemPrompt(
   chapterNumber?: number,
   mode: "full" | "creative" = "full",
   fanficContext?: FanficContext,
-  languageOverride?: "zh" | "en",
+  languageOverride?: "zh" | "ko" | "en",
   inputProfile: "legacy" | "governed" = "legacy",
   lengthSpec?: LengthSpec,
 ): string {
-  const isEnglish = (languageOverride ?? genreProfile.language) === "en";
+  const resolvedLanguage = languageOverride ?? genreProfile.language;
+  const usesEnglishControl = resolvedLanguage !== "zh";
   const governed = inputProfile === "governed";
-  const resolvedLengthSpec = lengthSpec ?? buildLengthSpec(book.chapterWordCount, isEnglish ? "en" : "zh");
+  const resolvedLengthSpec = lengthSpec ?? buildLengthSpec(book.chapterWordCount, resolvedLanguage);
 
-  const outputSection = isEnglish
+  const outputSection = usesEnglishControl
     ? (mode === "creative"
         ? buildEnglishCreativeOutputFormat(book, genreProfile, resolvedLengthSpec)
         : buildEnglishOutputFormat(book, genreProfile, resolvedLengthSpec))
@@ -43,21 +44,22 @@ export function buildWriterSystemPrompt(
         ? buildCreativeOutputFormat(book, genreProfile, resolvedLengthSpec)
         : buildOutputFormat(book, genreProfile, resolvedLengthSpec));
 
-  const sections = isEnglish
+  const sections = usesEnglishControl
     ? [
+        resolvedLanguage === "ko" ? buildKoreanOutputOverride(resolvedLengthSpec) : "",
         buildEnglishGenreIntro(book, genreProfile),
         buildEnglishCoreRules(book),
         buildGovernedInputContract("en", governed),
         buildChapterMemoContract("en", governed),
-        buildLengthGuidance(resolvedLengthSpec, "en"),
+        buildLengthGuidance(resolvedLengthSpec, resolvedLanguage),
         buildWritingCraftCard("en"),
         buildProseExecutionRules("en"),
         buildCreativeConstitution("en"),
         buildImmersionPillars("en"),
         buildGoldenOpeningDiscipline(chapterNumber, "en"),
-        buildGenreRules(genreProfile, genreBody),
+        buildGenreRules(genreProfile, genreBody, resolvedLanguage),
         buildProtagonistRules(bookRules),
-        buildNarrativePersonRule(bookRules, isEnglish ? "en" : "zh"),
+        buildNarrativePersonRule(bookRules, "en"),
         buildBookRulesBody(bookRulesBody),
         buildStyleGuide(styleGuide),
         buildStyleFingerprint(styleFingerprint),
@@ -78,11 +80,11 @@ export function buildWriterSystemPrompt(
         buildCreativeConstitution("zh"),
         buildImmersionPillars("zh"),
         buildGoldenOpeningDiscipline(chapterNumber, "zh"),
-        buildGoldenChaptersRules(chapterNumber, isEnglish ? "en" : "zh"),
+        buildGoldenChaptersRules(chapterNumber, "zh"),
         bookRules?.enableFullCastTracking ? buildFullCastTracking() : "",
-        buildGenreRules(genreProfile, genreBody),
+        buildGenreRules(genreProfile, genreBody, "zh"),
         buildProtagonistRules(bookRules),
-        buildNarrativePersonRule(bookRules, isEnglish ? "en" : "zh"),
+        buildNarrativePersonRule(bookRules, "zh"),
         buildBookRulesBody(bookRulesBody),
         buildStyleGuide(styleGuide),
         buildStyleFingerprint(styleFingerprint),
@@ -93,7 +95,28 @@ export function buildWriterSystemPrompt(
         outputSection,
       ];
 
-  return sections.filter(Boolean).join("\n\n");
+  const renderedSections = resolvedLanguage === "ko"
+    ? sections.map(normalizeKoreanControlSection)
+    : sections;
+  return renderedSections.filter(Boolean).join("\n\n");
+}
+
+function buildKoreanOutputOverride(lengthSpec: LengthSpec): string {
+  return `## 한국어 원고 출력 규칙 (최우선)
+
+- 모든 소설 본문, 장면 묘사, 대사, 인물의 내면을 자연스러운 한국어로 작성하세요.
+- 영어 제어 지침은 작업 규칙일 뿐이며 결과물에 영어 문장을 섞지 마세요.
+- 목표 분량은 공백을 포함한 ${lengthSpec.target}자이며, 허용 범위는 ${lengthSpec.softMin}-${lengthSpec.softMax}자입니다.
+- CHAPTER_TITLE 같은 기계 판독용 키와 구조 태그는 그대로 유지하세요.`;
+}
+
+function normalizeKoreanControlSection(section: string): string {
+  return section
+    .replaceAll("English-speaking", "Korean-language")
+    .replaceAll("Write in English", "Write in Korean")
+    .replaceAll("English Variance Brief", "Korean variance brief")
+    .replace(/\bwords\b/g, "Korean characters including spaces")
+    .replace(/\bword\b/g, "Korean character");
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +127,7 @@ function buildGenreIntro(book: BookConfig, gp: GenreProfile): string {
   return `你是一位专业的${gp.name}网络小说作家。你为${book.platform}平台写作。`;
 }
 
-function buildGovernedInputContract(language: "zh" | "en", governed: boolean): string {
+function buildGovernedInputContract(language: "zh" | "ko" | "en", governed: boolean): string {
   if (!governed) return "";
 
   if (language === "en") {
@@ -138,7 +161,7 @@ function buildGovernedInputContract(language: "zh" | "en", governed: boolean): s
 // Chapter memo alignment — 7 sections from mobile web-fiction craft methodology
 // ---------------------------------------------------------------------------
 
-function buildChapterMemoContract(language: "zh" | "en", governed: boolean): string {
+function buildChapterMemoContract(language: "zh" | "ko" | "en", governed: boolean): string {
   if (!governed) return "";
 
   if (language === "en") {
@@ -146,14 +169,14 @@ function buildChapterMemoContract(language: "zh" | "en", governed: boolean): str
 
 You will receive a chapter_memo composed of 7 markdown sections:
 
-- ## 当前任务 → the concrete action this chapter must complete; stay aligned with it throughout
-- ## 读者此刻在等什么 → controls how emotional gaps are created / delayed / paid off
-- ## 该兑现的 / 暂不掀的 → payoffs that must land this chapter + cards you must NOT reveal
-- ## 日常/过渡承担什么任务 → function map for non-conflict passages ([passage location] → [function])
-- ## 关键抉择过三连问 → three-question check every key character choice must pass
-- ## 章尾必须发生的改变 → 1-3 concrete changes the ending must deliver (info / relation / physical / power)
-- ## 本章 hook 账 → **hard correspondence rule**: each hook_id listed under advance/resolve MUST have a **concretely locatable payoff scene** in the prose — explicit characters acting on or talking about a specific object/event/piece of information, with observable actions. No "sideways hints" or "deferred to next chapter". Example: if the memo says 'advance: H007 Huzi's IOU → planted → pressured', the prose must contain a scene where Lin Qiu actually touches / sees / picks up that specific IOU and does something. An inner mention like "he remembered the IOU was still in the drawer" does NOT count. Each advance/resolve payoff scene must be at least 60 chars. Entries under defer need no prose. Entries under open only need a natural new-hook seed near the chapter end
-- ## 不要做 → hard prohibitions for this chapter
+- ## Current task → the concrete action this chapter must complete; stay aligned with it throughout
+- ## What the reader is waiting for right now → controls how expectation gaps are created / delayed / paid off
+- ## To pay off / to keep buried → payoffs that must land this chapter + cards you must NOT reveal
+- ## What the slow / transitional beats carry → function map for non-conflict passages ([passage location] → [function])
+- ## Three-question check on the key choice → three-question check every key character choice must pass
+- ## Required end-of-chapter change → 1-3 concrete changes the ending must deliver (info / relation / physical / power)
+- ## Hook ledger for this chapter → **hard correspondence rule**: each hook_id listed under advance/resolve MUST have a **concretely locatable payoff scene** in the prose — explicit characters acting on or talking about a specific object/event/piece of information, with observable actions. No "sideways hints" or "deferred to next chapter". Example: if the memo says 'advance: H007 Huzi's IOU → planted → pressured', the prose must contain a scene where Lin Qiu actually touches / sees / picks up that specific IOU and does something. An inner mention like "he remembered the IOU was still in the drawer" does NOT count. Each advance/resolve payoff scene must be at least 60 chars. Entries under defer need no prose. Entries under open only need a natural new-hook seed near the chapter end
+- ## Do not → hard prohibitions for this chapter
 
 Address each section in order when drafting the chapter. Every section must leave a visible trace in the prose — if a section is not reflected, the chapter is incomplete. **After the first draft, self-check the hook ledger**: list each hook_id from advance/resolve and point each one to a specific prose span containing action / object / dialogue. If you cannot point to one, go back and add it; do not submit a draft where the ledger lives in the memo but nowhere in the prose — review will flag the missing payoff and ask for a concrete scene.`;
   }
@@ -174,7 +197,14 @@ Address each section in order when drafting the chapter. Every section must leav
 写作时按段落顺序落实，每一段都要在正文里有对应的兑现痕迹。如果某一段没有体现到正文里，本章不算完成。**写完初稿后自检一遍 hook 账**：把 advance 和 resolve 的 hook_id 列下来，对照正文，确认每一个都能指到一段带具体动作/物件/对话的 prose。如果指不到，回去补写；不要提交"账本在 memo 里、正文里没落"的稿子——审稿会标记缺口并要求补出具体场景。`;
 }
 
-function buildLengthGuidance(lengthSpec: LengthSpec, language: "zh" | "en"): string {
+function buildLengthGuidance(lengthSpec: LengthSpec, language: "zh" | "ko" | "en"): string {
+  if (language === "ko") {
+    return `## 분량 기준
+
+- 목표 분량: ${lengthSpec.target}자(공백 포함)
+- 허용 범위: ${lengthSpec.softMin}-${lengthSpec.softMax}자
+- 절대 범위: ${lengthSpec.hardMin}-${lengthSpec.hardMax}자`;
+  }
   if (language === "en") {
     return `## Length Guidance
 
@@ -445,7 +475,7 @@ function buildImmersionTechniques(): string {
 // Full methodology is in style_guide.md; this is the always-on reminder.
 // ---------------------------------------------------------------------------
 
-function buildWritingCraftCard(language: "zh" | "en"): string {
+function buildWritingCraftCard(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return `## Writing Craft Rules
 
@@ -489,7 +519,7 @@ function buildWritingCraftCard(language: "zh" | "en"): string {
 // 创作宪法（14 条原则精华） — always-on prose; internalise, do not report back
 // ---------------------------------------------------------------------------
 
-function buildCreativeConstitution(language: "zh" | "en"): string {
+function buildCreativeConstitution(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return `## Creative Constitution
 
@@ -508,7 +538,7 @@ Show don't tell，用细节堆出真实，禁止用一行直白陈述替代情�
 // 代入感六支柱 — always-on prose; internalise, do not narrate checklist items
 // ---------------------------------------------------------------------------
 
-function buildImmersionPillars(language: "zh" | "en"): string {
+function buildImmersionPillars(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return `## Six Pillars of Immersion
 
@@ -531,7 +561,7 @@ Tag the basics: within a hundred words the reader knows who is on stage, where t
 
 export function buildGoldenOpeningDiscipline(
   chapterNumber: number | undefined,
-  language: "zh" | "en",
+  language: "zh" | "ko" | "en",
 ): string {
   if (chapterNumber === undefined || chapterNumber > 3) return "";
 
@@ -651,7 +681,23 @@ function buildFullCastTracking(): string {
 // Genre-specific rules
 // ---------------------------------------------------------------------------
 
-function buildGenreRules(gp: GenreProfile, genreBody: string): string {
+function buildGenreRules(gp: GenreProfile, genreBody: string, language: "zh" | "ko" | "en"): string {
+  if (language !== "zh") {
+    const fatigueLine = gp.fatigueWords.length > 0
+      ? `- High-fatigue terms (${gp.fatigueWords.join(", ")}) may appear at most once per chapter.`
+      : "";
+    const chapterTypesLine = gp.chapterTypes.length > 0
+      ? `Choose the chapter type before drafting:\n${gp.chapterTypes.map((type) => `- ${type}`).join("\n")}`
+      : "";
+    const pacingLine = gp.pacingRule ? `- Pacing rule: ${gp.pacingRule}` : "";
+    return [
+      `## Genre rules (${gp.name})`,
+      fatigueLine,
+      pacingLine,
+      chapterTypesLine,
+      genreBody,
+    ].filter(Boolean).join("\n\n");
+  }
   const fatigueLine = gp.fatigueWords.length > 0
     ? `- 高疲劳词（${gp.fatigueWords.join("、")}）单章最多出现1次`
     : "";
@@ -680,7 +726,7 @@ function buildGenreRules(gp: GenreProfile, genreBody: string): string {
 // Narrative person is a durable user constraint: enforce it only when the user
 // explicitly set one (book_rules.narrativePerson). When unset, stay silent so the
 // genre default applies — we never impose a person the user didn't ask for.
-function buildNarrativePersonRule(bookRules: BookRules | null, language: "zh" | "en"): string {
+function buildNarrativePersonRule(bookRules: BookRules | null, language: "zh" | "ko" | "en"): string {
   const person = bookRules?.narrativePerson;
   if (!person) return "";
   if (language === "en") {
@@ -700,7 +746,7 @@ function buildNarrativePersonRule(bookRules: BookRules | null, language: "zh" | 
  *    chapter is tight (climaxes told, not shown).
  * Theme-independent, so this lives in the always-on writer discipline.
  */
-function buildProseExecutionRules(language: "zh" | "en"): string {
+function buildProseExecutionRules(language: "zh" | "ko" | "en"): string {
   if (language === "en") {
     return `## Prose execution (cross-theme failure modes)
 
@@ -973,11 +1019,12 @@ ${resourceRow}| Hooks to resolve | Real hook_id (write none if absent) | Match t
 }
 
 function buildEnglishContentBlocks(lengthSpec: LengthSpec): string {
+  const unit = lengthSpec.countingMode === "ko_chars" ? "Korean characters including spaces" : "words";
   return `=== CHAPTER_TITLE ===
 (Chapter title, without "Chapter X". It must differ from existing titles; do not reuse the same or similar titles. If recent title history or high-frequency title words are provided, avoid repeated roots and overused imagery.)
 
 === CHAPTER_CONTENT ===
-(Chapter prose. Target ${lengthSpec.target} words, acceptable range ${lengthSpec.softMin}-${lengthSpec.softMax} words.)`;
+(Chapter prose. Target ${lengthSpec.target} ${unit}, acceptable range ${lengthSpec.softMin}-${lengthSpec.softMax} ${unit}.)`;
 }
 
 function buildEnglishCreativeOutputFormat(_book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
