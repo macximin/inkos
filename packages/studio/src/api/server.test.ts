@@ -3746,6 +3746,46 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(readFile(chapterPath, "utf-8")).resolves.toBe(before);
   });
 
+  it("builds Korean inspiration-card context without Chinese labels", async () => {
+    loadBookConfigMock.mockResolvedValueOnce({
+      id: "demo-book",
+      title: "감사의 밤",
+      platform: "other",
+      genre: "urban",
+      language: "ko",
+      status: "active",
+      targetChapters: 100,
+      chapterWordCount: 5000,
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z",
+    });
+    chatCompletionMock.mockResolvedValueOnce({
+      content: "## 영감 카드\n\n비자금 장부의 수인을 대조한다.",
+      usage: { inputTokens: 100, outputTokens: 30 },
+    });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request(
+      "http://localhost/api/v1/books/demo-book/chapters/3/workspace/inspiration",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brief: "새 인물은 추가하지 않는다." }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const messages = chatCompletionMock.mock.calls.at(-1)?.[2] as Array<{ role: string; content: string }>;
+    const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+    const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
+    expect(userPrompt).toContain("작품: 감사의 밤");
+    expect(userPrompt).toContain("현재 사용자 요청");
+    expect(userPrompt).not.toContain("书名：");
+    expect(userPrompt).not.toContain("当前用户提示");
+    expect(systemPrompt).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
   it("regenerates a chapter in place without rolling back downstream chapters", async () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);

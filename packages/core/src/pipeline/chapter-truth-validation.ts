@@ -60,16 +60,20 @@ export async function validateChapterTruthPersistence(params: {
     );
   } catch (error) {
     params.logger?.warn(`State validation error for chapter ${params.chapterNumber}: ${String(error)}`);
-    const errorDescription = params.language !== "zh"
-      ? `State validation unavailable: ${String(error)}`
-      : `状态校验不可用：${String(error)}`;
+    const errorDescription = params.language === "ko"
+      ? `상태 검증을 사용할 수 없습니다: ${String(error)}`
+      : params.language === "en"
+        ? `State validation unavailable: ${String(error)}`
+        : `状态校验不可用：${String(error)}`;
     const errorIssue: AuditIssue = {
       severity: "warning",
       category: "state-validation",
       description: errorDescription,
-      suggestion: params.language !== "zh"
-        ? "Repair chapter state from the persisted body before continuing."
-        : "请先基于已保存正文修复本章 state，再继续后续章节。",
+      suggestion: params.language === "ko"
+        ? "계속하기 전에 저장된 본문을 기준으로 회차 상태를 복구하세요."
+        : params.language === "en"
+          ? "Repair chapter state from the persisted body before continuing."
+          : "请先基于已保存正文修复本章 state，再继续后续章节。",
     };
     return {
       validation: { passed: true, warnings: [] },

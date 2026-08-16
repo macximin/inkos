@@ -89,4 +89,20 @@ describe("CLI progress text", () => {
       'Run "inkos write next demo-book" to continue writing.',
     ]);
   });
+
+  it("formats Korean import completion lines", () => {
+    expect(formatImportCompletionLines("ko", {
+      importedCount: 12,
+      totalCountLabel: "60000자",
+      nextChapter: 13,
+      bookId: "감사의-밤",
+    })).toEqual([
+      "가져오기 완료:",
+      "  가져온 회차: 12",
+      "  전체 분량: 60000자",
+      "  다음 회차 번호: 13",
+      "",
+      "  계속 쓰기: inkos write next 감사의-밤",
+    ]);
+  });
 });

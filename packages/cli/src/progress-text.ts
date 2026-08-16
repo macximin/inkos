@@ -66,6 +66,16 @@ export function formatImportCompletionLines(
     readonly bookId: string;
   },
 ): string[] {
+  if (language === "ko") {
+    return [
+      "가져오기 완료:",
+      `  가져온 회차: ${result.importedCount}`,
+      `  전체 분량: ${result.totalCountLabel}`,
+      `  다음 회차 번호: ${result.nextChapter}`,
+      "",
+      `  계속 쓰기: inkos write next ${result.bookId}`,
+    ];
+  }
   return [
     language === "en" ? "Import complete:" : "导入完成：",
     language === "en"

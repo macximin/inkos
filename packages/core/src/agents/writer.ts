@@ -152,15 +152,15 @@ export class WriterAgent extends BaseAgent {
     return "writer";
   }
 
-  private localize(language: "zh" | "ko" | "en", messages: { zh: string; en: string }): string {
-    return language !== "zh" ? messages.en : messages.zh;
+  private localize(language: "zh" | "ko" | "en", messages: { zh: string; en: string; ko?: string }): string {
+    return language === "ko" ? messages.ko ?? messages.en : language === "en" ? messages.en : messages.zh;
   }
 
-  private logInfo(language: "zh" | "ko" | "en", messages: { zh: string; en: string }): void {
+  private logInfo(language: "zh" | "ko" | "en", messages: { zh: string; en: string; ko?: string }): void {
     this.ctx.logger?.info(this.localize(language, messages));
   }
 
-  private logWarn(language: "zh" | "ko" | "en", messages: { zh: string; en: string }): void {
+  private logWarn(language: "zh" | "ko" | "en", messages: { zh: string; en: string; ko?: string }): void {
     this.ctx.logger?.warn(this.localize(language, messages));
   }
 
@@ -322,6 +322,7 @@ export class WriterAgent extends BaseAgent {
 
     this.logInfo(resolvedLanguage, {
       zh: `阶段 1：创作正文（第${chapterNumber}章）`,
+      ko: `1단계: ${chapterNumber}화 본문 집필`,
       en: `Phase 1: creative writing for chapter ${chapterNumber}`,
     });
 
@@ -346,6 +347,7 @@ export class WriterAgent extends BaseAgent {
     // ── Phase 2: State settlement (temperature 0.3) ──
     this.logInfo(resolvedLanguage, {
       zh: `阶段 2：状态结算（第${chapterNumber}章，${creative.wordCount}字）`,
+      ko: `2단계: ${chapterNumber}화 상태 정산 (${creative.wordCount}자)`,
       en: `Phase 2: state settlement for chapter ${chapterNumber} (${creative.wordCount} words)`,
     });
     const isGovernedSettlement = Boolean(input.chapterIntent && input.contextPackage && input.ruleStack);
@@ -438,6 +440,7 @@ export class WriterAgent extends BaseAgent {
     if (ruleViolations.length > 0) {
       this.logWarn(resolvedLanguage, {
         zh: `后写校验：第${chapterNumber}章 ${postWriteErrors.length} 个错误，${postWriteWarnings.length} 个警告`,
+        ko: `집필 후 검사: ${chapterNumber}화에서 오류 ${postWriteErrors.length}개, 경고 ${postWriteWarnings.length}개`,
         en: `Post-write: ${postWriteErrors.length} errors, ${postWriteWarnings.length} warnings in chapter ${chapterNumber}`,
       });
       for (const v of ruleViolations) {
@@ -447,6 +450,7 @@ export class WriterAgent extends BaseAgent {
     if (aiTellIssues.length > 0) {
       this.logWarn(resolvedLanguage, {
         zh: `AI 味检查：第${chapterNumber}章发现 ${aiTellIssues.length} 个问题`,
+        ko: `AI 문체 흔적 검사: ${chapterNumber}화에서 ${aiTellIssues.length}건 발견`,
         en: `AI-tell check: ${aiTellIssues.length} issues in chapter ${chapterNumber}`,
       });
       for (const issue of aiTellIssues) {
@@ -456,6 +460,7 @@ export class WriterAgent extends BaseAgent {
     if (hookHealthIssues.length > 0) {
       this.logWarn(resolvedLanguage, {
         zh: `伏笔健康：第${chapterNumber}章发现 ${hookHealthIssues.length} 条警告`,
+        ko: `복선 상태 검사: ${chapterNumber}화에서 경고 ${hookHealthIssues.length}건 발견`,
         en: `Hook health: ${hookHealthIssues.length} warning(s) in chapter ${chapterNumber}`,
       });
       for (const issue of hookHealthIssues) {
@@ -629,6 +634,7 @@ export class WriterAgent extends BaseAgent {
 
     this.logInfo(resolvedLang, {
       zh: `阶段 2a：提取第${params.chapterNumber}章事实`,
+      ko: `2a단계: ${params.chapterNumber}화 사실 변화 추출`,
       en: `Phase 2a: observing facts for chapter ${params.chapterNumber}`,
     });
     const observerResponse = await this.chat(
@@ -643,6 +649,7 @@ export class WriterAgent extends BaseAgent {
     // Phase 2b: Reflector — merge observations into truth files
     this.logInfo(resolvedLang, {
       zh: "阶段 2b：把观察结果回写到真相文件",
+      ko: "2b단계: 관찰 결과를 truth 파일에 반영",
       en: "Phase 2b: reflecting observations into truth files",
     });
     const settlerSystem = buildSettlerSystemPrompt(
@@ -681,6 +688,7 @@ export class WriterAgent extends BaseAgent {
       selectedEvidenceBlock: params.selectedEvidenceBlock,
       governedControlBlock,
       validationFeedback: params.validationFeedback,
+      language: resolvedLang,
     });
 
     const response = await this.chat(
@@ -1147,6 +1155,7 @@ ${overrides}\n`;
     if (!preWriteCheck || preWriteCheck.trim().length === 0) {
       this.logWarn(language, {
         zh: `第${chapterNumber}章 PRE_WRITE_CHECK 为空，无法对齐 chapter_memo`,
+        ko: `${chapterNumber}화 PRE_WRITE_CHECK가 비어 있어 chapter_memo 정합성을 검증할 수 없습니다.`,
         en: `Chapter ${chapterNumber} PRE_WRITE_CHECK is empty; cannot verify memo alignment`,
       });
       return;
@@ -1168,6 +1177,7 @@ ${overrides}\n`;
     if (missing.length > 0) {
       this.logWarn(language, {
         zh: `第${chapterNumber}章 PRE_WRITE_CHECK 缺少 memo 章节检查：${missing.join("、")}`,
+        ko: `${chapterNumber}화 PRE_WRITE_CHECK에 메모 검사 항목이 없습니다: ${missing.join(", ")}`,
         en: `Chapter ${chapterNumber} PRE_WRITE_CHECK missing memo sections: ${missing.join(", ")}`,
       });
     }

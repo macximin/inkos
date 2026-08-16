@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   detectDuplicateTitle,
+  detectCrossChapterRepetition,
   detectParagraphLengthDrift,
   detectParagraphShapeWarnings,
   resolveDuplicateTitle,
@@ -360,5 +361,45 @@ describe("validatePostWrite", () => {
     expect(result.issues.some((issue) => issue.rule === "title-collapse")).toBe(true);
     expect(result.title).not.toContain("名单");
     expect(result.title).toContain("塔楼");
+  });
+
+  it("detects Korean cross-chapter phrase repetition with Hangul ngrams", () => {
+    const repeated = "감사팀이 비자금 장부를 확보하고 봉인된 서류를 다시 확인했다.";
+    const result = detectCrossChapterRepetition(repeated.repeat(5), repeated.repeat(5), "ko");
+
+    expect(findRule(result, "회차 간 표현 반복")).toBeDefined();
+    expect(findRule(result, "회차 간 표현 반복")?.description).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("uses Korean post-write rules and literal fatigue-word counting", () => {
+    const profile: GenreProfile = {
+      ...baseProfile,
+      name: "한국 재벌물",
+      language: "ko",
+      fatigueWords: ["차갑게 웃었다"],
+    };
+    const content = [
+      "그는 차갑게 웃었다.",
+      "감사팀은 장부를 펼쳤다.",
+      "그는 다시 차갑게 웃었다.",
+      "서명은 예상과 달랐다.",
+    ].join("\n\n");
+    const result = validatePostWrite(content, profile, null, "ko");
+
+    expect(findRule(result, "피로 표현")).toBeDefined();
+    expect(result.every((issue) => !/[\u3400-\u9fff]/u.test(`${issue.description}${issue.suggestion}`))).toBe(true);
+  });
+
+  it("regenerates duplicate Korean titles from Hangul content", () => {
+    const result = resolveDuplicateTitle(
+      "장부의 밤",
+      ["장부의 밤"],
+      "ko",
+      { content: "감사팀은 비자금 장부를 열었다. 봉인된 서류에서 회장 서명이 나왔다." },
+    );
+
+    expect(result.title).toBe("장부의 밤: 감사팀 비자금");
+    expect(result.issues[0]?.description).toContain("기존 제목과 완전히 같습니다");
+    expect(result.title).not.toMatch(/\(2\)$/);
   });
 });

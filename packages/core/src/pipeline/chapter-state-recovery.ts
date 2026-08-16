@@ -112,12 +112,21 @@ export function buildStateValidationFeedback(
   language: LengthLanguage,
 ): string {
   if (warnings.length === 0) {
-    return language !== "zh"
-      ? "The previous settlement contradicted the chapter text. Reconcile truth files strictly to the body."
-      : "上一次状态结算与正文矛盾。请严格以正文为准修正 truth files。";
+    return language === "ko"
+      ? "이전 상태 정산이 회차 본문과 모순됩니다. 본문을 유일한 기준으로 truth 파일을 바로잡으세요."
+      : language === "en"
+        ? "The previous settlement contradicted the chapter text. Reconcile truth files strictly to the body."
+        : "上一次状态结算与正文矛盾。请严格以正文为准修正 truth files。";
   }
 
-  if (language !== "zh") {
+  if (language === "ko") {
+    return [
+      "이전 상태 정산이 검증을 통과하지 못했습니다. 회차 본문을 기준으로 다음 모순을 바로잡으세요:",
+      ...warnings.map((warning) => `- [${warning.category}] ${warning.description}`),
+    ].join("\n");
+  }
+
+  if (language === "en") {
     return [
       "The previous settlement failed validation. Fix these contradictions against the chapter body:",
       ...warnings.map((warning) => `- [${warning.category}] ${warning.description}`),
@@ -139,21 +148,27 @@ export function buildStateDegradedIssues(
       severity: "warning" as const,
       category: "state-validation",
       description: warning.description,
-      suggestion: language !== "zh"
-        ? "Repair chapter state from the persisted body before continuing."
-        : "请先基于已保存正文修复本章 state，再继续后续章节。",
+      suggestion: language === "ko"
+        ? "계속하기 전에 저장된 본문을 기준으로 회차 상태를 복구하세요."
+        : language === "en"
+          ? "Repair chapter state from the persisted body before continuing."
+          : "请先基于已保存正文修复本章 state，再继续后续章节。",
     }));
   }
 
   return [{
     severity: "warning",
     category: "state-validation",
-    description: language !== "zh"
-      ? "State validation still failed after settlement retry."
-      : "状态结算重试后仍未通过校验。",
-    suggestion: language !== "zh"
-      ? "Repair chapter state from the persisted body before continuing."
-      : "请先基于已保存正文修复本章 state，再继续后续章节。",
+    description: language === "ko"
+      ? "상태 정산을 다시 시도했지만 검증을 통과하지 못했습니다."
+      : language === "en"
+        ? "State validation still failed after settlement retry."
+        : "状态结算重试后仍未通过校验。",
+    suggestion: language === "ko"
+      ? "계속하기 전에 저장된 본문을 기준으로 회차 상태를 복구하세요."
+      : language === "en"
+        ? "Repair chapter state from the persisted body before continuing."
+        : "请先基于已保存正文修复本章 state，再继续后续章节。",
   }];
 }
 

@@ -94,7 +94,7 @@ export async function buildExportArtifact(
       epubChapters.push({ title, content: html });
     }
     const epubInstance = new EPub(
-      { title: book.title, lang: book.language === "en" ? "en" : "zh-CN" },
+      { title: book.title, lang: resolveEpubLanguage(book.language) },
       epubChapters,
     );
     return {
@@ -128,6 +128,10 @@ export async function buildExportArtifact(
     contentType: format === "md" ? "text/markdown; charset=utf-8" : "text/plain; charset=utf-8",
     payload: parts.join(format === "md" ? "\n---\n\n" : "\n"),
   };
+}
+
+export function resolveEpubLanguage(language: unknown): "zh-CN" | "ko" | "en" {
+  return language === "ko" ? "ko" : language === "en" ? "en" : "zh-CN";
 }
 
 export async function writeExportArtifact(

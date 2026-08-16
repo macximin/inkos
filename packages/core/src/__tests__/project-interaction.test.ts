@@ -92,7 +92,7 @@ describe("project interaction control", () => {
     });
 
     expect(result.request.language).toBe("ko");
-    expect(result.responseText).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(result.responseText).toBe("작품 목록: harbor");
   });
 
 });

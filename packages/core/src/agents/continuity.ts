@@ -710,7 +710,7 @@ ${chapterContent}`;
             const issue = JSON.parse(match[0]);
 	            issues.push({
 	              severity: issue.severity ?? "warning",
-	              category: issue.category ?? (language !== "zh" ? "Uncategorized" : "未分类"),
+	              category: issue.category ?? (language === "ko" ? "미분류" : language === "en" ? "Uncategorized" : "未分类"),
 	              description: issue.description ?? "",
 	              suggestion: issue.suggestion ?? "",
 	              repairScope: normalizeRepairScope(issue.repair_scope ?? issue.repairScope),
@@ -732,15 +732,19 @@ ${chapterContent}`;
       parseFailed: true,
       issues: [{
         severity: "critical",
-        category: language !== "zh" ? "System Error" : "系统错误",
-        description: language !== "zh"
-          ? "Audit output format was invalid and could not be parsed as JSON."
-          : "审稿输出格式异常，无法解析为 JSON",
-        suggestion: language !== "zh"
-          ? "The model may not support reliable structured output. Try a stronger model or inspect the API response format."
-          : "可能是模型不支持结构化输出。尝试换一个更大的模型，或检查 API 返回格式。",
+        category: language === "ko" ? "시스템 오류" : language === "en" ? "System Error" : "系统错误",
+        description: language === "ko"
+          ? "감리 출력 형식이 잘못되어 JSON으로 해석할 수 없습니다."
+          : language === "en"
+            ? "Audit output format was invalid and could not be parsed as JSON."
+            : "审稿输出格式异常，无法解析为 JSON",
+        suggestion: language === "ko"
+          ? "구조화 출력을 안정적으로 지원하는 더 강한 모델을 사용하거나 API 응답 형식을 확인하세요."
+          : language === "en"
+            ? "The model may not support reliable structured output. Try a stronger model or inspect the API response format."
+            : "可能是模型不支持结构化输出。尝试换一个更大的模型，或检查 API 返回格式。",
       }],
-      summary: language !== "zh" ? "Audit output parsing failed" : "审稿输出解析失败",
+      summary: language === "ko" ? "감리 출력 해석 실패" : language === "en" ? "Audit output parsing failed" : "审稿输出解析失败",
     };
   }
 
@@ -813,7 +817,7 @@ ${overrides}\n`;
         issues: Array.isArray(parsed.issues)
 	          ? parsed.issues.map((i: Record<string, unknown>) => ({
 	              severity: (i.severity as string) ?? "warning",
-	              category: (i.category as string) ?? (language !== "zh" ? "Uncategorized" : "未分类"),
+	              category: (i.category as string) ?? (language === "ko" ? "미분류" : language === "en" ? "Uncategorized" : "未分类"),
 	              description: (i.description as string) ?? "",
 	              suggestion: (i.suggestion as string) ?? "",
 	              repairScope: normalizeRepairScope(i.repair_scope ?? i.repairScope),

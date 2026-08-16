@@ -86,10 +86,11 @@ export function validatePostWrite(
 ): ReadonlyArray<PostWriteViolation> {
   const violations: PostWriteViolation[] = [];
 
-  // Skip Chinese-specific rules for non-Chinese content.
-  const usesNonChineseRules = (languageOverride ?? genreProfile.language) !== "zh";
-  if (usesNonChineseRules) {
-    // For Korean/English, only run book-specific prohibitions and paragraph length checks.
+  const language = languageOverride ?? genreProfile.language;
+  if (language === "ko") {
+    return validatePostWriteKorean(content, genreProfile, bookRules);
+  }
+  if (language === "en") {
     return validatePostWriteEnglish(content, genreProfile, bookRules);
   }
 
@@ -191,14 +192,10 @@ export function validatePostWrite(
   if (chapterRefs && chapterRefs.length > 0) {
     const unique = [...new Set(chapterRefs)];
     violations.push({
-      rule: usesNonChineseRules ? "chapter-number-reference" : "章节号指称",
+      rule: "章节号指称",
       severity: "error",
-      description: usesNonChineseRules
-        ? `Chapter text contains explicit chapter number references: ${unique.map(r => `"${r}"`).join(", ")}. Characters do not know they are in a numbered chapter.`
-        : `正文中出现了章节号指称：${unique.map(r => `"${r}"`).join("、")}。角色不知道自己在第几章。`,
-      suggestion: usesNonChineseRules
-        ? "Replace with natural references: 'that night', 'when the warehouse burned', 'the incident at the dock'"
-        : '改成自然表达："那天晚上"、"仓库出事那次"、"码头上的事"',
+      description: `正文中出现了章节号指称：${unique.map(r => `"${r}"`).join("、")}。角色不知道自己在第几章。`,
+      suggestion: '改成自然表达："那天晚上"、"仓库出事那次"、"码头上的事"',
     });
   }
 
@@ -359,9 +356,7 @@ export function detectCrossChapterRepetition(
   if (!recentChaptersContent || recentChaptersContent.length < 100) return [];
 
   const violations: PostWriteViolation[] = [];
-  const isEnglish = language !== "zh";
-
-  if (isEnglish) {
+  if (language === "en") {
     // Extract 3-word phrases from current chapter
     const words = currentContent.toLowerCase().replace(/[^\w\s']/g, "").split(/\s+/).filter(w => w.length > 2);
     const phraseCounts = new Map<string, number>();
@@ -386,12 +381,15 @@ export function detectCrossChapterRepetition(
       });
     }
   } else {
-    // Chinese: 6-char ngrams
+    // Chinese/Korean: whitespace-free 6-character ngrams
     const chars = currentContent.replace(/[\s\n\r]/g, "");
     const phraseCounts = new Map<string, number>();
     for (let i = 0; i < chars.length - 5; i++) {
       const phrase = chars.slice(i, i + 6);
-      if (/^[\u4e00-\u9fff]{6}$/.test(phrase)) {
+      const matchesScript = language === "ko"
+        ? /^[\uac00-\ud7a3]{6}$/.test(phrase)
+        : /^[\u4e00-\u9fff]{6}$/.test(phrase);
+      if (matchesScript) {
         phraseCounts.set(phrase, (phraseCounts.get(phrase) ?? 0) + 1);
       }
     }
@@ -403,12 +401,19 @@ export function detectCrossChapterRepetition(
       }
     }
     if (crossRepeats.length >= 3) {
-      violations.push({
-        rule: "跨章重复",
-        severity: "warning",
-        description: `${crossRepeats.length}个重复短语在近期章节中也出现过：${crossRepeats.slice(0, 5).join("、")}`,
-        suggestion: "变换动作描写和场景用语，避免跨章节机械重复",
-      });
+      violations.push(language === "ko"
+        ? {
+            rule: "회차 간 표현 반복",
+            severity: "warning",
+            description: `현재 화에서 반복된 표현 ${crossRepeats.length}개가 최근 회차에도 있습니다: ${crossRepeats.slice(0, 5).join(", ")}`,
+            suggestion: "동작 묘사와 장면 표현을 바꿔 회차 사이의 기계적인 반복을 줄이세요.",
+          }
+        : {
+            rule: "跨章重复",
+            severity: "warning",
+            description: `${crossRepeats.length}个重复短语在近期章节中也出现过：${crossRepeats.slice(0, 5).join("、")}`,
+            suggestion: "变换动作描写和场景用语，避免跨章节机械重复",
+          });
     }
   }
 
@@ -438,7 +443,14 @@ export function detectParagraphLengthDrift(
   const dropPercent = Math.round((1 - shrinkRatio) * 100);
 
   return [
-    language !== "zh"
+    language === "ko"
+      ? {
+          rule: "문단 밀도 변화",
+          severity: "warning",
+          description: `최근 회차와 비교해 평균 문단 길이가 ${Math.round(recent.averageLength)}자에서 ${Math.round(current.averageLength)}자로 ${dropPercent}% 짧아졌습니다.`,
+          suggestion: "동작마다 한 줄씩 끊지 말고 연결된 행동, 관찰, 반응을 같은 문단에 묶어 문단의 층위를 회복하세요.",
+        }
+      : language === "en"
       ? {
           rule: "Paragraph density drift",
           severity: "warning",
@@ -452,6 +464,55 @@ export function detectParagraphLengthDrift(
           suggestion: "不要把每个动作都切成单独短句；适当把动作、观察和反应并入同一段，恢复段落层次。",
         },
   ];
+}
+
+/** Korean-specific deterministic checks. */
+function validatePostWriteKorean(
+  content: string,
+  genreProfile: GenreProfile,
+  bookRules: BookRules | null,
+): ReadonlyArray<PostWriteViolation> {
+  const violations: PostWriteViolation[] = [...detectParagraphShapeWarnings(content, "ko")];
+
+  for (const prohibition of bookRules?.prohibitions ?? []) {
+    if (prohibition.length >= 2 && prohibition.length <= 50 && content.includes(prohibition)) {
+      violations.push({
+        rule: "작품 금지 항목",
+        severity: "error",
+        description: `금지된 표현 또는 내용이 발견됐습니다: "${prohibition}"`,
+        suggestion: "해당 표현이나 내용을 삭제하거나 다시 쓰세요.",
+      });
+    }
+  }
+
+  const fatigueWords = bookRules?.fatigueWordsOverride && bookRules.fatigueWordsOverride.length > 0
+    ? bookRules.fatigueWordsOverride
+    : genreProfile.fatigueWords;
+  for (const word of fatigueWords) {
+    const count = countLiteralOccurrences(content, word);
+    if (count > 1) {
+      violations.push({
+        rule: "피로 표현",
+        severity: "warning",
+        description: `"${word}" 표현이 ${count}회 사용됐습니다. 회차당 1회를 넘지 않는 편이 좋습니다.`,
+        suggestion: "장면에 맞는 더 구체적인 표현으로 바꾸세요.",
+      });
+    }
+  }
+
+  return violations;
+}
+
+function countLiteralOccurrences(content: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const found = content.indexOf(needle, offset);
+    if (found < 0) return count;
+    count += 1;
+    offset = found + needle.length;
+  }
 }
 
 /** English-specific post-write validation rules. */
@@ -550,7 +611,14 @@ function appendParagraphShapeWarnings(
 
   if (shape.shortParagraphs.length >= 4 && shape.shortRatio >= 0.6) {
     violations.push(
-      language !== "zh"
+      language === "ko"
+        ? {
+            rule: "문단 파편화",
+            severity: "warning",
+            description: `전체 ${shape.paragraphs.length}개 문단 중 ${shape.shortParagraphs.length}개가 ${shape.shortThreshold}자보다 짧습니다.`,
+            suggestion: "연결된 행동, 관찰, 반응을 합쳐 한 문장마다 문단이 끊어지지 않게 하세요.",
+          }
+        : language === "en"
         ? {
             rule: "Paragraph fragmentation",
             severity: "warning",
@@ -568,7 +636,14 @@ function appendParagraphShapeWarnings(
 
   if (shape.maxConsecutiveShort >= 3) {
     violations.push(
-      language !== "zh"
+      language === "ko"
+        ? {
+            rule: "연속 단문단",
+            severity: "warning",
+            description: `${shape.shortThreshold}자보다 짧은 문단이 ${shape.maxConsecutiveShort}개 연속으로 나옵니다.`,
+            suggestion: "이어지는 동작을 다시 묶어 적어도 한 문단은 완전한 행동이나 감정의 진행을 담게 하세요.",
+          }
+        : language === "en"
         ? {
             rule: "Consecutive short paragraphs",
             severity: "warning",
@@ -603,7 +678,7 @@ function analyzeParagraphShape(content: string, language: "zh" | "ko" | "en"): P
   const paragraphs = extractParagraphs(content);
   // Exclude dialogue lines from short paragraph counting — dialogue is naturally short
   const narrativeParagraphs = paragraphs.filter((p) => !isDialogueParagraph(p));
-  const shortThreshold = language !== "zh" ? 120 : 35;
+  const shortThreshold = language === "en" ? 120 : language === "ko" ? 55 : 35;
   const shortParagraphs = narrativeParagraphs.filter((paragraph) => paragraph.length < shortThreshold);
   const averageLength = paragraphs.length > 0
     ? paragraphs.reduce((sum, paragraph) => sum + paragraph.length, 0) / paragraphs.length
@@ -667,6 +742,10 @@ const CHINESE_TITLE_STOP_WORDS = new Set([
 
 const CHINESE_TITLE_STOP_CHARS = new Set(["的", "了", "着", "一", "只", "从", "在", "和", "与", "把", "被", "有", "没", "里", "又", "才"]);
 
+const KOREAN_TITLE_STOP_WORDS = new Set([
+  "이번", "회차", "본문", "제목", "그는", "그녀는", "그리고", "하지만", "그러나", "다시", "아직",
+]);
+
 /**
  * Detect duplicate or near-duplicate chapter titles.
  * Compares the new title against existing chapter titles from index.
@@ -674,6 +753,7 @@ const CHINESE_TITLE_STOP_CHARS = new Set(["的", "了", "着", "一", "只", "�
 export function detectDuplicateTitle(
   newTitle: string,
   existingTitles: ReadonlyArray<string>,
+  language: "zh" | "ko" | "en" = "zh",
 ): ReadonlyArray<PostWriteViolation> {
   if (!newTitle.trim()) return [];
 
@@ -686,24 +766,52 @@ export function detectDuplicateTitle(
 
     // Exact match
     if (normalized === existingNorm) {
-      violations.push({
-        rule: "duplicate-title",
-        severity: "warning",
-        description: `章节标题"${newTitle}"与已有章节标题完全相同`,
-        suggestion: "更换一个不同的章节标题",
-      });
+      violations.push(language === "ko"
+        ? {
+            rule: "duplicate-title",
+            severity: "warning",
+            description: `회차 제목 "${newTitle}"이 기존 제목과 완전히 같습니다.`,
+            suggestion: "서로 다른 회차 제목으로 바꾸세요.",
+          }
+        : language === "en"
+        ? {
+            rule: "duplicate-title",
+            severity: "warning",
+            description: `Chapter title "${newTitle}" exactly matches an existing title.`,
+            suggestion: "Use a distinct chapter title.",
+          }
+        : {
+            rule: "duplicate-title",
+            severity: "warning",
+            description: `章节标题"${newTitle}"与已有章节标题完全相同`,
+            suggestion: "更换一个不同的章节标题",
+          });
       break;
     }
 
     // Near-duplicate: one is substring of the other, or only differs by punctuation/numbers
     const stripPunct = (s: string) => s.replace(/[^\p{L}\p{N}]/gu, "");
     if (stripPunct(normalized) === stripPunct(existingNorm)) {
-      violations.push({
-        rule: "near-duplicate-title",
-        severity: "warning",
-        description: `章节标题"${newTitle}"与已有标题"${existing}"高度相似`,
-        suggestion: "避免使用相似的章节标题",
-      });
+      violations.push(language === "ko"
+        ? {
+            rule: "near-duplicate-title",
+            severity: "warning",
+            description: `회차 제목 "${newTitle}"이 기존 제목 "${existing}"과 지나치게 비슷합니다.`,
+            suggestion: "비슷한 회차 제목을 반복하지 마세요.",
+          }
+        : language === "en"
+        ? {
+            rule: "near-duplicate-title",
+            severity: "warning",
+            description: `Chapter title "${newTitle}" is too similar to existing title "${existing}".`,
+            suggestion: "Avoid near-duplicate chapter titles.",
+          }
+        : {
+            rule: "near-duplicate-title",
+            severity: "warning",
+            description: `章节标题"${newTitle}"与已有标题"${existing}"高度相似`,
+            suggestion: "避免使用相似的章节标题",
+          });
       break;
     }
   }
@@ -727,10 +835,10 @@ export function resolveDuplicateTitle(
     return { title: newTitle, issues: [] };
   }
 
-  const duplicateIssues = detectDuplicateTitle(trimmed, existingTitles);
+  const duplicateIssues = detectDuplicateTitle(trimmed, existingTitles, language);
   if (duplicateIssues.length > 0) {
     const regenerated = regenerateDuplicateTitle(trimmed, existingTitles, language, options?.content);
-    if (regenerated && detectDuplicateTitle(regenerated, existingTitles).length === 0) {
+    if (regenerated && detectDuplicateTitle(regenerated, existingTitles, language).length === 0) {
       return { title: regenerated, issues: duplicateIssues };
     }
 
@@ -739,7 +847,7 @@ export function resolveDuplicateTitle(
       const candidate = language !== "zh"
         ? `${trimmed} (${counter})`
         : `${trimmed}（${counter}）`;
-      if (detectDuplicateTitle(candidate, existingTitles).length === 0) {
+      if (detectDuplicateTitle(candidate, existingTitles, language).length === 0) {
         return { title: candidate, issues: duplicateIssues };
       }
       counter++;
@@ -756,7 +864,7 @@ export function resolveDuplicateTitle(
   const regenerated = regenerateCollapsedTitle(trimmed, existingTitles, language, options?.content);
   if (
     regenerated
-    && detectDuplicateTitle(regenerated, existingTitles).length === 0
+    && detectDuplicateTitle(regenerated, existingTitles, language).length === 0
     && detectTitleCollapse(regenerated, existingTitles, language).length === 0
   ) {
     return { title: regenerated, issues: collapseIssues };
@@ -796,7 +904,14 @@ function detectTitleCollapse(
   }
 
   return [
-    language !== "zh"
+    language === "ko"
+      ? {
+          rule: "title-collapse",
+          severity: "warning",
+          description: `회차 제목 "${newTitle}"이 최근 반복된 "${titlePressure.repeatedToken}" 제목 틀을 계속 사용합니다.`,
+          suggestion: "새로운 이미지, 행동, 결과, 인물 초점을 중심으로 제목을 바꾸세요.",
+        }
+      : language === "en"
       ? {
           rule: "title-collapse",
           severity: "warning",
@@ -822,9 +937,11 @@ function regenerateDuplicateTitle(
     return undefined;
   }
 
-  const qualifier = language !== "zh"
-    ? extractEnglishTitleQualifier(baseTitle, existingTitles, content)
-    : extractChineseTitleQualifier(baseTitle, existingTitles, content);
+  const qualifier = language === "ko"
+    ? extractKoreanTitleQualifier(baseTitle, existingTitles, content)
+    : language === "en"
+      ? extractEnglishTitleQualifier(baseTitle, existingTitles, content)
+      : extractChineseTitleQualifier(baseTitle, existingTitles, content);
   if (!qualifier) {
     return undefined;
   }
@@ -844,9 +961,11 @@ function regenerateCollapsedTitle(
     return undefined;
   }
 
-  const fresh = language !== "zh"
-    ? extractEnglishTitleQualifier(baseTitle, existingTitles, content)
-    : extractChineseTitleQualifier(baseTitle, existingTitles, content);
+  const fresh = language === "ko"
+    ? extractKoreanTitleQualifier(baseTitle, existingTitles, content)
+    : language === "en"
+      ? extractEnglishTitleQualifier(baseTitle, existingTitles, content)
+      : extractChineseTitleQualifier(baseTitle, existingTitles, content);
   if (!fresh) {
     return undefined;
   }
@@ -873,6 +992,31 @@ function extractEnglishTitleQualifier(
   return second
     ? `${capitalize(first)} ${capitalize(second)}`
     : capitalize(first);
+}
+
+function extractKoreanTitleQualifier(
+  baseTitle: string,
+  existingTitles: ReadonlyArray<string>,
+  content: string,
+): string | undefined {
+  const blocked = new Set(extractKoreanTitleTerms([baseTitle, ...existingTitles].join(" ")));
+  const words = (content.match(/[가-힣]{2,}/g) ?? [])
+    .map(stripKoreanParticle)
+    .filter((word) => word.length >= 2)
+    .filter((word) => !KOREAN_TITLE_STOP_WORDS.has(word))
+    .filter((word) => !blocked.has(word));
+  const first = words[0];
+  if (!first) return undefined;
+  const second = words.find((word) => word !== first && !blocked.has(word));
+  return second ? `${first} ${second}` : first;
+}
+
+function extractKoreanTitleTerms(text: string): string[] {
+  return [...new Set((text.match(/[가-힣]{2,}/g) ?? []).map(stripKoreanParticle).filter((word) => word.length >= 2))];
+}
+
+function stripKoreanParticle(word: string): string {
+  return word.replace(/(?:에게서|으로서|으로써|에서는|에서|에게|한테|께서|까지|부터|처럼|보다|으로|와|과|은|는|이|가|을|를|의|에|로|도|만)$/u, "");
 }
 
 function extractChineseTitleQualifier(

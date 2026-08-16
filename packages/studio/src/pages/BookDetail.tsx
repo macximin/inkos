@@ -365,7 +365,9 @@ export function BookDetail({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ feedback }),
       });
-      return data?.book.language === "en" ? "Foundation revised." : "基础设定已重修。";
+      return data?.book.language === "ko"
+        ? "작품 기반 설정을 다시 다듬었습니다."
+        : data?.book.language === "en" ? "Foundation revised." : "基础设定已重修。";
     });
   };
 
@@ -412,7 +414,9 @@ export function BookDetail({
   const handleRepairState = async (chapterNum: number) => {
     await runBookAction(`repair-state-${chapterNum}`, async () => {
       await fetchJson(`/books/${bookId}/repair-state/${chapterNum}`, { method: "POST" });
-      return data?.book.language === "en" ? `Chapter ${chapterNum} state repaired.` : `第 ${chapterNum} 章状态已修复。`;
+      return data?.book.language === "ko"
+        ? `${chapterNum}화 상태를 복구했습니다.`
+        : data?.book.language === "en" ? `Chapter ${chapterNum} state repaired.` : `第 ${chapterNum} 章状态已修复。`;
     });
   };
 
@@ -778,7 +782,9 @@ export function BookDetail({
                         onClick={() => handleSync(ch.number)}
                         disabled={syncingChapters.includes(ch.number) || ch.number !== latestPersistedChapter}
                         className="p-2 rounded-lg bg-secondary text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all shadow-sm disabled:opacity-50"
-                        title={data?.book.language === "en" ? "Sync truth/state from edited chapter" : "根据已编辑章节同步 truth/state"}
+                        title={data?.book.language === "ko"
+                          ? "수정한 회차에서 truth/state 동기화"
+                          : data?.book.language === "en" ? "Sync truth/state from edited chapter" : "根据已编辑章节同步 truth/state"}
                       >
                         {syncingChapters.includes(ch.number)
                           ? <div className="w-3.5 h-3.5 border-2 border-muted-foreground/20 border-t-muted-foreground rounded-full animate-spin" />

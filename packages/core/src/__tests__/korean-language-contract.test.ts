@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildWriterSystemPrompt } from "../agents/writer-prompts.js";
 import { buildObserverSystemPrompt } from "../agents/observer-prompts.js";
 import { getPlannerMemoSystemPrompt } from "../agents/planner-prompts.js";
-import { buildSettlerSystemPrompt } from "../agents/settler-prompts.js";
+import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "../agents/settler-prompts.js";
 import { parseCreativeOutput } from "../agents/writer-parser.js";
 import { buildAgentSystemPrompt } from "../agent/agent-system-prompt.js";
 import { CreateBookActionPayloadSchema } from "../interaction/action-envelope.js";
@@ -11,8 +11,11 @@ import { BookConfigSchema } from "../models/book.js";
 import { ProjectConfigSchema } from "../models/project.js";
 import { StateManifestSchema } from "../models/runtime-state.js";
 import { renderForecastContextMarkdown } from "../forecast/context-builder.js";
+import { buildForecastRepairPrompt, buildForecastSystemPrompt, buildForecastUserPrompt } from "../forecast/prompts.js";
 import { renderChapterSummariesProjection, renderCurrentStateProjection, renderHooksProjection } from "../state/state-projections.js";
 import { buildLengthSpec } from "../utils/length-metrics.js";
+import { resolveEpubLanguage } from "../interaction/export-artifact.js";
+import { buildStateDegradedIssues, buildStateValidationFeedback } from "../pipeline/chapter-state-recovery.js";
 
 describe("native Korean writing contracts", () => {
   it("accepts ko across project, book, interaction, and runtime schemas", () => {
@@ -140,11 +143,27 @@ describe("native Korean writing contracts", () => {
     const planner = getPlannerMemoSystemPrompt("ko");
     const observer = buildObserverSystemPrompt(book, profile, "ko");
     const settler = buildSettlerSystemPrompt(book, profile, null, "ko");
+    const settlerUser = buildSettlerUserPrompt({
+      chapterNumber: 1,
+      title: "첫 감사",
+      content: "감사팀이 비자금 장부를 확보했다.",
+      currentState: "감사팀이 본사에 있다.",
+      ledger: "",
+      hooks: "장부의 배후는 아직 드러나지 않았다.",
+      chapterSummaries: "",
+      subplotBoard: "",
+      emotionalArcs: "",
+      characterMatrix: "",
+      volumeOutline: "승계 전쟁을 추적한다.",
+      observations: "감사팀이 장부를 확보함",
+      language: "ko",
+    });
 
     expect(planner).toContain("모든 자연어를 한국어로 작성하세요");
     expect(observer).toContain("모든 관찰 결과를 자연스러운 한국어로 작성하세요");
     expect(observer).not.toMatch(/[\u3400-\u9fff]/u);
-    expect(settler).toContain("모두 자연스러운 한국어로 작성하세요");
+    expect(settler).toContain("모든 자연어 값은 자연스러운 한국어로 작성하세요");
+    expect(`${settler}\n${settlerUser}`).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
   it("parses Korean fallback headings and counts Korean characters", () => {
@@ -189,5 +208,32 @@ describe("native Korean writing contracts", () => {
     expect(markdown).toContain("## 작가 의도");
     expect(markdown).toContain("## A-Rail / B-Rail 장기 경로");
     expect(markdown).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("builds Korean-native forecast prompts without Chinese fallback", () => {
+    const system = buildForecastSystemPrompt("ko");
+    const user = buildForecastUserPrompt({
+      contextMarkdown: "# 정사 컨텍스트",
+      divergence: "주인공이 장부를 공개한다.",
+      branchCount: 3,
+      horizon: 10,
+      baseChapter: 12,
+    }, "ko");
+    const repair = buildForecastRepairPrompt("branches가 비었습니다.", "ko");
+    const prompt = `${system}\n${user}\n${repair}`;
+
+    expect(prompt).toContain("후보 분기를 정확히 3개");
+    expect(prompt).toContain("13화부터 시작");
+    expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("keeps Korean recovery guidance and EPUB metadata Korean", () => {
+    const feedback = buildStateValidationFeedback([], "ko");
+    const issues = buildStateDegradedIssues([], "ko");
+
+    expect(feedback).toContain("회차 본문과 모순");
+    expect(issues[0]?.description).toContain("검증을 통과하지 못했습니다");
+    expect(`${feedback}\n${JSON.stringify(issues)}`).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(resolveEpubLanguage("ko")).toBe("ko");
   });
 });

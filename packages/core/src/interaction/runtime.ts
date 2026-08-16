@@ -113,8 +113,8 @@ function resolveRuntimeLanguage(request: InteractionRequest): RuntimeLanguage {
   return request.language === "ko" ? "ko" : request.language === "en" ? "en" : "zh";
 }
 
-function localize<T>(language: RuntimeLanguage, messages: { zh: T; en: T }): T {
-  return language === "zh" ? messages.zh : messages.en;
+function localize<T>(language: RuntimeLanguage, messages: { zh: T; en: T; ko?: T }): T {
+  return language === "ko" ? messages.ko ?? messages.en : language === "en" ? messages.en : messages.zh;
 }
 
 function localizeMode(mode: AutomationMode, language: RuntimeLanguage): string {
@@ -141,7 +141,20 @@ function renderCreationDraft(
   draft: NonNullable<InteractionSession["creationDraft"]>,
   language: RuntimeLanguage,
 ): string {
-  const lines = language === "en"
+  const lines = language === "ko"
+    ? [
+        "# 현재 작품 초안",
+        draft.title ? `- 제목: ${draft.title}` : undefined,
+        draft.genre ? `- 장르: ${draft.genre}` : undefined,
+        draft.platform ? `- 플랫폼: ${draft.platform}` : undefined,
+        draft.worldPremise ? `- 세계관: ${draft.worldPremise}` : undefined,
+        draft.protagonist ? `- 주인공: ${draft.protagonist}` : undefined,
+        draft.conflictCore ? `- 핵심 갈등: ${draft.conflictCore}` : undefined,
+        draft.volumeOutline ? `- 권 구성 방향: ${draft.volumeOutline}` : undefined,
+        draft.blurb ? `- 작품 소개: ${draft.blurb}` : undefined,
+        draft.nextQuestion ? `- 다음 질문: ${draft.nextQuestion}` : undefined,
+      ]
+    : language === "en"
     ? [
         "# Current Book Draft",
         draft.title ? `- Title: ${draft.title}` : undefined,
@@ -183,6 +196,7 @@ function buildTaskStartedState(
         chapterNumber: session.activeChapterNumber,
         stageLabel: localize(language, {
           zh: "准备章节输入",
+          ko: "회차 입력 준비 중",
           en: "preparing chapter inputs",
         }),
       };
@@ -192,6 +206,7 @@ function buildTaskStartedState(
         bookId: request.bookId ?? session.activeBookId,
         stageLabel: localize(language, {
           zh: "创建作品基础",
+          ko: "작품 기반 설정 생성 중",
           en: "creating book foundation",
         }),
       };
@@ -202,6 +217,7 @@ function buildTaskStartedState(
         chapterNumber: session.activeChapterNumber,
         stageLabel: localize(language, {
           zh: "导出作品文件",
+          ko: "작품 파일 내보내는 중",
           en: "exporting book artifacts",
         }),
       };
@@ -212,8 +228,8 @@ function buildTaskStartedState(
         bookId: request.bookId ?? session.activeBookId,
         chapterNumber: request.chapterNumber ?? session.activeChapterNumber,
         stageLabel: request.intent === "rewrite_chapter"
-          ? localize(language, { zh: "重写章节", en: "rewriting chapter" })
-          : localize(language, { zh: "修订章节", en: "revising chapter" }),
+          ? localize(language, { zh: "重写章节", ko: "회차 다시 쓰는 중", en: "rewriting chapter" })
+          : localize(language, { zh: "修订章节", ko: "회차 수정 중", en: "revising chapter" }),
       };
     case "update_focus":
     case "update_author_intent":
@@ -224,6 +240,7 @@ function buildTaskStartedState(
         chapterNumber: session.activeChapterNumber,
         stageLabel: localize(language, {
           zh: "应用项目修改",
+          ko: "작품 수정사항 적용 중",
           en: "applying project edit",
         }),
       };
@@ -235,6 +252,7 @@ function buildTaskStartedState(
         chapterNumber: session.activeChapterNumber,
         stageLabel: localize(language, {
           zh: "已由用户暂停",
+          ko: "사용자가 일시정지함",
           en: "paused by user",
         }),
       };
@@ -245,6 +263,7 @@ function buildTaskStartedState(
         chapterNumber: session.activeChapterNumber,
         stageLabel: localize(language, {
           zh: `处理中：${request.intent}`,
+          ko: `처리 중: ${request.intent}`,
           en: `handling ${request.intent}`,
         }),
       };
@@ -297,10 +316,12 @@ function buildPendingDecision(
     summary: session.automationMode === "manual"
       ? localize(language, {
           zh: "执行已完成。请明确选择下一步操作。",
+          ko: "실행을 마쳤습니다. 다음 작업을 명시적으로 선택하세요.",
           en: "Execution finished. Choose the next action explicitly.",
         })
       : localize(language, {
           zh: "执行已完成，等待你的下一步决定。",
+          ko: "실행을 마쳤습니다. 다음 결정을 기다립니다.",
           en: "Execution finished. Waiting for your next decision.",
         }),
   };
@@ -318,6 +339,7 @@ function buildWaitingExecution(
     ...(chapterNumber !== undefined ? { chapterNumber } : {}),
     stageLabel: localize(language, {
       zh: "等待你的下一步决定",
+      ko: "다음 결정 대기 중",
       en: "waiting for your next decision",
     }),
   };
@@ -365,6 +387,7 @@ async function handleDraftLifecycleRequest(params: {
           session: markCompleted(session),
           responseText: localize(language, {
             zh: "当前还没有创作草案。先告诉我你想写什么，再逐步把书收出来。",
+            ko: "현재 작품 초안이 없습니다. 쓰고 싶은 작품부터 알려주세요.",
             en: "There is no active book draft yet. Start by telling me what you want to write.",
           }),
         };
@@ -378,6 +401,7 @@ async function handleDraftLifecycleRequest(params: {
       if (!tools.createBook) {
         throw new Error(localize(language, {
           zh: "交互运行时暂未实现创建作品。",
+          ko: "상호작용 런타임에 작품 생성 기능이 아직 구현되지 않았습니다.",
           en: "Book creation is not implemented in the interaction runtime yet.",
         }));
       }
@@ -386,6 +410,7 @@ async function handleDraftLifecycleRequest(params: {
       if (!title) {
         throw new Error(localize(language, {
           zh: "创建作品需要标题。",
+          ko: "작품을 만들려면 제목이 필요합니다.",
           en: "Book creation requires a title.",
         }));
       }
@@ -415,6 +440,7 @@ async function handleDraftLifecycleRequest(params: {
       if (!createdBookId) {
         throw new Error(localize(language, {
           zh: "创建作品工具没有返回作品 ID。",
+          ko: "작품 생성 도구가 작품 ID를 반환하지 않았습니다.",
           en: "Create-book tool did not return a book id.",
         }));
       }
@@ -429,10 +455,12 @@ async function handleDraftLifecycleRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已创建作品 ${createdBookId}。`,
+          ko: `${createdBookId} 작품을 만들었습니다.`,
           en: `Created ${createdBookId}.`,
         })),
         responseText: metadata.responseText ?? localize(language, {
           zh: `已创建作品 ${createdBookId}。`,
+          ko: `${createdBookId} 작품을 만들었습니다.`,
           en: `Created ${createdBookId}.`,
         }),
         details: metadata.details,
@@ -443,10 +471,12 @@ async function handleDraftLifecycleRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: "已丢弃当前创作草案。",
+          ko: "현재 작품 초안을 폐기했습니다.",
           en: "Discarded the current book draft.",
         })),
         responseText: localize(language, {
           zh: "已丢弃当前创作草案。",
+          ko: "현재 작품 초안을 폐기했습니다.",
           en: "Discarded the current book draft.",
         }),
       };
@@ -472,15 +502,18 @@ async function handleBookSelectionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已列出 ${books.length} 本作品。`,
+          ko: `작품 ${books.length}개를 조회했습니다.`,
           en: `Listed ${books.length} book(s).`,
         })),
         responseText: books.length > 0
           ? localize(language, {
               zh: `作品列表：${books.join("、")}`,
+              ko: `작품 목록: ${books.join(", ")}`,
               en: `Books: ${books.join(", ")}`,
             })
           : localize(language, {
               zh: "当前项目下没有作品。",
+              ko: "현재 프로젝트에 작품이 없습니다.",
               en: "No books found in this project.",
             }),
       };
@@ -489,6 +522,7 @@ async function handleBookSelectionRequest(params: {
       if (!request.bookId) {
         throw new Error(localize(language, {
           zh: "切换作品需要提供作品 ID。",
+          ko: "작품을 선택하려면 작품 ID가 필요합니다.",
           en: "Book selection requires a book id.",
         }));
       }
@@ -496,6 +530,7 @@ async function handleBookSelectionRequest(params: {
       if (!books.includes(request.bookId)) {
         throw new Error(localize(language, {
           zh: `当前项目中找不到作品「${request.bookId}」。`,
+          ko: `현재 프로젝트에서 "${request.bookId}" 작품을 찾을 수 없습니다.`,
           en: `Book "${request.bookId}" not found in this project.`,
         }));
       }
@@ -503,10 +538,12 @@ async function handleBookSelectionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已切换当前作品到 ${request.bookId}。`,
+          ko: `현재 작품을 ${request.bookId}(으)로 전환했습니다.`,
           en: `Bound active book to ${request.bookId}.`,
         })),
         responseText: localize(language, {
           zh: `当前作品：${request.bookId}`,
+          ko: `현재 작품: ${request.bookId}`,
           en: `Active book: ${request.bookId}`,
         }),
       };
@@ -548,6 +585,7 @@ export async function runInteractionRequest(params: {
   });
   session = addEvent(session, "task.started", session.currentExecution!.status, localize(language, {
     zh: `开始执行 ${request.intent}。`,
+    ko: `${request.intent} 작업을 시작했습니다.`,
     en: `Started ${request.intent}.`,
   }));
 
@@ -559,6 +597,7 @@ export async function runInteractionRequest(params: {
       chapterNumber: nextSession.activeChapterNumber,
       stageLabel: localize(language, {
         zh: "已完成",
+        ko: "완료",
         en: "completed",
       }),
     },
@@ -597,6 +636,7 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
@@ -623,16 +663,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已为 ${bookId} 完成下一章写作。`,
+          ko: `${bookId}의 다음 회차 집필을 마쳤습니다.`,
           en: `Completed write_next for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已为 ${bookId} 完成下一章写作，等待你的下一步决定。`,
+                ko: `${bookId}의 다음 회차 집필을 마쳤습니다. 다음 결정을 기다립니다.`,
                 en: `Completed write_next for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已为 ${bookId} 完成下一章写作。`,
+                ko: `${bookId}의 다음 회차 집필을 마쳤습니다.`,
                 en: `Completed write_next for ${bookId}.`,
               })
         ),
@@ -644,12 +687,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.chapterNumber) {
         throw new Error(localize(language, {
           zh: "修订章节需要章节号。",
+          ko: "회차를 수정하려면 회차 번호가 필요합니다.",
           en: "Chapter number is required for chapter revision.",
         }));
       }
@@ -680,6 +725,9 @@ export async function runInteractionRequest(params: {
           zh: request.intent === "rewrite_chapter"
             ? `已为 ${bookId} 完成章节重写。`
             : `已为 ${bookId} 完成章节修订。`,
+          ko: request.intent === "rewrite_chapter"
+            ? `${bookId} 회차 다시 쓰기를 마쳤습니다.`
+            : `${bookId} 회차 수정을 마쳤습니다.`,
           en: `Completed ${request.intent} for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
@@ -688,12 +736,18 @@ export async function runInteractionRequest(params: {
                 zh: request.intent === "rewrite_chapter"
                   ? `已为 ${bookId} 完成章节重写，等待你的下一步决定。`
                   : `已为 ${bookId} 完成章节修订，等待你的下一步决定。`,
+                ko: request.intent === "rewrite_chapter"
+                  ? `${bookId} 회차 다시 쓰기를 마쳤습니다. 다음 결정을 기다립니다.`
+                  : `${bookId} 회차 수정을 마쳤습니다. 다음 결정을 기다립니다.`,
                 en: `Completed ${request.intent} for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: request.intent === "rewrite_chapter"
                   ? `已为 ${bookId} 完成章节重写。`
                   : `已为 ${bookId} 完成章节修订。`,
+                ko: request.intent === "rewrite_chapter"
+                  ? `${bookId} 회차 다시 쓰기를 마쳤습니다.`
+                  : `${bookId} 회차 수정을 마쳤습니다.`,
                 en: `Completed ${request.intent} for ${bookId}.`,
               })
         ),
@@ -704,12 +758,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.chapterNumber || !request.targetText || !request.replacementText) {
         throw new Error(localize(language, {
           zh: "正文修补需要章节号、目标文本和替换文本。",
+          ko: "본문을 부분 수정하려면 회차 번호, 대상 문장, 교체 문장이 필요합니다.",
           en: "Chapter patch requires chapter number, target text, and replacement text.",
         }));
       }
@@ -742,16 +798,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已修补 ${bookId} 的第 ${chapterNumber} 章。`,
+          ko: `${bookId}의 ${chapterNumber}화를 부분 수정했습니다.`,
           en: `Patched chapter ${chapterNumber} for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已修补 ${bookId} 的第 ${chapterNumber} 章，等待你的下一步决定。`,
+                ko: `${bookId}의 ${chapterNumber}화를 부분 수정했습니다. 다음 결정을 기다립니다.`,
                 en: `Patched chapter ${chapterNumber} for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已修补 ${bookId} 的第 ${chapterNumber} 章。`,
+                ko: `${bookId}의 ${chapterNumber}화를 부분 수정했습니다.`,
                 en: `Patched chapter ${chapterNumber} for ${bookId}.`,
               })
         ),
@@ -762,12 +821,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.chapterNumber || !request.fullText) {
         throw new Error(localize(language, {
           zh: "整章替换需要章节号和完整正文。",
+          ko: "회차 전체를 교체하려면 회차 번호와 전체 본문이 필요합니다.",
           en: "Whole-chapter replacement requires chapter number and fullText.",
         }));
       }
@@ -799,16 +860,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已替换 ${bookId} 的第 ${chapterNumber} 章。`,
+          ko: `${bookId}의 ${chapterNumber}화 전체 본문을 교체했습니다.`,
           en: `Replaced chapter ${chapterNumber} for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已替换 ${bookId} 的第 ${chapterNumber} 章，等待你的下一步决定。`,
+                ko: `${bookId}의 ${chapterNumber}화 전체 본문을 교체했습니다. 다음 결정을 기다립니다.`,
                 en: `Replaced chapter ${chapterNumber} for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已替换 ${bookId} 的第 ${chapterNumber} 章。`,
+                ko: `${bookId}의 ${chapterNumber}화 전체 본문을 교체했습니다.`,
                 en: `Replaced chapter ${chapterNumber} for ${bookId}.`,
               })
         ),
@@ -819,12 +883,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.oldValue || !request.newValue) {
         throw new Error(localize(language, {
           zh: "实体改名需要旧值和新值。",
+          ko: "이름을 바꾸려면 기존 값과 새 값이 필요합니다.",
           en: "Entity rename requires old and new values.",
         }));
       }
@@ -851,16 +917,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已在 ${bookId} 中把 ${request.oldValue} 改成 ${request.newValue}。`,
+          ko: `${bookId}에서 ${request.oldValue}을(를) ${request.newValue}(으)로 바꿨습니다.`,
           en: `Renamed ${request.oldValue} to ${request.newValue} in ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已在 ${bookId} 中把 ${request.oldValue} 改成 ${request.newValue}，等待你的下一步决定。`,
+                ko: `${bookId}에서 ${request.oldValue}을(를) ${request.newValue}(으)로 바꿨습니다. 다음 결정을 기다립니다.`,
                 en: `Renamed ${request.oldValue} to ${request.newValue} in ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已在 ${bookId} 中把 ${request.oldValue} 改成 ${request.newValue}。`,
+                ko: `${bookId}에서 ${request.oldValue}을(를) ${request.newValue}(으)로 바꿨습니다.`,
                 en: `Renamed ${request.oldValue} to ${request.newValue} in ${bookId}.`,
               })
         ),
@@ -871,12 +940,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.instruction) {
         throw new Error(localize(language, {
           zh: "更新焦点需要提供内容。",
+          ko: "현재 초점을 바꾸려면 내용을 입력해야 합니다.",
           en: "Focus update requires instruction content.",
         }));
       }
@@ -898,16 +969,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已更新 ${bookId} 的当前焦点。`,
+          ko: `${bookId}의 현재 초점을 갱신했습니다.`,
           en: `Updated current focus for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已更新 ${bookId} 的当前焦点，等待你的下一步决定。`,
+                ko: `${bookId}의 현재 초점을 갱신했습니다. 다음 결정을 기다립니다.`,
                 en: `Updated current focus for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已更新 ${bookId} 的当前焦点。`,
+                ko: `${bookId}의 현재 초점을 갱신했습니다.`,
                 en: `Updated current focus for ${bookId}.`,
               })
         ),
@@ -918,12 +992,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.instruction) {
         throw new Error(localize(language, {
           zh: "更新作者意图需要提供内容。",
+          ko: "작가 의도를 바꾸려면 내용을 입력해야 합니다.",
           en: "Author intent update requires instruction content.",
         }));
       }
@@ -945,16 +1021,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已更新 ${bookId} 的作者意图。`,
+          ko: `${bookId}의 작가 의도를 갱신했습니다.`,
           en: `Updated author intent for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已更新 ${bookId} 的作者意图，等待你的下一步决定。`,
+                ko: `${bookId}의 작가 의도를 갱신했습니다. 다음 결정을 기다립니다.`,
                 en: `Updated author intent for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已更新 ${bookId} 的作者意图。`,
+                ko: `${bookId}의 작가 의도를 갱신했습니다.`,
                 en: `Updated author intent for ${bookId}.`,
               })
         ),
@@ -965,12 +1044,14 @@ export async function runInteractionRequest(params: {
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
       if (!request.fileName || !request.instruction) {
         throw new Error(localize(language, {
           zh: "编辑真相文件需要文件名和内容。",
+          ko: "truth 파일을 수정하려면 파일명과 내용이 필요합니다.",
           en: "Truth-file edit requires a file name and content.",
         }));
       }
@@ -992,16 +1073,19 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已更新 ${bookId} 的 ${request.fileName}。`,
+          ko: `${bookId}의 ${request.fileName}을(를) 갱신했습니다.`,
           en: `Updated ${request.fileName} for ${bookId}.`,
         })),
         responseText: metadata.responseText ?? (
           pendingDecision
             ? localize(language, {
                 zh: `已更新 ${bookId} 的 ${request.fileName}，等待你的下一步决定。`,
+                ko: `${bookId}의 ${request.fileName}을(를) 갱신했습니다. 다음 결정을 기다립니다.`,
                 en: `Updated ${request.fileName} for ${bookId}; waiting for your next decision.`,
               })
             : localize(language, {
                 zh: `已更新 ${bookId} 的 ${request.fileName}。`,
+                ko: `${bookId}의 ${request.fileName}을(를) 갱신했습니다.`,
                 en: `Updated ${request.fileName} for ${bookId}.`,
               })
         ),
@@ -1012,12 +1096,14 @@ export async function runInteractionRequest(params: {
       if (!params.tools.exportBook) {
         throw new Error(localize(language, {
           zh: "交互运行时暂未实现导出作品。",
+          ko: "상호작용 런타임에 작품 내보내기 기능이 아직 구현되지 않았습니다.",
           en: "Book export is not implemented in the interaction runtime yet.",
         }));
       }
       if (!bookId) {
         throw new Error(localize(language, {
           zh: "当前交互会话还没有绑定作品。",
+          ko: "현재 상호작용 세션에 연결된 작품이 없습니다.",
           en: "No active book is bound to the interaction session.",
         }));
       }
@@ -1036,10 +1122,12 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(completed, "task.completed", "completed", localize(language, {
           zh: `已导出 ${bookId}。`,
+          ko: `${bookId} 작품을 내보냈습니다.`,
           en: `Exported ${bookId}.`,
         })),
         responseText: metadata.responseText ?? localize(language, {
           zh: `已导出 ${bookId}。`,
+          ko: `${bookId} 작품을 내보냈습니다.`,
           en: `Exported ${bookId}.`,
         }),
         details: metadata.details,
@@ -1055,6 +1143,7 @@ export async function runInteractionRequest(params: {
           chapterNumber: session.activeChapterNumber,
           stageLabel: localize(language, {
             zh: "已由用户暂停",
+            ko: "사용자가 일시정지함",
             en: "paused by user",
           }),
         },
@@ -1062,10 +1151,12 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(paused, "task.completed", "blocked", localize(language, {
           zh: `已暂停${bookId ?? "当前作品"}。`,
+          ko: `${bookId ?? "현재 작품"}을(를) 일시정지했습니다.`,
           en: `Paused ${bookId ?? "current book"}.`,
         })),
         responseText: localize(language, {
           zh: `已暂停${bookId ?? "当前作品"}。`,
+          ko: `${bookId ?? "현재 작품"}을(를) 일시정지했습니다.`,
           en: `Paused ${bookId ?? "current book"}.`,
         }),
       };
@@ -1080,6 +1171,7 @@ export async function runInteractionRequest(params: {
           chapterNumber: session.activeChapterNumber,
           stageLabel: localize(language, {
             zh: "可继续执行",
+            ko: "계속 실행 가능",
             en: "ready to continue",
           }),
         },
@@ -1087,10 +1179,12 @@ export async function runInteractionRequest(params: {
       return {
         session: addEvent(resumed, "task.completed", "completed", localize(language, {
           zh: `已恢复${bookId ?? "当前作品"}。`,
+          ko: `${bookId ?? "현재 작품"}을(를) 다시 시작했습니다.`,
           en: `Resumed ${bookId ?? "current book"}.`,
         })),
         responseText: localize(language, {
           zh: `已恢复${bookId ?? "当前作品"}。`,
+          ko: `${bookId ?? "현재 작품"}을(를) 다시 시작했습니다.`,
           en: `Resumed ${bookId ?? "current book"}.`,
         }),
       };
@@ -1110,19 +1204,23 @@ export async function runInteractionRequest(params: {
           ? (bookId
               ? localize(language, {
                   zh: `你好。当前作品是 ${bookId}。你可以让我继续写、修订章节，或者解释当前卡住的原因。`,
+                  ko: `안녕하세요. 현재 작품은 ${bookId}입니다. 이어 쓰기, 회차 수정, 현재 막힌 이유 설명을 요청할 수 있습니다.`,
                   en: `Hi. Active book is ${bookId}. Ask me to continue, revise a chapter, or explain what is blocked.`,
                 })
               : localize(language, {
                   zh: "你好。当前还没有激活作品。你可以先打开作品、列出作品，或者直接告诉我你要写什么。",
+                  ko: "안녕하세요. 현재 활성화된 작품이 없습니다. 작품을 열거나 목록을 확인하거나 쓰고 싶은 내용을 알려주세요.",
                   en: "Hi. No active book yet. Open a book, list books, or tell me what you want to write.",
                 }))
           : (bookId
               ? localize(language, {
                   zh: `我在。当前作品是 ${bookId}。你可以让我继续写、修订章节、重写、调整焦点，或者查看流水线为何停止。`,
+                  ko: `대기 중입니다. 현재 작품은 ${bookId}입니다. 이어 쓰기, 회차 수정, 다시 쓰기, 초점 조정, 파이프라인 중단 이유 확인을 요청할 수 있습니다.`,
                   en: `I’m here. Active book is ${bookId}. You can ask me to continue, revise a chapter, rewrite, change focus, or inspect why the pipeline stopped.`,
                 })
               : localize(language, {
                   zh: "我在。当前还没有绑定作品。先打开作品、列出作品，或者直接描述你要写什么。",
+                  ko: "대기 중입니다. 현재 연결된 작품이 없습니다. 작품을 열거나 목록을 확인하거나 쓰고 싶은 내용을 설명해주세요.",
                   en: "I’m here. No active book is bound yet. Open a book, list books, or describe what you want to write.",
                 }))
       );
@@ -1140,10 +1238,12 @@ export async function runInteractionRequest(params: {
       const summary = request.intent === "explain_failure"
         ? localize(language, {
             zh: `当前失败上下文：${bookId ?? "当前无激活作品"} 处于 ${stage}。`,
+            ko: `현재 실패 상황: ${bookId ?? "활성 작품 없음"}, 단계는 ${stage}입니다.`,
             en: `Current failure context: ${bookId ?? "no active book"} is at ${stage}.`,
           })
         : localize(language, {
             zh: `当前状态：${bookId ?? "当前无激活作品"} 处于 ${stage}。`,
+            ko: `현재 상태: ${bookId ?? "활성 작품 없음"}, 단계는 ${stage}입니다.`,
             en: `Current status: ${bookId ?? "no active book"} is at ${stage}.`,
           });
       const completed = markCompleted(session);
@@ -1155,6 +1255,7 @@ export async function runInteractionRequest(params: {
     default:
       throw new Error(localize(language, {
         zh: `交互运行时暂未实现意图「${request.intent}」。`,
+        ko: `상호작용 런타임에 "${request.intent}" 작업이 아직 구현되지 않았습니다.`,
         en: `Intent "${request.intent}" is not implemented in the interaction runtime yet.`,
       }));
   }

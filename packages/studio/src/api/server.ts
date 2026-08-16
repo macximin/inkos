@@ -3664,13 +3664,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
           {
             role: "user",
             content: [
-              language === "en" ? `Book: ${book.title}` : `书名：${book.title}`,
-              language === "en" ? `Chapter: ${num}` : `章节：第${num}章`,
+              language === "ko" ? `작품: ${book.title}` : language === "en" ? `Book: ${book.title}` : `书名：${book.title}`,
+              language === "ko" ? `회차: ${num}화` : language === "en" ? `Chapter: ${num}` : `章节：第${num}章`,
               requestedBrief || persistedBrief
-                ? `${language === "en" ? "Current user brief" : "当前用户提示"}:\n${requestedBrief || persistedBrief}`
+                ? `${language === "ko" ? "현재 사용자 요청" : language === "en" ? "Current user brief" : "当前用户提示"}:\n${requestedBrief || persistedBrief}`
                 : "",
-              plan ? `${language === "en" ? "Generated chapter plan" : "系统章节计划"}:\n${plan}` : "",
-              `${language === "en" ? "Current chapter" : "当前章节"}:\n${chapter}`,
+              plan ? `${language === "ko" ? "생성된 회차 계획" : language === "en" ? "Generated chapter plan" : "系统章节计划"}:\n${plan}` : "",
+              `${language === "ko" ? "현재 회차" : language === "en" ? "Current chapter" : "当前章节"}:\n${chapter}`,
             ].filter(Boolean).join("\n\n"),
           },
         ],
