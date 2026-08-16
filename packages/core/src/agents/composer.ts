@@ -21,6 +21,11 @@ import {
 import { writeGovernedRuntimeArtifacts } from "../utils/runtime-writer.js";
 import { estimateTextTokens, type LLMClient } from "../llm/provider.js";
 import type { ContextCompressionCallback } from "../models/context-compression.js";
+import type {
+  BookReferenceContextSelection,
+  BookReferenceSelectionTask,
+  ReferenceSectionSelectionRequest,
+} from "../references/reference-context.js";
 
 export interface ComposeChapterInput {
   readonly book: BookConfig;
@@ -30,8 +35,13 @@ export interface ComposeChapterInput {
   readonly contextBudget?: ContextBudget;
   readonly compressibleContextCompiler?: CompressibleContextCompiler;
   readonly outlineSectionSelector?: OutlineSectionSelector;
+  readonly referenceContextProvider?: BookReferenceContextProvider;
   readonly onContextCompression?: ContextCompressionCallback;
 }
+
+export type BookReferenceContextProvider = (
+  request: BookReferenceSelectionTask,
+) => Promise<BookReferenceContextSelection>;
 
 export interface ContextBudget {
   readonly contextWindowTokens: number;
@@ -79,12 +89,14 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
   const runtimeDir = join(storyDir, "runtime");
   await mkdir(runtimeDir, { recursive: true });
 
-  const selectedContext = await collectSelectedContext(
+  const baseContext = await collectSelectedContext(
     storyDir,
     input.plan,
     input.book.language ?? "zh",
     input.outlineSectionSelector,
   );
+  const referenceContext = await loadReferenceContext(input);
+  const selectedContext = [...baseContext, ...referenceContext.entries];
   const initialContextPackage = ContextPackageSchema.parse({
     chapter: input.chapterNumber,
     selectedContext,
@@ -106,7 +118,7 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     plan: input.plan,
     contextPackage,
     composerInputs: [input.plan.runtimePath],
-    notes: budgeted.notes,
+    notes: [...referenceContext.notes, ...budgeted.notes],
     compression: budgeted.compression,
   });
   const {
@@ -378,6 +390,58 @@ export class ComposerAgent extends BaseAgent {
     return parseSelectedSources(response.content).filter((source) => allowed.has(source));
   }
 
+  async selectReferenceSections(request: ReferenceSectionSelectionRequest): Promise<ReadonlyArray<string>> {
+    const isEn = request.language === "en";
+    const candidates = request.candidates.map((candidate, index) => [
+      `#${index + 1} ${candidate.source}`,
+      `title: ${candidate.title}`,
+      `heading: ${candidate.heading}`,
+      `user-defined uses: ${candidate.uses.join("; ")}`,
+      candidate.note ? `user note: ${candidate.note}` : undefined,
+    ].filter(Boolean).join("\n")).join("\n\n");
+    const system = isEn
+      ? [
+          "You are InkOS's semantic reference-section selector.",
+          "The user explicitly bound these reference assets to this book and described how each may be used.",
+          "Select only sections useful for the current chapter task. References are creative guidance, never canon and never stronger than author intent or established facts.",
+          "Return strict JSON only: {\"selectedSources\":[\"...\"]}. Use exact candidate source ids. An empty list is valid when no section is relevant.",
+        ].join("\n")
+      : [
+          "你是 InkOS 的参考资产语义选段器。",
+          "用户已把这些参考资产绑定到本书，并明确说明每份资料可以借鉴什么。",
+          "只选择当前章节任务真正需要的段落。参考资料只是创作借鉴，不能成为正典，也不能压过作者意图和既成事实。",
+          "只返回严格 JSON：{\"selectedSources\":[\"...\"]}。必须使用候选中的精确 source id；没有相关段落时可以返回空数组。",
+        ].join("\n");
+    const user = isEn
+      ? [
+          `Chapter: ${request.chapterNumber}`,
+          `Goal: ${request.goal}`,
+          `Outline node: ${request.outlineNode}`,
+          `Must keep: ${request.mustKeep.join("; ") || "(none)"}`,
+          "",
+          "Candidates (headings only; selected sections will be loaded verbatim by the host):",
+          candidates,
+        ].join("\n")
+      : [
+          `章节：第${request.chapterNumber}章`,
+          `目标：${request.goal}`,
+          `大纲节点：${request.outlineNode}`,
+          `必须保留：${request.mustKeep.join("；") || "（无）"}`,
+          "",
+          "候选段落（这里只给标题；宿主会把选中的段落原文完整载入）：",
+          candidates,
+        ].join("\n");
+    const response = await this.chat([
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], {
+      temperature: 0.1,
+      maxTokens: 2048,
+    });
+    const allowed = new Set(request.candidates.map((candidate) => candidate.source));
+    return parseSelectedSources(response.content).filter((source) => allowed.has(source));
+  }
+
   async compileCompressibleContext(request: CompressibleContextCompileRequest): Promise<string> {
     const isEn = request.language === "en";
     const protectedBlock = renderContextEntries(request.protectedEntries);
@@ -425,6 +489,21 @@ export class ComposerAgent extends BaseAgent {
       maxTokens: Math.min(8192, Math.max(512, request.maxInputTokens)),
     });
     return response.content.trim();
+  }
+}
+
+async function loadReferenceContext(input: ComposeChapterInput): Promise<BookReferenceContextSelection> {
+  if (!input.referenceContextProvider) return { entries: [], notes: [] };
+  try {
+    return await input.referenceContextProvider({
+      chapterNumber: input.chapterNumber,
+      goal: input.plan.intent.goal,
+      outlineNode: input.plan.intent.outlineNode ?? "",
+      mustKeep: input.plan.intent.mustKeep,
+      language: input.book.language ?? "zh",
+    });
+  } catch {
+    return { entries: [], notes: ["book-reference-context-unavailable"] };
   }
 }
 

@@ -1,7 +1,6 @@
 import { Command } from "commander";
-import { PipelineRunner, StateManager, splitChapters } from "@actalk/inkos-core";
-import { readFile, readdir, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { loadChaptersFromPath, PipelineRunner, StateManager } from "@actalk/inkos-core";
+import { resolve } from "node:path";
 import { loadConfig, buildPipelineConfig, findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 import {
   formatImportCanonComplete,
@@ -86,36 +85,18 @@ importCommand
       }
 
       const fromPath = resolve(opts.from);
-      const fromStat = await stat(fromPath);
-
-      let chapters: Array<{ title: string; content: string }>;
-
-      if (fromStat.isDirectory()) {
-        // Directory mode: read each .md/.txt file in sorted order
-        const entries = await readdir(fromPath);
-        const textFiles = entries
-          .filter((f) => f.endsWith(".md") || f.endsWith(".txt"))
-          .sort();
-
-        if (textFiles.length === 0) {
+      let chapters: Awaited<ReturnType<typeof loadChaptersFromPath>>;
+      try {
+        chapters = await loadChaptersFromPath(fromPath, opts.split);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith("No .md or .txt files found")) {
           throw new Error(formatImportNoFiles(language, fromPath));
         }
-
-        chapters = await Promise.all(
-          textFiles.map(async (f) => {
-            const content = await readFile(join(fromPath, f), "utf-8");
-            const title = f.replace(/\.(md|txt)$/, "").replace(/^\d+[_\-\s]*/, "");
-            return { title, content };
-          }),
-        );
-      } else {
-        // Single file mode: split by chapter pattern
-        const text = await readFile(fromPath, "utf-8");
-        chapters = [...splitChapters(text, opts.split)];
-
-        if (chapters.length === 0) {
+        if (message.startsWith("No chapters found")) {
           throw new Error(formatImportNoChapters(language, fromPath));
         }
+        throw error;
       }
 
       if (!opts.json) {

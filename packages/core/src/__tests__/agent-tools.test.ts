@@ -19,9 +19,11 @@ import {
   createScriptCreationTool,
   createStoryboardCreationTool,
   createInteractiveFilmCreationTool,
+  createManageBookReferenceTool,
   createWriteFileTool,
   createWriteTruthFileTool,
 } from "../agent/agent-tools.js";
+import { ingestMaterial } from "../materials/ingest.js";
 import { createPlayDB } from "../play/play-db-factory.js";
 import { PlayStore } from "../play/play-store.js";
 
@@ -80,6 +82,47 @@ describe("agent deterministic writing tools", () => {
     expect(result.content[0]?.type).toBe("text");
     await expect(readFile(join(state.bookDir("harbor"), "story", "story_bible.md"), "utf-8"))
       .resolves.toContain("distrusts the guild");
+  });
+
+  it("binds, lists, and unbinds project reference assets for the active book", async () => {
+    await writeFile(join(root, "reference.md"), "# 开篇机制\n先让主角失去退路。\n", "utf-8");
+    const asset = await ingestMaterial(root, {
+      sourceKind: "file",
+      filePath: "reference.md",
+      title: "开篇参考",
+      purpose: "reference",
+    });
+    const tool = createManageBookReferenceTool(root, "harbor");
+
+    const bound = await tool.execute("bind-reference", {
+      action: "bind",
+      materialId: asset.id,
+      uses: ["开篇机制"],
+      note: "只借鉴压力建立方式。",
+    });
+    expect(bound.details).toMatchObject({
+      kind: "book_reference_bound",
+      bookId: "harbor",
+      materialId: asset.id,
+      uses: ["开篇机制"],
+    });
+
+    const listed = await tool.execute("list-references", { action: "list" });
+    expect(listed.details).toMatchObject({
+      kind: "book_reference_list",
+      bookId: "harbor",
+      references: [expect.objectContaining({ title: "开篇参考", available: true })],
+    });
+
+    const unbound = await tool.execute("unbind-reference", {
+      action: "unbind",
+      materialId: asset.id,
+    });
+    expect(unbound.details).toMatchObject({
+      kind: "book_reference_unbound",
+      removed: true,
+      materialId: asset.id,
+    });
   });
 
   it("deletes only the latest chapter through the deterministic tool path", async () => {

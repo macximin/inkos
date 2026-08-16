@@ -8,6 +8,11 @@ export {
   type LoadExternalAgentSkillsResult,
   type ParseAgentSkillDocumentOptions,
 } from "./external-loader.js";
+export {
+  loadAvailableAgentSkills,
+  loadBuiltinAgentSkills,
+  type LoadAvailableAgentSkillsResult,
+} from "./builtin-loader.js";
 export { createSkillRegistry, type CreateSkillRegistryOptions } from "./registry.js";
 export {
   AgentSkillSchema,

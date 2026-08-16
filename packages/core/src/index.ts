@@ -247,6 +247,8 @@ export {
 export {
   AgentSkillSchema,
   createSkillRegistry,
+  loadAvailableAgentSkills,
+  loadBuiltinAgentSkills,
   loadConfiguredAgentSkills,
   loadExternalAgentSkills,
   parseAgentSkillDocument,
@@ -254,6 +256,7 @@ export {
   type CreateSkillRegistryOptions,
   type ExternalSkillDiagnostic,
   type LoadConfiguredAgentSkillsInput,
+  type LoadAvailableAgentSkillsResult,
   type LoadExternalAgentSkillsInput,
   type LoadExternalAgentSkillsResult,
   type ParseAgentSkillDocumentOptions,
@@ -283,7 +286,28 @@ export {
   composeGovernedChapter,
   type ComposeChapterInput,
   type ComposeChapterOutput,
+  type BookReferenceContextProvider,
 } from "./agents/composer.js";
+export {
+  bindBookReference,
+  listBookReferences,
+  loadBookReferenceManifest,
+  loadMaterialAsset,
+  unbindBookReference,
+  type BindBookReferenceInput,
+  type BookReferenceBinding,
+  type BookReferenceList,
+  type BookReferenceManifest,
+  type ResolvedBookReference,
+} from "./references/book-references.js";
+export {
+  selectBookReferenceContext,
+  type BookReferenceContextSelection,
+  type BookReferenceSelectionTask,
+  type ReferenceSectionCandidate,
+  type ReferenceSectionSelectionRequest,
+  type ReferenceSectionSelector,
+} from "./references/reference-context.js";
 export {
   PLANNER_MEMO_SYSTEM_PROMPT,
   PLANNER_MEMO_USER_TEMPLATE,
@@ -678,6 +702,7 @@ export {
   type ChapterVersionMetadata,
   type ChapterVersionSource,
 } from "./state/chapter-workspace.js";
+export { loadChaptersFromPath, compareChapterSourceNames } from "./agent/chapter-import-source.js";
 export { bootstrapStructuredStateFromMarkdown } from "./state/state-bootstrap.js";
 export { renderCurrentStateProjection, renderHooksProjection, renderChapterSummariesProjection } from "./state/state-projections.js";
 export { applyRuntimeStateDelta, type RuntimeStateSnapshot } from "./state/state-reducer.js";
@@ -821,3 +846,4 @@ export {
 } from "./interactive-film/emotion.js";
 export { exportInk } from "./interactive-film/export-ink.js";
 export { buildPlayableHtml } from "./interactive-film/export-html.js";
+export { ingestMaterial, type IngestMaterialInput, type MaterialAsset } from "./materials/ingest.js";

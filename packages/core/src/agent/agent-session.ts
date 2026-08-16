@@ -15,7 +15,7 @@ import type {
   UserMessage,
 } from "@mariozechner/pi-ai";
 import type { PipelineRunner } from "../pipeline/runner.js";
-import { assertWithinContextWindow, estimatePiContextTokens } from "../llm/provider.js";
+import { assertWithinContextWindow, estimatePiContextTokens, guardAssistantMessageStream } from "../llm/provider.js";
 import { buildAgentSystemPrompt } from "./agent-system-prompt.js";
 import {
   createPatchChapterTextTool,
@@ -41,6 +41,7 @@ import {
   createResearchWebTool,
   createIngestMaterialTool,
   createRetrieveMaterialTool,
+  createManageBookReferenceTool,
   createImportChaptersTool,
 } from "./agent-tools.js";
 import { createFilmAuthoringTools, filmLLMDepsFromClient } from "./film-authoring-tools.js";
@@ -70,7 +71,7 @@ import type { TranscriptEvent, TranscriptRole } from "../interaction/session-tra
 import type { PlayMode, SessionKind } from "../interaction/session.js";
 import type { ActionPayload, ActionSource, RequestedIntent } from "../interaction/action-envelope.js";
 import type { ContextCompressionCallback } from "../models/context-compression.js";
-import { createSkillRegistry, loadConfiguredAgentSkills } from "../skills/index.js";
+import { createSkillRegistry, loadAvailableAgentSkills } from "../skills/index.js";
 import { assertSafeBookId } from "../utils/book-id.js";
 import { PlayStore } from "../play/play-store.js";
 import { isLlmStubEnabled, stubAgentStream } from "./llm-stub.js";
@@ -80,6 +81,12 @@ import {
   sanitizeSkillTurnMessage,
 } from "./skill-tool.js";
 import { CODEX_MAX_TOOL_ROUNDS, codexCliAgentStream } from "../llm/codex-cli.js";
+import {
+  agentTrajectoryHeaders,
+  beginAgentModelCall,
+  opaqueConversationId,
+  runWithAgentTrajectory,
+} from "../llm/agent-trajectory.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -367,7 +374,19 @@ function guardedStreamSimple<TApi extends Api>(
     estimatedInputTokens: estimatePiContextTokens(context),
     reservedOutputTokens,
   });
-  return streamSimple(model, context, options);
+  const modelCall = beginAgentModelCall();
+  const traceHeaders = agentTrajectoryHeaders(model.baseUrl, modelCall, 1, {
+    effort: String(options?.reasoning ?? (model.reasoning ? "enabled" : "disabled")),
+  });
+  return guardAssistantMessageStream(
+    model,
+    (signal) => streamSimple(model, context, {
+      ...options,
+      headers: { ...(options?.headers ?? {}), ...traceHeaders },
+      signal,
+    }),
+    options?.signal,
+  );
 }
 
 function localAssistantStopStream(model: Model<Api>): AssistantMessageEventStream {
@@ -957,6 +976,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
     researchTool,
     materialTool,
     materialRetrievalTool,
+    createManageBookReferenceTool(params.projectRoot, params.bookId),
     importChaptersTool,
     createNarrativeForecastCreateTool(params.pipeline, params.bookId, params.projectRoot),
     createNarrativeForecastGetTool(params.bookId, params.projectRoot),
@@ -1020,7 +1040,7 @@ async function runAgentSessionUnlocked(
   const requestedIntent = config.requestedIntent;
   const actionPayload = config.actionPayload;
   const actionPayloadKey = actionPayloadCacheKey(actionPayload);
-  const configuredSkills = await loadConfiguredAgentSkills({ projectRoot });
+  const configuredSkills = await loadAvailableAgentSkills({ projectRoot });
   const skillRegistry = createSkillRegistry({ skills: configuredSkills.skills });
   const skillResolution = skillRegistry.resolveSkills({
     requestedSkills: config.requestedSkills,
@@ -1305,11 +1325,17 @@ async function runAgentSessionUnlocked(
   const turnMessageStartIndex = agent.state.messages.length;
 
   try {
-    if (promptImages.length > 0) {
-      await agent.prompt(promptMessage, promptImages);
-    } else {
-      await agent.prompt(promptMessage);
-    }
+    await runWithAgentTrajectory({
+      conversationId: opaqueConversationId(sessionId),
+      runId: requestId,
+      agentRole: "main",
+    }, async () => {
+      if (promptImages.length > 0) {
+        await agent.prompt(promptMessage, promptImages);
+      } else {
+        await agent.prompt(promptMessage);
+      }
+    });
 
     finalAssistant = lastAssistantMessage(agent.state.messages);
     agent.state.messages = agent.state.messages.map((message, index) => (

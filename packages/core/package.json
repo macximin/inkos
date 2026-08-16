@@ -41,7 +41,8 @@
   "files": [
     "dist",
     "!dist/__tests__",
-    "genres"
+    "genres",
+    "skills"
   ],
   "license": "AGPL-3.0-only",
   "repository": {

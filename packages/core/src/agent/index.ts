@@ -14,6 +14,7 @@ export {
   createTranslationCreateTool,
   createResearchWebTool,
   createIngestMaterialTool,
+  createManageBookReferenceTool,
   createImportChaptersTool,
   createGenerateCoverTool,
   createPlayStartTool,

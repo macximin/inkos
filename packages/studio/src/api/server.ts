@@ -71,8 +71,9 @@ import {
   normalizeRequestedIntent as normalizeCoreRequestedIntent,
   normalizeSkillIdList as normalizeCoreSkillIdList,
   inferLanguage,
+  ingestMaterial,
   createSkillRegistry,
-  loadConfiguredAgentSkills,
+  loadAvailableAgentSkills,
   parseAgentSkillDocument,
   getBuiltinPrompt,
   listBuiltinPromptPacks,
@@ -633,6 +634,7 @@ const MAX_AGENT_ATTACHMENTS = 8;
 const MAX_AGENT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const MAX_AGENT_ATTACHMENT_TEXT_CHARS = 120_000;
 const MAX_TRANSLATION_UPLOAD_BYTES = 80 * 1024 * 1024;
+const MAX_CANON_UPLOAD_BYTES = 18 * 1024 * 1024;
 const MAX_SKILL_IMPORT_FILES = 128;
 const MAX_SKILL_IMPORT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SKILL_IMPORT_TOTAL_BYTES = 8 * 1024 * 1024;
@@ -749,15 +751,33 @@ async function storeTranslationUpload(
   root: string,
   payload: { readonly filename?: string; readonly dataUrl?: string },
 ): Promise<{ readonly storedPath: string; readonly size: number; readonly mimeType: string }> {
-  const filename = safeUploadFileName(payload.filename || "translation-source");
+  return storeProjectUpload(root, payload, {
+    scope: "translation",
+    fallbackName: "translation-source",
+    maxBytes: MAX_TRANSLATION_UPLOAD_BYTES,
+    errorCode: "INVALID_TRANSLATION_UPLOAD",
+  });
+}
+
+async function storeProjectUpload(
+  root: string,
+  payload: { readonly filename?: string; readonly dataUrl?: string },
+  options: {
+    readonly scope: string;
+    readonly fallbackName: string;
+    readonly maxBytes: number;
+    readonly errorCode: string;
+  },
+): Promise<{ readonly storedPath: string; readonly size: number; readonly mimeType: string }> {
+  const filename = safeUploadFileName(payload.filename || options.fallbackName);
   if (!payload.dataUrl) {
-    throw new ApiError(400, "INVALID_TRANSLATION_UPLOAD", "Translation upload is missing dataUrl");
+    throw new ApiError(400, options.errorCode, "Upload is missing dataUrl");
   }
   const parsed = parseDataUrl(payload.dataUrl);
-  if (parsed.buffer.byteLength > MAX_TRANSLATION_UPLOAD_BYTES) {
-    throw new ApiError(413, "TRANSLATION_UPLOAD_TOO_LARGE", `${filename} exceeds ${MAX_TRANSLATION_UPLOAD_BYTES} bytes`);
+  if (parsed.buffer.byteLength > options.maxBytes) {
+    throw new ApiError(413, `${options.errorCode}_TOO_LARGE`, `${filename} exceeds ${options.maxBytes} bytes`);
   }
-  const uploadDir = join(root, ".inkos", "uploads", "translation");
+  const uploadDir = join(root, ".inkos", "uploads", safeUploadFileName(options.scope));
   await mkdir(uploadDir, { recursive: true });
   const storedName = `${Date.now()}-${filename}`;
   const storedPath = join(uploadDir, storedName);
@@ -930,7 +950,7 @@ async function importStudioSkillFolder(
 }
 
 async function loadStudioSkills(root: string) {
-  const configured = await loadConfiguredAgentSkills({ projectRoot: root });
+  const configured = await loadAvailableAgentSkills({ projectRoot: root });
   const projectSkillIds = await listProjectSkillIds(root);
   const registry = createSkillRegistry({ skills: configured.skills });
   return {
@@ -2036,6 +2056,7 @@ interface ServiceConfigEntry {
   service: string;
   name?: string;
   baseUrl?: string;
+  models?: string[];
   temperature?: number;
   apiFormat?: "chat" | "responses";
   stream?: boolean;
@@ -2146,12 +2167,32 @@ function serviceConfigKey(entry: ServiceConfigEntry): string {
   return entry.service === "custom" ? `custom:${entry.name ?? "Custom"}` : entry.service;
 }
 
+function normalizeServiceModelIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const models: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const model = item.trim();
+    const key = model.toLowerCase();
+    if (!model || seen.has(key) || !isTextChatModelId(model)) continue;
+    seen.add(key);
+    models.push(model);
+  }
+  return models;
+}
+
+function mergeServiceModelIds(...groups: ReadonlyArray<readonly string[] | undefined>): string[] {
+  return normalizeServiceModelIds(groups.flatMap((group) => group ?? []));
+}
+
 function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>): ServiceConfigEntry {
   if (serviceId.startsWith("custom:")) {
     return {
       service: "custom",
       name: decodeURIComponent(serviceId.slice("custom:".length)),
       ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
+      ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
       ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
       ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
       ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
@@ -2163,6 +2204,7 @@ function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>
       service: "custom",
       ...(typeof value.name === "string" && value.name.length > 0 ? { name: value.name } : {}),
       ...(typeof value.baseUrl === "string" && value.baseUrl.length > 0 ? { baseUrl: value.baseUrl } : {}),
+      ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
       ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
       ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
       ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
@@ -2171,6 +2213,7 @@ function normalizeServiceEntry(serviceId: string, value: Record<string, unknown>
 
   return {
     service: serviceId,
+    ...(Array.isArray(value.models) ? { models: normalizeServiceModelIds(value.models) } : {}),
     ...(typeof value.temperature === "number" ? { temperature: value.temperature } : {}),
     ...(value.apiFormat === "chat" || value.apiFormat === "responses" ? { apiFormat: value.apiFormat } : {}),
     ...(typeof value.stream === "boolean" ? { stream: value.stream } : {}),
@@ -2189,6 +2232,7 @@ function normalizeServiceConfig(raw: unknown): ServiceConfigEntry[] {
         service: typeof entry.service === "string" && entry.service.length > 0 ? entry.service : "custom",
         ...(typeof entry.name === "string" && entry.name.length > 0 ? { name: entry.name } : {}),
         ...(typeof entry.baseUrl === "string" && entry.baseUrl.length > 0 ? { baseUrl: entry.baseUrl } : {}),
+        ...(Array.isArray(entry.models) ? { models: normalizeServiceModelIds(entry.models) } : {}),
         ...(typeof entry.temperature === "number" ? { temperature: entry.temperature } : {}),
         ...(entry.apiFormat === "chat" || entry.apiFormat === "responses" ? { apiFormat: entry.apiFormat } : {}),
         ...(typeof entry.stream === "boolean" ? { stream: entry.stream } : {}),
@@ -2207,7 +2251,13 @@ function normalizeServiceConfig(raw: unknown): ServiceConfigEntry[] {
 function mergeServiceConfig(existing: ServiceConfigEntry[], updates: ServiceConfigEntry[]): ServiceConfigEntry[] {
   const merged = new Map(existing.map((entry) => [serviceConfigKey(entry), entry]));
   for (const update of updates) {
-    merged.set(serviceConfigKey(update), update);
+    const key = serviceConfigKey(update);
+    const previous = merged.get(key);
+    merged.set(key, {
+      ...previous,
+      ...update,
+      ...(update.models === undefined && previous?.models ? { models: previous.models } : {}),
+    });
   }
   return [...merged.values()];
 }
@@ -4524,33 +4574,43 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   app.get("/api/v1/services/models", async (c) => {
     const secrets = await loadSecrets(root);
     const rawConfig = await loadRawConfig(root).catch(() => ({} as Record<string, unknown>));
-    const configuredServices = new Set(
-      normalizeServiceConfig((rawConfig.llm as Record<string, unknown> | undefined)?.services)
-        .map((service) => serviceConfigKey(service)),
+    const configuredServices = normalizeServiceConfig(
+      (rawConfig.llm as Record<string, unknown> | undefined)?.services,
     );
-    const codexStatus = configuredServices.has(CODEX_SERVICE_ID)
+    const configuredById = new Map(configuredServices.map((entry) => [serviceConfigKey(entry), entry]));
+    const codexStatus = configuredById.has(CODEX_SERVICE_ID)
       ? await probeCodexCli()
       : { installed: true, loggedIn: false, authMode: undefined } as const;
     const codexReady = codexStatus.loggedIn && codexStatus.authMode === "chatgpt";
     const endpoints = getAllEndpoints()
-      .filter((ep) => ep.id !== "custom" && (
-        Boolean(secrets.services[ep.id]?.apiKey)
-        || (ep.id === CODEX_SERVICE_ID && codexReady)
-      ));
+      .filter((ep) => {
+        if (ep.id === "custom") return false;
+        const configured = configuredById.has(ep.id);
+        const optional = isApiKeyOptionalForEndpoint({
+          provider: resolveServiceProviderFamily(ep.id) ?? "openai",
+          baseUrl: resolveServicePreset(ep.id)?.baseUrl ?? ep.baseUrl,
+        });
+        return Boolean(secrets.services[ep.id]?.apiKey)
+          || (ep.id === CODEX_SERVICE_ID ? codexReady : optional && configured);
+      });
 
-    const groups = endpoints.map((ep) => ({
-      service: ep.id,
-      label: ep.label,
-      models: ep.models
+    const groups = endpoints.map((ep) => {
+      const staticModels = ep.models
         .filter((m) => m.enabled !== false)
-        .filter((m) => isTextChatModelId(m.id))
-        .map((m) => ({
-          id: m.id,
-          name: ep.id === CODEX_SERVICE_ID && m.id === CODEX_DEFAULT_MODEL ? "구독 기본 모델" : m.id,
-          ...(typeof m.maxOutput === "number" ? { maxOutput: m.maxOutput } : {}),
-          ...(m.contextWindowTokens > 0 ? { contextWindow: m.contextWindowTokens } : {}),
-        })),
-    }));
+        .filter((m) => isTextChatModelId(m.id));
+      const configuredModels = configuredById.get(ep.id)?.models ?? [];
+      const models = mergeServiceModelIds(staticModels.map((model) => model.id), configuredModels)
+        .map((id) => {
+          const known = staticModels.find((model) => model.id.toLowerCase() === id.toLowerCase());
+          return {
+            id,
+            name: ep.id === CODEX_SERVICE_ID && id === CODEX_DEFAULT_MODEL ? "구독 기본 모델" : id,
+            ...(typeof known?.maxOutput === "number" ? { maxOutput: known.maxOutput } : {}),
+            ...(known && known.contextWindowTokens > 0 ? { contextWindow: known.contextWindowTokens } : {}),
+          };
+        });
+      return { service: ep.id, label: ep.label, models };
+    });
 
     return c.json({ groups });
   });
@@ -4589,6 +4649,8 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     const refresh = c.req.query("refresh") === "1";
     const secrets = await loadSecrets(root);
     const apiKey = c.req.query("apiKey") || secrets.services[service]?.apiKey || "";
+    const configuredEntry = await resolveConfiguredServiceEntry(root, service);
+    const configuredModels = configuredEntry?.models ?? [];
 
     if (service === CODEX_SERVICE_ID) {
       const status = await probeCodexCli();
@@ -4607,14 +4669,18 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     });
 
     // No key = no models, except local/self-hosted endpoints such as Ollama.
-    if (!apiKey && !apiKeyOptional) return c.json({ models: [] });
+    if (!apiKey && !apiKeyOptional) {
+      return c.json({ models: configuredModels.map((id) => ({ id, name: id })) });
+    }
 
     // Cache by service + resolved baseUrl + apiKey fingerprint; valid for 10 min unless ?refresh=1
     const cacheKey = `${service}::${resolvedBaseUrl ?? ""}::${apiKey.slice(-8)}`;
     if (!refresh) {
       const cached = modelListCache.get(cacheKey);
       if (cached && Date.now() - cached.at < 10 * 60 * 1000) {
-        return c.json({ models: cached.models });
+        const models = mergeServiceModelIds(cached.models.map((model) => model.id), configuredModels)
+          .map((id) => cached.models.find((model) => model.id.toLowerCase() === id.toLowerCase()) ?? { id, name: id });
+        return c.json({ models });
       }
     }
 
@@ -4624,12 +4690,14 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       apiKey,
       isCustomServiceId(service) ? resolvedBaseUrl ?? undefined : undefined,
     );
-    const models = filterTextChatModels(enriched).map((m) => ({
+    const liveModels = filterTextChatModels(enriched).map((m) => ({
       id: m.id,
       name: m.name,
       ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
       ...(m.contextWindow > 0 ? { contextWindow: m.contextWindow } : {}),
     }));
+    const models = mergeServiceModelIds(liveModels.map((model) => model.id), configuredModels)
+      .map((id) => liveModels.find((model) => model.id.toLowerCase() === id.toLowerCase()) ?? { id, name: id });
     modelListCache.set(cacheKey, { models, at: Date.now() });
     return c.json({ models });
   });
@@ -6744,6 +6812,43 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     } catch (e) {
       broadcast("import:error", { bookId: id, error: String(e) });
       return c.json({ error: String(e) }, 500);
+    }
+  });
+
+  app.post("/api/v1/import/canon/upload", async (c) => {
+    const body: { filename?: string; dataUrl?: string } = await c.req.json().catch(() => ({}));
+    const result = await storeProjectUpload(root, body, {
+      scope: "canon",
+      fallbackName: "canon-source",
+      maxBytes: MAX_CANON_UPLOAD_BYTES,
+      errorCode: "INVALID_CANON_UPLOAD",
+    });
+    return c.json(result);
+  });
+
+  app.post("/api/v1/books/:id/import/canon-file", async (c) => {
+    const id = c.req.param("id");
+    const body: { filePath?: string; filename?: string } = await c.req.json().catch(() => ({}));
+    if (!body.filePath?.trim()) return c.json({ error: "filePath is required" }, 400);
+
+    broadcast("import:start", { bookId: id, type: "canon-file" });
+    try {
+      await state.loadBookConfig(id);
+      const material = await ingestMaterial(root, {
+        sourceKind: "file",
+        filePath: body.filePath,
+        filename: body.filename,
+        title: body.filename?.replace(/\.[^.]+$/u, ""),
+        purpose: "reference",
+      });
+      const sourceText = await readFile(join(root, material.markdownPath), "utf-8");
+      const pipeline = new PipelineRunner(await buildPipelineConfig());
+      await pipeline.importFanficCanon(id, sourceText, material.title, "canon");
+      broadcast("import:complete", { bookId: id, type: "canon-file", materialId: material.id });
+      return c.json({ ok: true, material });
+    } catch (error) {
+      broadcast("import:error", { bookId: id, type: "canon-file", error: String(error) });
+      return c.json({ error: String(error) }, 500);
     }
   });
 

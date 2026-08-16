@@ -20,6 +20,11 @@ import { createTranslationProjectFromFile } from "../translation/index.js";
 import { runResearchReport } from "../agents/researcher.js";
 import { ingestMaterial } from "../materials/ingest.js";
 import { retrieveMaterials } from "../materials/retrieve.js";
+import {
+  bindBookReference,
+  listBookReferences,
+  unbindBookReference,
+} from "../references/book-references.js";
 import { loadChaptersFromPath } from "./chapter-import-source.js";
 import type { ScriptTargetFormat } from "../agents/script-storyboard.js";
 import { createPlayDB, type PlayGraphDB } from "../play/play-db-factory.js";
@@ -35,6 +40,10 @@ import {
 } from "../interaction/action-envelope.js";
 import { ResearchSearchConfigSchema } from "../models/project.js";
 import { searchWeb } from "../utils/web-search.js";
+import {
+  runAsWorkflowTrajectory,
+  runWithAgentTrajectoryRole,
+} from "../llm/agent-trajectory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -661,9 +670,11 @@ function runPipelineWithAbortSignal<T>(
   const runner = pipeline as PipelineRunner & {
     runWithAbortSignal?: <R>(activeSignal: AbortSignal | undefined, activeTask: () => Promise<R>) => Promise<R>;
   };
-  return runner.runWithAbortSignal
-    ? runner.runWithAbortSignal(signal, task)
-    : task();
+  return runAsWorkflowTrajectory(() => (
+    runner.runWithAbortSignal
+      ? runner.runWithAbortSignal(signal, task)
+      : task()
+  ));
 }
 
 export function createSubAgentTool(
@@ -688,34 +699,35 @@ export function createSubAgentTool(
     parameters: options.architectCreateOnly ? ArchitectCreateSubAgentParams : SubAgentParams,
     prepareArguments: prepareSubAgentArguments,
     async execute(
-      _toolCallId: string,
+      toolCallId: string,
       params: SubAgentParamsType,
       _signal?: AbortSignal,
       onUpdate?: AgentToolUpdateCallback,
     ): Promise<AgentToolResult<unknown>> {
-      const { agent, instruction, bookId, title, chapterNumber, chapterCount, genre, platform, language, targetChapters, chapterWordCount, revise, feedback, mode, format, approvedOnly } = params;
+      return runWithAgentTrajectoryRole("subagent", async () => {
+        const { agent, instruction, bookId, title, chapterNumber, chapterCount, genre, platform, language, targetChapters, chapterWordCount, revise, feedback, mode, format, approvedOnly } = params;
 
-      const progress = (msg: string) => {
-        onUpdate?.(textResult(msg));
-      };
+        const progress = (msg: string) => {
+          onUpdate?.(textResult(msg));
+        };
 
-      try {
-        if (options.architectCreateOnly && agent !== "architect") {
-          throw new Error("This confirmed book-creation turn can only run the architect. Open the created book or use the book session to write chapters.");
-        }
-        if (!activeBookId && agent !== "architect") {
-          return textResult("No active book. Only the architect agent can create a book from this session.");
-        }
-        if (activeBookId && agent === "architect" && !revise) {
-          return textResult(
-            sessionIsZh
-              ? "当前已有书籍，不需要建书。如果你想创建新书，请先回到首页。"
-              : "This session already has a book, so no new book is needed. To create a new book, go back to the home page first.",
-          );
-        }
+        try {
+          if (options.architectCreateOnly && agent !== "architect") {
+            throw new Error("This confirmed book-creation turn can only run the architect. Open the created book or use the book session to write chapters.");
+          }
+          if (!activeBookId && agent !== "architect") {
+            return textResult("No active book. Only the architect agent can create a book from this session.");
+          }
+          if (activeBookId && agent === "architect" && !revise) {
+            return textResult(
+              sessionIsZh
+                ? "当前已有书籍，不需要建书。如果你想创建新书，请先回到首页。"
+                : "This session already has a book, so no new book is needed. To create a new book, go back to the home page first.",
+            );
+          }
 
-        switch (agent) {
-          case "architect": {
+          switch (agent) {
+            case "architect": {
             const createBookPayload = options.actionPayload?.createBook;
             if (revise) {
               if (!activeBookId) {
@@ -927,30 +939,31 @@ export function createSubAgentTool(
             );
           }
 
-          default:
-            return textResult(`Unknown agent: ${agent}`);
+            default:
+              return textResult(`Unknown agent: ${agent}`);
+          }
+        } catch (err: any) {
+          if (agent === "architect" && err instanceof ArchitectIncompleteFoundationError) {
+            const missing = err.missing.join(", ");
+            return textResult(
+              [
+                err.message,
+                "",
+                `缺失 section: ${missing}`,
+                "我会把已生成的部分保留下来，并继续补齐缺失 section；不要重新发明一本书。",
+              ].join("\n"),
+              {
+                kind: "architect_incomplete",
+                missing: [...err.missing],
+                partialContent: err.partialContent,
+                retryInstruction: `Continue repairing the architect foundation. Preserve the partial content and fill missing sections: ${missing}.`,
+              },
+            );
+          }
+          console.error(`[sub_agent] "${agent}" failed:`, err);
+          throw err;
         }
-      } catch (err: any) {
-        if (agent === "architect" && err instanceof ArchitectIncompleteFoundationError) {
-          const missing = err.missing.join(", ");
-          return textResult(
-            [
-              err.message,
-              "",
-              `缺失 section: ${missing}`,
-              "我会把已生成的部分保留下来，并继续补齐缺失 section；不要重新发明一本书。",
-            ].join("\n"),
-            {
-              kind: "architect_incomplete",
-              missing: [...err.missing],
-              partialContent: err.partialContent,
-              retryInstruction: `Continue repairing the architect foundation. Preserve the partial content and fill missing sections: ${missing}.`,
-            },
-          );
-        }
-        console.error(`[sub_agent] "${agent}" failed:`, err);
-        throw err;
-      }
+      }, toolCallId);
     },
   };
 }
@@ -1110,6 +1123,7 @@ export function createIngestMaterialTool(projectRoot: string): AgentTool<typeof 
       return textResult(
         [
           `Material ingested: ${asset.markdownPath}`,
+          `Material ID: ${asset.id}`,
           `Kind: ${asset.kind}; chars: ${asset.charCount}; source: ${asset.source}`,
           asset.totalPages !== undefined ? `PDF pages: ${asset.totalPages}` : "",
           "",
@@ -1187,6 +1201,7 @@ export function createRetrieveMaterialTool(projectRoot: string): AgentTool<typeo
           "",
           ...results.flatMap((result, index) => [
             `## ${index + 1}. ${result.title}`,
+            `- material_id: ${result.id}`,
             `- source: ${result.source}`,
             `- path: ${result.markdownPath}:${result.charStart}-${result.charEnd}`,
             `- purpose: ${result.purpose}`,
@@ -1201,6 +1216,116 @@ export function createRetrieveMaterialTool(projectRoot: string): AgentTool<typeo
           query: params.query,
           purpose: params.purpose,
           results,
+        },
+      );
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 5. Book Reference Binding Tool (manage_book_reference)
+// ---------------------------------------------------------------------------
+
+const ManageBookReferenceParams = Type.Object({
+  action: Type.Union([
+    Type.Literal("list"),
+    Type.Literal("bind"),
+    Type.Literal("unbind"),
+  ], {
+    description: "list = inspect bindings; bind = attach an ingested material to this book; unbind = remove that attachment without deleting the project asset.",
+  }),
+  materialId: Type.Optional(Type.String({
+    description: "Exact material asset id returned by ingest_material. Required for bind and unbind.",
+  })),
+  uses: Type.Optional(Type.Array(Type.String(), {
+    description: "bind only: user-defined natural-language purposes, e.g. 开篇机制, 人物关系, 调查节奏. Preserve the user's words instead of mapping them to a fixed taxonomy.",
+  })),
+  note: Type.Optional(Type.String({
+    description: "bind only: optional user instruction that limits how this reference may be used.",
+  })),
+});
+
+type ManageBookReferenceParamsType = Static<typeof ManageBookReferenceParams>;
+
+export function createManageBookReferenceTool(
+  projectRoot: string,
+  activeBookId: string,
+): AgentTool<typeof ManageBookReferenceParams> {
+  const bookId = assertSafeBookId(activeBookId, "manage_book_reference.bookId");
+  return {
+    name: "manage_book_reference",
+    description:
+      "Bind already-ingested project materials to the active book with user-defined purposes, list current bindings, or unbind them. " +
+      "The material remains stored once under .inkos/materials. Binding never copies prose into the book and never changes canon by itself.",
+    label: "Manage Book Reference",
+    parameters: ManageBookReferenceParams,
+    async execute(
+      _toolCallId: string,
+      params: ManageBookReferenceParamsType,
+      signal?: AbortSignal,
+      onUpdate?: AgentToolUpdateCallback,
+    ): Promise<AgentToolResult<unknown>> {
+      signal?.throwIfAborted();
+      if (params.action === "list") {
+        const listed = await listBookReferences(projectRoot, bookId);
+        const references = listed.references.map((reference) => ({
+          materialId: reference.materialId,
+          title: reference.title,
+          uses: reference.uses,
+          note: reference.note,
+          available: reference.available,
+          error: reference.error,
+        }));
+        return textResult(
+          references.length === 0
+            ? `No reference materials are bound to book "${bookId}".`
+            : [
+                `Bound references for "${bookId}":`,
+                ...references.map((reference) => [
+                  `- ${reference.title ?? reference.materialId} (${reference.materialId})`,
+                  `  uses: ${reference.uses.join("; ")}`,
+                  reference.note ? `  note: ${reference.note}` : undefined,
+                  reference.available ? undefined : `  unavailable: ${reference.error ?? "material missing"}`,
+                ].filter(Boolean).join("\n")),
+              ].join("\n"),
+          { kind: "book_reference_list", bookId, references },
+        );
+      }
+
+      const materialId = params.materialId?.trim();
+      if (!materialId) throw new Error(`manage_book_reference.${params.action} requires materialId.`);
+      if (params.action === "unbind") {
+        onUpdate?.(textResult(`Unbinding reference ${materialId} from ${bookId}...`));
+        const result = await unbindBookReference(projectRoot, bookId, materialId);
+        return textResult(
+          result.removed
+            ? `Reference ${materialId} was unbound from "${bookId}". The project asset was kept.`
+            : `Reference ${materialId} was not bound to "${bookId}".`,
+          { kind: "book_reference_unbound", bookId, materialId, removed: result.removed },
+        );
+      }
+
+      const uses = params.uses ?? [];
+      onUpdate?.(textResult(`Binding reference ${materialId} to ${bookId}...`));
+      const manifest = await bindBookReference(projectRoot, bookId, {
+        materialId,
+        uses,
+        note: params.note,
+      });
+      const binding = manifest.bindings.find((entry) => entry.materialId === materialId)!;
+      return textResult(
+        [
+          `Reference ${materialId} was bound to "${bookId}".`,
+          `Uses: ${binding.uses.join("; ")}`,
+          binding.note ? `Note: ${binding.note}` : undefined,
+          "Future chapter composition may select relevant sections; the reference does not override author intent or canon.",
+        ].filter(Boolean).join("\n"),
+        {
+          kind: "book_reference_bound",
+          bookId,
+          materialId,
+          uses: binding.uses,
+          note: binding.note,
         },
       );
     },

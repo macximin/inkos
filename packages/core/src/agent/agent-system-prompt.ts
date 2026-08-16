@@ -534,6 +534,7 @@ function buildBookPrompt(bookId: string, isZh: boolean): string {
 - research_web：用户明确要求联网研究、事实核查、年代/职业/地域/制度资料时使用；报告保存为参考材料，不会自动改当前书设定或正文。
 - ingest_material：用户给 URL、上传 PDF/Markdown/文本资料，或要求“先读/归档这份资料”时使用；资料卡保存在 .inkos/materials，不会自动改当前书设定或正文。
 - retrieve_material：基于当前任务从 .inkos/materials 召回相关片段；返回带路径和字符范围的证据指针。它只读取参考资料，不改设定或正文。
+- manage_book_reference：把已归档资料按用户原话绑定到当前书，或查看/解除绑定。bind 时传 ingest_material 返回的精确 materialId，并把“借鉴开篇机制/人物关系/成长节奏”等用途原样写进 uses；不要套固定分类。绑定只影响后续写章时的按需参考，不复制原文、不自动改正典。
 - import_chapters：把用户提供的已有小说章节（本地文件或目录，路径可用“用户上传文件”区块里的 stored_path，也可以是用户给出的绝对路径）导入当前书成为正式章节，并逆向生成设定文件。目录模式按文件名排序、每个 .md/.txt 文件一章；单文件模式默认按“第X章/Chapter N”标题自动分章，可用 splitPattern 自定义正则。当前书已有章节时必须传 resumeFrom 续导，否则会报错。它和 ingest_material 的区别：ingest_material 只存参考资料，import_chapters 会写入章节和设定。
 - grep：搜索内容。
 - ls：列出文件或章节。
@@ -557,7 +558,7 @@ function buildBookPrompt(bookId: string, isZh: boolean): string {
 - 用户要求某章内局部小修 → patch_chapter_text。
 - 用户粘贴/提供某章完整新正文并要求替换 → replace_chapter_text。
 - 用户要求生成或重做封面 → generate_cover。
-- 用户要求查外部事实、年代职业细节、真实地域制度资料 → research_web；用户提供 URL/PDF/文本资料 → ingest_material；用户要求基于已归档资料回答、对照、续写或整理 → retrieve_material；如需把研究结果或资料内容写入设定，必须再由用户明确确认后用 write_truth_file。
+- 用户要求查外部事实、年代职业细节、真实地域制度资料 → research_web；用户提供 URL/PDF/文本资料 → ingest_material；用户要求基于已归档资料回答、对照、续写或整理 → retrieve_material；用户明确要求“以后写这本书时按某种用途参考这份资料” → manage_book_reference(action="bind")。如需把研究结果或资料内容写入正典设定，仍必须由用户明确确认后用 write_truth_file。
 - 用户要求把已有小说/章节/整本文稿导入当前书（成为正式章节并生成设定）→ import_chapters；只是提供参考资料、不要求进正文 → ingest_material。
 - 其他普通讨论 → 直接回答。
 
@@ -596,6 +597,7 @@ ${commonOutputRules(true)}`
 - research_web: collect web research or fact checks for era/profession/region/institution details. Reports are saved as reference material and do not automatically change canon or prose.
 - ingest_material: archive a user-provided URL, uploaded PDF, Markdown, or text file into .inkos/materials. Material cards are references only and do not automatically change canon or prose.
 - retrieve_material: retrieve task-relevant snippets from .inkos/materials with path and character-range evidence pointers. It reads reference materials only and does not change canon or prose.
+- manage_book_reference: bind an archived material to the active book using the user's own stated purposes, list bindings, or unbind one. For bind, pass the exact materialId returned by ingest_material and preserve purposes such as opening mechanics, relationship dynamics, or growth pacing in uses; do not map them to a fixed taxonomy. Bindings affect future on-demand chapter context but do not copy prose or mutate canon.
 - import_chapters: import the user's existing novel chapters (a local file or directory; the path can be the stored_path from the Uploaded Files block or an absolute path the user names) into the active book as real chapters, reverse-engineering the truth files. Directory mode imports each .md/.txt file as one chapter in filename order; single-file mode auto-splits on "第X章"/"Chapter N" headings, with splitPattern for a custom regex. When the book already has chapters, resumeFrom is required, otherwise it errors. Difference from ingest_material: ingest_material archives reference material only, import_chapters writes chapters and settings.
 - grep: search content.
 - ls: list files or chapters.
@@ -619,7 +621,7 @@ ${commonOutputRules(true)}`
 - Local chapter edits → patch_chapter_text.
 - User-provided full replacement for an existing chapter → replace_chapter_text.
 - Cover generation/regeneration → generate_cover.
-- External facts, era/profession details, or real-world regional/institutional references → research_web. User-provided URLs/PDF/text files → ingest_material. Archived-material questions, comparisons, continuations, or summaries → retrieve_material. If research or material content should affect canon, wait for explicit confirmation and then use write_truth_file.
+- External facts, era/profession details, or real-world regional/institutional references → research_web. User-provided URLs/PDF/text files → ingest_material. Archived-material questions, comparisons, continuations, or summaries → retrieve_material. An explicit request to use an archived asset for a stated purpose in future chapters → manage_book_reference(action="bind"). If research or material content should affect canon, wait for explicit confirmation and then use write_truth_file.
 - The user wants existing novel chapters or a full manuscript imported into the active book (as real chapters with reverse-engineered settings) → import_chapters. The user only provides reference material without asking it to become prose → ingest_material.
 - Ordinary discussion → answer directly.
 
