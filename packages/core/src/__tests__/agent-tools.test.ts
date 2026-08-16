@@ -125,6 +125,46 @@ describe("agent deterministic writing tools", () => {
     });
   });
 
+  it("returns Korean user-facing copy from the book reference tool in ko mode", async () => {
+    const tool = createManageBookReferenceTool(root, "harbor", "ko");
+    const listed = await tool.execute("list-ko-references", { action: "list" });
+    const text = listed.content[0]?.type === "text" ? listed.content[0].text : "";
+
+    expect(tool.label).toBe("작품 참고 자료 관리");
+    expect(tool.description).toContain("현재 작품에 연결");
+    expect(text).toContain("연결된 참고 자료가 없습니다");
+    expect(`${tool.label}\n${tool.description}\n${text}`).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("returns Korean progress and completion copy from the writer sub-agent in ko mode", async () => {
+    const pipeline = {
+      writeNextChapter: vi.fn(async () => ({
+        chapterNumber: 2,
+        title: "두 번째 회차",
+        wordCount: 5100,
+        status: "ready-for-review",
+      })),
+    };
+    const updates: string[] = [];
+    const tool = createSubAgentTool(pipeline as never, "harbor", undefined, { language: "ko" });
+    const result = await tool.execute(
+      "write-next-ko",
+      { agent: "writer", instruction: "다음 회차를 써 줘" },
+      undefined,
+      (update) => {
+        const text = update.content[0]?.type === "text" ? update.content[0].text : "";
+        updates.push(text);
+      },
+    );
+    const resultText = result.content[0]?.type === "text" ? result.content[0].text : "";
+    const visibleText = `${tool.label}\n${tool.description}\n${updates.join("\n")}\n${resultText}`;
+
+    expect(tool.label).toBe("서브에이전트");
+    expect(visibleText).toContain("다음 회차를 집필하는 중");
+    expect(visibleText).toContain("회차를 집필했습니다");
+    expect(visibleText).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
   it("deletes only the latest chapter through the deterministic tool path", async () => {
     const snapshotDir = join(state.bookDir("harbor"), "story", "snapshots", "2");
     await mkdir(snapshotDir, { recursive: true });
@@ -785,7 +825,7 @@ describe("agent deterministic writing tools", () => {
         );
       }),
     };
-    const tool = createSubAgentTool(pipeline as never, null);
+    const tool = createSubAgentTool(pipeline as never, null, undefined, { language: "zh" });
 
     const result = await tool.execute("tool-architect-incomplete", {
       agent: "architect",
@@ -805,6 +845,30 @@ describe("agent deterministic writing tools", () => {
       missing: ["roles", "pending_hooks"],
       partialContent: expect.stringContaining("已有世界观草稿"),
     });
+  });
+
+  it("keeps the architect repair fallback out of Chinese in English-compatible sessions", async () => {
+    const pipeline = {
+      initBook: vi.fn(async () => {
+        throw new ArchitectIncompleteFoundationError(
+          ["roles", "pending_hooks"],
+          "=== SECTION: story_frame ===\nExisting foundation",
+          "The foundation is incomplete.",
+        );
+      }),
+    };
+    const tool = createSubAgentTool(pipeline as never, null, undefined, { language: "en" });
+
+    const result = await tool.execute("tool-architect-incomplete-en", {
+      agent: "architect",
+      title: "Night Harbor Ledger",
+      instruction: "Create an urban business novel",
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+    expect(text).toContain("Missing sections: roles, pending_hooks");
+    expect(text).toContain("preserve the generated foundation");
+    expect(text).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
   it("passes chapterWordCount through the writer sub-agent", async () => {

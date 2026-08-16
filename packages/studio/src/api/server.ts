@@ -173,36 +173,37 @@ function coreLanguage(lang: StudioLanguage): "zh" | "en" {
 interface BilingualLabel {
   readonly zh: string;
   readonly en: string;
+  readonly ko?: string;
 }
 
 const PIPELINE_STAGES: Record<string, ReadonlyArray<BilingualLabel>> = {
   writer: [
-    { zh: "准备章节输入", en: "Prepare chapter input" },
-    { zh: "撰写章节草稿", en: "Write chapter draft" },
-    { zh: "落盘最终章节", en: "Save final chapter" },
-    { zh: "生成最终真相文件", en: "Generate final truth files" },
-    { zh: "校验真相文件变更", en: "Validate truth file changes" },
-    { zh: "同步记忆索引", en: "Sync memory index" },
-    { zh: "更新章节索引与快照", en: "Update chapter index and snapshot" },
+    { zh: "准备章节输入", en: "Prepare chapter input", ko: "회차 입력 준비" },
+    { zh: "撰写章节草稿", en: "Write chapter draft", ko: "회차 초고 집필" },
+    { zh: "落盘最终章节", en: "Save final chapter", ko: "최종 회차 저장" },
+    { zh: "生成最终真相文件", en: "Generate final truth files", ko: "최종 기준 파일 생성" },
+    { zh: "校验真相文件变更", en: "Validate truth file changes", ko: "기준 파일 변경 검증" },
+    { zh: "同步记忆索引", en: "Sync memory index", ko: "기억 색인 동기화" },
+    { zh: "更新章节索引与快照", en: "Update chapter index and snapshot", ko: "회차 색인과 스냅샷 갱신" },
   ],
   architect: [
-    { zh: "生成基础设定", en: "Generate foundation" },
-    { zh: "保存书籍配置", en: "Save book config" },
-    { zh: "写入基础设定文件", en: "Write foundation files" },
-    { zh: "初始化控制文档", en: "Initialize control documents" },
-    { zh: "创建初始快照", en: "Create initial snapshot" },
+    { zh: "生成基础设定", en: "Generate foundation", ko: "작품 기반 생성" },
+    { zh: "保存书籍配置", en: "Save book config", ko: "작품 설정 저장" },
+    { zh: "写入基础设定文件", en: "Write foundation files", ko: "작품 기반 파일 작성" },
+    { zh: "初始化控制文档", en: "Initialize control documents", ko: "제어 문서 초기화" },
+    { zh: "创建初始快照", en: "Create initial snapshot", ko: "초기 스냅샷 생성" },
   ],
   reviser: [
-    { zh: "加载修订上下文", en: "Load revision context" },
-    { zh: "修订章节", en: "Revise chapter" },
-    { zh: "落盘修订结果", en: "Save revision result" },
-    { zh: "更新索引与快照", en: "Update index and snapshot" },
+    { zh: "加载修订上下文", en: "Load revision context", ko: "수정 맥락 불러오기" },
+    { zh: "修订章节", en: "Revise chapter", ko: "회차 수정" },
+    { zh: "落盘修订结果", en: "Save revision result", ko: "수정 결과 저장" },
+    { zh: "更新索引与快照", en: "Update index and snapshot", ko: "색인과 스냅샷 갱신" },
   ],
-  auditor: [{ zh: "审计章节", en: "Audit chapter" }],
+  auditor: [{ zh: "审计章节", en: "Audit chapter", ko: "회차 검수" }],
 };
 
 function pipelineStages(agent: string, lang: StudioLanguage = "zh"): string[] | undefined {
-  return PIPELINE_STAGES[agent]?.map((stage) => pick(lang, stage.zh, stage.en));
+  return PIPELINE_STAGES[agent]?.map((stage) => pick(lang, stage.zh, stage.en, stage.ko));
 }
 
 function attachmentDisposition(fileName: string): string {
@@ -211,11 +212,11 @@ function attachmentDisposition(fileName: string): string {
 }
 
 const AGENT_LABELS: Record<string, BilingualLabel> = {
-  architect: { zh: "建书", en: "Book setup" },
-  writer: { zh: "写作", en: "Writing" },
-  auditor: { zh: "审计", en: "Audit" },
-  reviser: { zh: "修订", en: "Revision" },
-  exporter: { zh: "导出", en: "Export" },
+  architect: { zh: "建书", en: "Book setup", ko: "작품 생성" },
+  writer: { zh: "写作", en: "Writing", ko: "집필" },
+  auditor: { zh: "审计", en: "Audit", ko: "검수" },
+  reviser: { zh: "修订", en: "Revision", ko: "수정" },
+  exporter: { zh: "导出", en: "Export", ko: "내보내기" },
 };
 const TOOL_LABELS: Record<string, BilingualLabel> = {
   read: { zh: "读取文件", en: "Read file" },
@@ -241,10 +242,10 @@ const TOOL_LABELS: Record<string, BilingualLabel> = {
 function resolveToolLabel(tool: string, agent?: string, lang: StudioLanguage = "zh"): string {
   if (tool === "sub_agent" && agent) {
     const label = AGENT_LABELS[agent];
-    return label ? pick(lang, label.zh, label.en) : agent;
+    return label ? pick(lang, label.zh, label.en, label.ko) : agent;
   }
   const label = TOOL_LABELS[tool];
-  return label ? pick(lang, label.zh, label.en) : tool;
+  return label ? pick(lang, label.zh, label.en, label.ko) : tool;
 }
 
 function formatTaskElapsed(ms: number, lang: StudioLanguage): string {
@@ -1382,11 +1383,12 @@ function validateAgentActionExecution(args: {
   const lang = args.language ?? "zh";
   const failedExec = args.collectedToolExecs.find(isLikelyFailedToolResult);
   if (failedExec) {
-    const detail = failedExec.error ?? failedExec.result ?? pick(lang, "未知错误", "unknown error");
+    const detail = failedExec.error ?? failedExec.result ?? pick(lang, "未知错误", "unknown error", "알 수 없는 오류");
     return pick(
       lang,
       `${failedExec.label} 执行失败：${detail}`,
       `${failedExec.label} failed: ${detail}`,
+      `${failedExec.label} 실행 실패: ${detail}`,
     );
   }
 
@@ -1411,6 +1413,7 @@ function validateAgentActionExecution(args: {
       lang,
       "已确认建书，但模型没有实际调用建书工具。请重试；如果仍失败，请检查模型是否支持工具调用。",
       "Book creation was confirmed, but the model never called the book setup tool. Retry; if it keeps failing, check whether the model supports tool calls.",
+      "작품 생성을 확인했지만 모델이 실제 작품 생성 도구를 호출하지 않았습니다. 다시 시도하고, 문제가 계속되면 모델의 도구 호출 지원 여부를 확인해 주세요.",
     );
   }
 
@@ -1786,8 +1789,13 @@ async function executeConfirmedProductionAction(args: {
 
   if (args.requestedIntent === "create_book") {
     const payload = actionPayload?.createBook;
-    const title = requirePayloadText(payload?.title, pick(lang, "确认建书缺少书名，请重新生成确认卡。", "The book creation confirmation is missing a title. Regenerate the confirmation card."));
-    tool = createSubAgentTool(args.pipeline, null, args.root, { actionPayload });
+    const title = requirePayloadText(payload?.title, pick(
+      lang,
+      "确认建书缺少书名，请重新生成确认卡。",
+      "The book creation confirmation is missing a title. Regenerate the confirmation card.",
+      "작품 생성 확인 정보에 작품명이 없습니다. 확인 카드를 다시 만들어 주세요.",
+    ));
+    tool = createSubAgentTool(args.pipeline, null, args.root, { actionPayload, language: lang });
     agent = "architect";
     params = {
       agent,
@@ -5433,11 +5441,19 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         }
       }
       const configLanguage = config.language === "en" ? "en" : "zh";
-      const bookLanguage = activeBookConfig?.language === "en" ? "en" : activeBookConfig?.language === "zh" ? "zh" : undefined;
+      const bookLanguage = activeBookConfig?.language === "en"
+        ? "en"
+        : activeBookConfig?.language === "zh"
+          ? "zh"
+          : undefined;
       const requestedLanguage = actionPayload?.shortRun?.language ?? actionPayload?.createBook?.language;
-      const surfaceLanguage = agentBookId
+      const contentLanguage = agentBookId
         ? (bookLanguage ?? configLanguage)
         : (requestedLanguage ?? inferLanguage(instruction));
+      // Korean is currently a Studio/user-facing language. Until the writing
+      // engine's book schema is promoted to native `ko`, keep its zh/en content
+      // routing intact while ensuring every visible task/session surface is Korean.
+      const surfaceLanguage = language === "ko" ? "ko" : contentLanguage;
       const streamSessionId = loadedBookSession.sessionId;
       const titleBeforeRun = bookSession.title;
       let sessionTitleBroadcasted = false;
@@ -5628,6 +5644,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             surfaceLanguage,
             "当前会话已有一个生产任务在运行，请等它完成，或先用停止按钮结束它，再发起新任务。",
             "A production task is already running in this session. Wait for it to finish, or stop it first, then start a new task.",
+            "현재 대화에서 제작 작업이 실행 중입니다. 완료될 때까지 기다리거나 중지 버튼으로 종료한 뒤 새 작업을 시작해 주세요.",
           );
           return c.json({
             error: { code: "PRODUCTION_TASK_ALREADY_RUNNING", message },
@@ -5727,7 +5744,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             }
           }
 
-          const responseText = exec.result ?? pick(surfaceLanguage, "已完成。", "Done.");
+          const responseText = exec.result ?? pick(surfaceLanguage, "已完成。", "Done.", "완료했습니다.");
           const responseForUser = suppressManualTextForTool(exec) ? "" : responseText;
           // 指令已在任务开始时写入 transcript，这里只补助手工具消息。
           await appendSessionMessagesUnlessDeleted(root, bookSession.sessionId, [
@@ -5836,13 +5853,13 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
             if (event.type === "tool_execution_start") {
               const args = event.args as Record<string, unknown> | undefined;
               const agent = event.toolName === "sub_agent" ? (args?.agent as string | undefined) : undefined;
-              const stages = agent ? (pipelineStages(agent, language) ?? []) : [];
+              const stages = agent ? (pipelineStages(agent, surfaceLanguage) ?? []) : [];
 
               collectedToolExecs.push({
                 id: event.toolCallId,
                 tool: event.toolName,
                 agent,
-                label: resolveToolLabel(event.toolName, agent, language),
+                label: resolveToolLabel(event.toolName, agent, surfaceLanguage),
                 status: "running",
                 args,
                 stages: stages.length > 0
@@ -5913,7 +5930,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
           agentBookId,
           requestedIntent,
           collectedToolExecs,
-          language,
+          language: surfaceLanguage,
         });
         if (actionExecutionError) {
           return c.json({

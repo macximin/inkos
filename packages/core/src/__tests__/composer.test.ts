@@ -156,6 +156,40 @@ describe("ComposerAgent", () => {
     expect(result.trace.notes).toContain("book-reference-context-selected");
   });
 
+  it("uses the English compatibility prompt instead of Chinese for Korean reference selection", async () => {
+    const composer = new ComposerAgent({
+      client: {} as ConstructorParameters<typeof ComposerAgent>[0]["client"],
+      model: "test-model",
+      projectRoot: root,
+      bookId: book.id,
+    });
+    const calls: unknown[] = [];
+    (composer as unknown as { chat: (messages: unknown[]) => Promise<unknown> }).chat = async (messages) => {
+      calls.push(messages);
+      return { content: '{"selectedSources":["reference/material-1#opening"]}' };
+    };
+
+    const selected = await composer.selectReferenceSections({
+      chapterNumber: 1,
+      goal: "Open under immediate pressure",
+      outlineNode: "The offer arrives",
+      mustKeep: ["First-person viewpoint"],
+      language: "ko" as never,
+      candidates: [{
+        source: "reference/material-1#opening",
+        materialId: "material-1",
+        title: "Reference",
+        heading: "Opening",
+        uses: ["opening pressure"],
+      }],
+    });
+
+    const prompt = JSON.stringify(calls);
+    expect(selected).toEqual(["reference/material-1#opening"]);
+    expect(prompt).toContain("semantic reference-section selector");
+    expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
   it("preserves later author-intent constraints instead of reducing them to the first line", async () => {
     await writeFile(
       join(storyDir, "author_intent.md"),

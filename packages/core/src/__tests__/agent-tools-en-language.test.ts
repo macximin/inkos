@@ -352,7 +352,7 @@ describe("agent tools language wiring (en parity)", () => {
     }
   });
 
-  it("returns English sub_agent guidance in en sessions and keeps zh by default", async () => {
+  it("returns English sub_agent guidance in en sessions and keeps explicit zh", async () => {
     const pipeline = { reviseFoundation: vi.fn(async () => undefined) };
 
     const enTool = createSubAgentTool(pipeline as never, "harbor", undefined, { language: "en" });
@@ -369,7 +369,7 @@ describe("agent tools language wiring (en parity)", () => {
     expect(toolText(enRevised)).toContain("foundation has been rewritten");
     expect(toolText(enRevised)).not.toMatch(/[一-鿿]/);
 
-    const zhTool = createSubAgentTool(pipeline as never, "harbor");
+    const zhTool = createSubAgentTool(pipeline as never, "harbor", undefined, { language: "zh" });
     const zhBlocked = await zhTool.execute("sub-zh-1", { agent: "architect", instruction: "建书" } as any);
     expect(toolText(zhBlocked)).toContain("当前已有书籍");
   });

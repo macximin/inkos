@@ -853,10 +853,11 @@ function createAgentToolsForMode(params: CreateAgentToolsForModeParams) {
 }
 
 function createModeTools(params: CreateAgentToolsForModeParams) {
-  const lang = params.language === "en" ? "en" : "zh";
+  const lang = params.language === "zh" ? "zh" : "en";
+  const surfaceLanguage = params.language === "ko" ? "ko" : lang;
   const subAgentTool = createSubAgentTool(params.pipeline, params.bookId, params.projectRoot, {
     actionPayload: params.actionPayload,
-    language: lang,
+    language: surfaceLanguage,
   });
   const proposalTool = createProposeActionTool(lang, {
     sameSession: params.sessionKind !== "chat",
@@ -950,7 +951,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
       return [createSubAgentTool(params.pipeline, params.bookId, params.projectRoot, {
         actionPayload: params.actionPayload,
         architectCreateOnly: true,
-        language: lang,
+        language: surfaceLanguage,
       })];
     }
     return [proposalTool, researchTool, materialTool, materialRetrievalTool];
@@ -976,7 +977,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
     researchTool,
     materialTool,
     materialRetrievalTool,
-    createManageBookReferenceTool(params.projectRoot, params.bookId),
+    createManageBookReferenceTool(params.projectRoot, params.bookId, surfaceLanguage),
     importChaptersTool,
     createNarrativeForecastCreateTool(params.pipeline, params.bookId, params.projectRoot),
     createNarrativeForecastGetTool(params.bookId, params.projectRoot),

@@ -341,6 +341,7 @@ describe("runAgentSession cache — bookId switch", () => {
     evictAgentCache("skill-history-session");
     evictAgentCache("abort-session");
     evictAgentCache("codex-loop-session");
+    evictAgentCache("ko-reference-session");
     await rm(projectRoot, { recursive: true, force: true });
     if (otherProjectRoot) await rm(otherProjectRoot, { recursive: true, force: true });
   });
@@ -366,6 +367,41 @@ describe("runAgentSession cache — bookId switch", () => {
     expect(body).toContain("书B 的真相");
     expect(body).not.toContain("书A 的真相");
     expect(body).toContain("earlier question about book A");
+  });
+
+  it("routes Korean book sessions to Korean sub-agent and reference-management copy", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+
+    await runAgentSession(
+      {
+        sessionId: "ko-reference-session",
+        bookId: "book-a",
+        sessionKind: "book",
+        language: "ko",
+        pipeline,
+        projectRoot,
+        model,
+      },
+      "참고 자료 상태를 알려줘",
+    );
+
+    const tools = agentInstances.at(-1).state.tools;
+    const referenceTool = tools.find((tool: any) => tool.name === "manage_book_reference");
+    const subAgentTool = tools.find((tool: any) => tool.name === "sub_agent");
+    const listed = await referenceTool.execute("list-ko-references", { action: "list" });
+    const blocked = await subAgentTool.execute("block-ko-architect", {
+      agent: "architect",
+      instruction: "새 작품 생성",
+    });
+    const listedText = listed.content[0]?.type === "text" ? listed.content[0].text : "";
+    const blockedText = blocked.content[0]?.type === "text" ? blocked.content[0].text : "";
+
+    expect(referenceTool.label).toBe("작품 참고 자료 관리");
+    expect(subAgentTool.label).toBe("서브에이전트");
+    expect(listedText).toContain("연결된 참고 자료가 없습니다");
+    expect(blockedText).toContain("이미 작품이 연결되어 있습니다");
+    expect(`${listedText}\n${blockedText}`).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
   it("rebuilds Agent when bookId goes from null to a real book", async () => {

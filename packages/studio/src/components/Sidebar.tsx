@@ -339,7 +339,9 @@ export function Sidebar({ nav, activePage, sse, t }: {
                   <div className="group/book flex items-center">
                     <button
                       type="button"
-                      aria-label={isExpanded ? tr(`折叠 ${book.title}`, `Collapse ${book.title}`) : tr(`展开 ${book.title}`, `Expand ${book.title}`)}
+                      aria-label={isExpanded
+                        ? tr(`折叠 ${book.title}`, `Collapse ${book.title}`, `${book.title} 접기`)
+                        : tr(`展开 ${book.title}`, `Expand ${book.title}`, `${book.title} 펼치기`)}
                       onClick={() => toggleBook(book.id)}
                       className="flex h-8 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-secondary/30 hover:text-foreground transition-colors"
                     >
@@ -400,7 +402,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                                   }}
                                 >
                                   <Pencil size={14} />
-                                  <span>{tr("改名", "Rename")}</span>
+                                  <span>{tr("改名", "Rename", "이름 바꾸기")}</span>
                                 </DropdownMenuItem>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
@@ -408,7 +410,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                                   onClick={() => setDeleteTarget({ sessionId: session.sessionId, title: label })}
                                 >
                                   <Trash2 size={14} />
-                                  <span>{tr("删除", "Delete")}</span>
+                                  <span>{tr("删除", "Delete", "삭제")}</span>
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
@@ -525,7 +527,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                               }}
                             >
                               <Pencil size={14} />
-                              <span>{tr("改名", "Rename")}</span>
+                              <span>{tr("改名", "Rename", "이름 바꾸기")}</span>
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -533,7 +535,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                               onClick={() => setDeleteTarget({ sessionId: session.sessionId, title: label })}
                             >
                               <Trash2 size={14} />
-                              <span>{tr("删除", "Delete")}</span>
+                              <span>{tr("删除", "Delete", "삭제")}</span>
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -659,7 +661,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
           className="sm:max-w-[360px] p-4 gap-3"
         >
           <DialogHeader className="space-y-0 gap-0">
-            <DialogTitle className="font-sans text-sm font-medium">{tr("重命名会话", "Rename Session")}</DialogTitle>
+            <DialogTitle className="font-sans text-sm font-medium">{tr("重命名会话", "Rename Session", "대화 이름 바꾸기")}</DialogTitle>
           </DialogHeader>
           <input
             id="session-rename-input"
@@ -672,7 +674,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
                 void handleRenameConfirm();
               }
             }}
-            placeholder={tr("输入新标题", "Enter a new title")}
+            placeholder={tr("输入新标题", "Enter a new title", "새 제목 입력")}
             className="w-full rounded-md border border-border/60 bg-background px-3 py-1.5 text-sm outline-none focus:border-border"
           />
           <DialogFooter className="gap-1 sm:gap-1">
@@ -684,7 +686,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
               }}
               className="px-3 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
-              {tr("取消", "Cancel")}
+              {tr("取消", "Cancel", "취소")}
             </button>
             <button
               type="button"
@@ -692,7 +694,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
               disabled={!renameValue.trim()}
               className="px-3 py-1 text-xs font-medium rounded-md bg-foreground text-background hover:opacity-90 transition-opacity disabled:opacity-30"
             >
-              {tr("保存", "Save")}
+              {tr("保存", "Save", "저장")}
             </button>
           </DialogFooter>
         </DialogContent>
@@ -700,13 +702,14 @@ export function Sidebar({ nav, activePage, sse, t }: {
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={tr("删除会话", "Delete Session")}
+        title={tr("删除会话", "Delete Session", "대화 삭제")}
         message={tr(
           `确认删除“${deleteTarget?.title ?? ""}”吗？该操作只删除这条会话，不影响书籍内容。`,
           `Delete "${deleteTarget?.title ?? ""}"? This only removes the session; the book content is not affected.`,
+          `“${deleteTarget?.title ?? ""}” 대화를 삭제할까요? 이 대화만 삭제되며 작품 내용에는 영향을 주지 않습니다.`,
         )}
-        confirmLabel={tr("删除", "Delete")}
-        cancelLabel={tr("取消", "Cancel")}
+        confirmLabel={tr("删除", "Delete", "삭제")}
+        cancelLabel={tr("取消", "Cancel", "취소")}
         variant="danger"
         onConfirm={() => void handleDeleteConfirm()}
         onCancel={() => setDeleteTarget(null)}

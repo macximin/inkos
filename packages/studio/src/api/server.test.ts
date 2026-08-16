@@ -4123,6 +4123,49 @@ describe("createStudioServer daemon lifecycle", () => {
     });
   });
 
+  it("keeps confirmed book-creation task copy Korean when the Studio language is ko", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({ ...projectConfig, language: "ko" }, null, 2), "utf-8");
+    loadBookSessionMock.mockResolvedValueOnce({
+      sessionId: "book-create-ko-session",
+      bookId: null,
+      sessionKind: "book-create",
+      title: null,
+      messages: [],
+      events: [],
+      draftRounds: [],
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "한국어 기업물 작품의 기반을 만들어 줘.",
+        sessionId: "book-create-ko-session",
+        sessionKind: "book-create",
+        actionSource: "button",
+        requestedIntent: "create_book",
+        actionPayload: {
+          createBook: {
+            title: "야간 배송",
+            genre: "urban",
+            platform: "other",
+            language: "en",
+          },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const task = await loadStudioTaskSnapshot(root, "book-create-ko-session");
+    expect(task?.execution.label).toBe("작품 생성");
+    expect(task?.execution.result).toContain("작품을 만들었습니다");
+    expect(`${task?.execution.label}\n${task?.execution.result}`).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
   it("infers English before directly executing a confirmed short action", async () => {
     const shortSession = {
       sessionId: "short-en-session",

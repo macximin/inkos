@@ -684,18 +684,29 @@ export function createSubAgentTool(
   options: {
     readonly actionPayload?: ActionPayload;
     readonly architectCreateOnly?: boolean;
-    readonly language?: "zh" | "en";
+    readonly language?: "zh" | "ko" | "en";
   } = {},
 ): AgentTool<any> {
-  const sessionIsZh = (options.language ?? "zh") !== "en";
+  const surfaceLanguage = options.language ?? "en";
+  const copy = (zh: string, en: string, ko: string): string => {
+    if (surfaceLanguage === "zh") return zh;
+    if (surfaceLanguage === "ko") return ko;
+    return en;
+  };
   return {
     name: "sub_agent",
     description: options.architectCreateOnly
-      ? "Create a new long-form InkOS book foundation. This confirmation turn can only call agent='architect'; writing chapters happens after the session is bound to the created book."
-      : "Delegate a heavy operation to a specialised sub-agent. " +
-        "Use agent='architect' to initialise a new book, 'writer' to write the next chapter, " +
-        "'auditor' to audit quality, 'reviser' to revise a chapter, 'exporter' to export.",
-    label: "Sub-Agent",
+      ? copy(
+          "创建一部长篇 InkOS 书籍的基础。此确认步骤只能调用 agent='architect'；会话绑定到新书后才能写章节。",
+          "Create a new long-form InkOS book foundation. This confirmation turn can only call agent='architect'; writing chapters happens after the session is bound to the created book.",
+          "새 장편 InkOS 작품의 기반을 만듭니다. 이 확인 단계에서는 agent='architect'만 실행할 수 있으며, 새 작품에 대화가 연결된 뒤 회차를 집필합니다.",
+        )
+      : copy(
+          "把重型任务委托给专用子智能体。agent='architect' 初始化书籍，'writer' 写下一章，'auditor' 检查质量，'reviser' 修订章节，'exporter' 导出。",
+          "Delegate a heavy operation to a specialised sub-agent. Use agent='architect' to initialise a new book, 'writer' to write the next chapter, 'auditor' to audit quality, 'reviser' to revise a chapter, 'exporter' to export.",
+          "무거운 작업을 전용 서브에이전트에 맡깁니다. agent='architect'는 작품 기반 생성, 'writer'는 다음 회차 집필, 'auditor'는 품질 검수, 'reviser'는 회차 수정, 'exporter'는 내보내기를 담당합니다.",
+        ),
+    label: copy("子智能体", "Sub-Agent", "서브에이전트"),
     parameters: options.architectCreateOnly ? ArchitectCreateSubAgentParams : SubAgentParams,
     prepareArguments: prepareSubAgentArguments,
     async execute(
@@ -713,17 +724,25 @@ export function createSubAgentTool(
 
         try {
           if (options.architectCreateOnly && agent !== "architect") {
-            throw new Error("This confirmed book-creation turn can only run the architect. Open the created book or use the book session to write chapters.");
+            throw new Error(copy(
+              "此建书确认步骤只能运行 architect。请打开已创建的书籍或在书籍会话中写章节。",
+              "This confirmed book-creation turn can only run the architect. Open the created book or use the book session to write chapters.",
+              "작품 생성 확인 단계에서는 architect만 실행할 수 있습니다. 생성된 작품을 열거나 작품 대화에서 회차를 집필해 주세요.",
+            ));
           }
           if (!activeBookId && agent !== "architect") {
-            return textResult("No active book. Only the architect agent can create a book from this session.");
+            return textResult(copy(
+              "当前没有活动书籍。此会话只能由 architect 创建书籍。",
+              "No active book. Only the architect agent can create a book from this session.",
+              "현재 열린 작품이 없습니다. 이 대화에서는 architect만 새 작품을 만들 수 있습니다.",
+            ));
           }
           if (activeBookId && agent === "architect" && !revise) {
-            return textResult(
-              sessionIsZh
-                ? "当前已有书籍，不需要建书。如果你想创建新书，请先回到首页。"
-                : "This session already has a book, so no new book is needed. To create a new book, go back to the home page first.",
-            );
+            return textResult(copy(
+              "当前已有书籍，不需要建书。如果你想创建新书，请先回到首页。",
+              "This session already has a book, so no new book is needed. To create a new book, go back to the home page first.",
+              "이 대화에는 이미 작품이 연결되어 있습니다. 새 작품을 만들려면 먼저 홈으로 돌아가 주세요.",
+            ));
           }
 
           switch (agent) {
@@ -731,26 +750,42 @@ export function createSubAgentTool(
             const createBookPayload = options.actionPayload?.createBook;
             if (revise) {
               if (!activeBookId) {
-                return textResult("Open the book first before revising its foundation.");
+                return textResult(copy(
+                  "请先打开书籍，再修改其基础设定。",
+                  "Open the book first before revising its foundation.",
+                  "작품 기반을 수정하려면 먼저 작품을 열어 주세요.",
+                ));
               }
               const targetBookId = resolveToolBookId("architect", bookId, activeBookId);
-              progress(`Revising foundation for "${targetBookId}"...`);
+              progress(copy(
+                `正在修改“${targetBookId}”的作品基础……`,
+                `Revising foundation for "${targetBookId}"...`,
+                `“${targetBookId}” 작품 기반을 수정하는 중...`,
+              ));
               await runPipelineWithAbortSignal(
                 pipeline,
                 _signal,
                 () => pipeline.reviseFoundation(targetBookId, feedback ?? instruction),
               );
-              progress(`Foundation revised for "${targetBookId}".`);
-              return textResult(
-                sessionIsZh
-                  ? `Book "${targetBookId}" 架构稿已按要求重写。原书的条目式架构稿已备份到 story/.backup-phase4-<时间戳>/。`
-                  : `Book "${targetBookId}" foundation has been rewritten as requested. The previous itemized foundation was backed up to story/.backup-phase4-<timestamp>/.`,
-              );
+              progress(copy(
+                `“${targetBookId}”的作品基础已修改。`,
+                `Foundation revised for "${targetBookId}".`,
+                `“${targetBookId}” 작품 기반 수정이 완료되었습니다.`,
+              ));
+              return textResult(copy(
+                `Book "${targetBookId}" 架构稿已按要求重写。原书的条目式架构稿已备份到 story/.backup-phase4-<时间戳>/。`,
+                `Book "${targetBookId}" foundation has been rewritten as requested. The previous itemized foundation was backed up to story/.backup-phase4-<timestamp>/.`,
+                `“${targetBookId}” 작품 기반을 요청대로 다시 작성했습니다. 이전 항목식 기반 문서는 story/.backup-phase4-<timestamp>/에 백업했습니다.`,
+              ));
             }
             const confirmedTitle = createBookPayload?.title?.trim();
             const resolvedTitle = confirmedTitle || title?.trim();
             if (!resolvedTitle) {
-              return textResult('Error: title is required for the architect agent.');
+              return textResult(copy(
+                "错误：architect 需要书名。",
+                "Error: title is required for the architect agent.",
+                "오류: architect를 실행하려면 작품명이 필요합니다.",
+              ));
             }
             const id = confirmedTitle
               ? deriveBookIdFromTitle(confirmedTitle) || `book-${Date.now().toString(36)}`
@@ -759,7 +794,11 @@ export function createSubAgentTool(
                 : deriveBookIdFromTitle(resolvedTitle) || `book-${Date.now().toString(36)}`;
             const now = new Date().toISOString();
             const resolvedLanguage = createBookPayload?.language ?? language ?? inferLanguage(instruction);
-            progress(`Starting architect for book "${id}"...`);
+            progress(copy(
+              `正在为书籍“${id}”启动 architect……`,
+              `Starting architect for book "${id}"...`,
+              `“${id}” 작품의 기반 설계를 시작하는 중...`,
+            ));
             await runPipelineWithAbortSignal(
               pipeline,
               _signal,
@@ -779,9 +818,17 @@ export function createSubAgentTool(
                 { externalContext: instruction },
               ),
             );
-            progress(`Architect finished — book "${id}" foundation created.`);
+            progress(copy(
+              `Architect 已完成——书籍“${id}”的基础已创建。`,
+              `Architect finished — book "${id}" foundation created.`,
+              `Architect 완료 — “${id}” 작품 기반을 만들었습니다.`,
+            ));
             return textResult(
-              `Book "${resolvedTitle}" (${id}) initialised successfully. Foundation files are ready.`,
+              copy(
+                `书籍“${resolvedTitle}”（${id}）已成功初始化，基础文件已就绪。`,
+                `Book "${resolvedTitle}" (${id}) initialised successfully. Foundation files are ready.`,
+                `“${resolvedTitle}”(${id}) 작품을 만들었습니다. 기반 문서가 준비되었습니다.`,
+              ),
               { kind: "book_created", bookId: id, title: resolvedTitle },
             );
           }
@@ -790,14 +837,22 @@ export function createSubAgentTool(
             const targetBookId = resolveToolBookId("writer", bookId, activeBookId);
             const requestedCount = chapterCount ?? 1;
             if (requestedCount > 1) {
-              progress(`Writing ${requestedCount} consecutive chapters for "${targetBookId}"...`);
+              progress(copy(
+                `正在为“${targetBookId}”连续写 ${requestedCount} 章……`,
+                `Writing ${requestedCount} consecutive chapters for "${targetBookId}"...`,
+                `“${targetBookId}” 작품의 회차 ${requestedCount}개를 연속 집필하는 중...`,
+              ));
               const results = await runPipelineWithAbortSignal(
                 pipeline,
                 _signal,
                 () => pipeline.writeChapters(targetBookId, requestedCount, {
                   wordCount: chapterWordCount,
                   onChapterComplete(result, completedCount, totalCount) {
-                    progress(`Writer finished chapter ${result.chapterNumber} (${completedCount}/${totalCount}) for "${targetBookId}".`);
+                    progress(copy(
+                      `Writer 已完成“${targetBookId}”第 ${result.chapterNumber} 章（${completedCount}/${totalCount}）。`,
+                      `Writer finished chapter ${result.chapterNumber} (${completedCount}/${totalCount}) for "${targetBookId}".`,
+                      `Writer가 “${targetBookId}” ${result.chapterNumber}회를 완료했습니다. (${completedCount}/${totalCount})`,
+                    ));
                   },
                 }),
               );
@@ -805,8 +860,16 @@ export function createSubAgentTool(
               const stoppedStatus = last?.status !== "ready-for-review" ? last?.status : undefined;
               return textResult(
                 stoppedStatus
-                  ? `Writer completed ${results.length} of ${requestedCount} requested chapters for "${targetBookId}" and stopped because chapter ${last?.chapterNumber} ended with status "${stoppedStatus}".`
-                  : `Writer completed ${results.length} consecutive chapters for "${targetBookId}".`,
+                  ? copy(
+                      `Writer 为“${targetBookId}”完成了请求的 ${requestedCount} 章中的 ${results.length} 章；第 ${last?.chapterNumber} 章以“${stoppedStatus}”状态结束，因此已停止。`,
+                      `Writer completed ${results.length} of ${requestedCount} requested chapters for "${targetBookId}" and stopped because chapter ${last?.chapterNumber} ended with status "${stoppedStatus}".`,
+                      `Writer가 “${targetBookId}” 작품에서 요청한 ${requestedCount}개 중 ${results.length}개 회차를 완료했습니다. ${last?.chapterNumber}회가 “${stoppedStatus}” 상태로 끝나 작업을 중단했습니다.`,
+                    )
+                  : copy(
+                      `Writer 已为“${targetBookId}”连续完成 ${results.length} 章。`,
+                      `Writer completed ${results.length} consecutive chapters for "${targetBookId}".`,
+                      `Writer가 “${targetBookId}” 작품의 회차 ${results.length}개를 연속으로 완료했습니다.`,
+                    ),
                 {
                   kind: "chapters_written",
                   bookId: targetBookId,
@@ -822,20 +885,36 @@ export function createSubAgentTool(
                 },
               );
             }
-            progress(`Writing next chapter for "${targetBookId}"...`);
+            progress(copy(
+              `正在为“${targetBookId}”写下一章……`,
+              `Writing next chapter for "${targetBookId}"...`,
+              `“${targetBookId}” 작품의 다음 회차를 집필하는 중...`,
+            ));
             const result = await runPipelineWithAbortSignal(
               pipeline,
               _signal,
               () => pipeline.writeNextChapter(targetBookId, chapterWordCount),
             );
-            progress(`Writer finished chapter for "${targetBookId}".`);
+            progress(copy(
+              `Writer 已完成“${targetBookId}”的章节。`,
+              `Writer finished chapter for "${targetBookId}".`,
+              `Writer가 “${targetBookId}” 작품의 회차를 완료했습니다.`,
+            ));
             const resultStatus = (result as any).status;
             const wordCount = (result as any).wordCount ?? "unknown";
             const chapterNumberResult = (result as any).chapterNumber;
             const titleResult = (result as any).title;
             const message = resultStatus && resultStatus !== "ready-for-review" && resultStatus !== "active"
-              ? `Chapter output for "${targetBookId}" ended with status "${resultStatus}" and needs review before it is treated as complete. Word count: ${wordCount}.`
-              : `Chapter written for "${targetBookId}". Word count: ${wordCount}.`;
+              ? copy(
+                  `“${targetBookId}”的章节以“${resultStatus}”状态结束，需要检查后才能视为完成。字数：${wordCount}。`,
+                  `Chapter output for "${targetBookId}" ended with status "${resultStatus}" and needs review before it is treated as complete. Word count: ${wordCount}.`,
+                  `“${targetBookId}” 작품의 회차가 “${resultStatus}” 상태로 끝났습니다. 완료 처리 전에 검수가 필요합니다. 분량: ${wordCount}.`,
+                )
+              : copy(
+                  `已为“${targetBookId}”写完章节。字数：${wordCount}。`,
+                  `Chapter written for "${targetBookId}". Word count: ${wordCount}.`,
+                  `“${targetBookId}” 작품의 회차를 집필했습니다. 분량: ${wordCount}.`,
+                );
             return textResult(
               message,
               {
@@ -851,18 +930,31 @@ export function createSubAgentTool(
 
           case "auditor": {
             const targetBookId = resolveToolBookId("auditor", bookId, activeBookId);
-            progress(`Auditing chapter ${chapterNumber ?? "latest"} for "${targetBookId}"...`);
+            const auditTarget = chapterNumber ?? copy("最新章", "latest", "최신 회차");
+            progress(copy(
+              `正在检查“${targetBookId}”第 ${auditTarget} 章……`,
+              `Auditing chapter ${auditTarget} for "${targetBookId}"...`,
+              `“${targetBookId}” 작품 검수 중 — 대상: ${auditTarget}`,
+            ));
             const audit = await runPipelineWithAbortSignal(
               pipeline,
               _signal,
               () => pipeline.auditDraft(targetBookId, chapterNumber),
             );
-            progress(`Audit complete for "${targetBookId}".`);
+            progress(copy(
+              `“${targetBookId}”检查完成。`,
+              `Audit complete for "${targetBookId}".`,
+              `“${targetBookId}” 작품 검수를 완료했습니다.`,
+            ));
             const issueLines = (audit.issues ?? [])
               .map((i: any) => `[${i.severity}] ${i.description}`)
               .join("\n");
             return textResult(
-              `Audit chapter ${audit.chapterNumber}: ${audit.passed ? "PASSED" : "FAILED"}, ${(audit.issues ?? []).length} issue(s).` +
+              copy(
+                `第 ${audit.chapterNumber} 章检查：${audit.passed ? "通过" : "未通过"}，发现 ${(audit.issues ?? []).length} 个问题。`,
+                `Audit chapter ${audit.chapterNumber}: ${audit.passed ? "PASSED" : "FAILED"}, ${(audit.issues ?? []).length} issue(s).`,
+                `${audit.chapterNumber}회 검수: ${audit.passed ? "통과" : "미통과"}, 문제 ${(audit.issues ?? []).length}건.`,
+              ) +
               (issueLines ? `\n${issueLines}` : ""),
             );
           }
@@ -870,7 +962,12 @@ export function createSubAgentTool(
           case "reviser": {
             const targetBookId = resolveToolBookId("reviser", bookId, activeBookId);
             const resolvedMode: ReviseMode = (mode as ReviseMode) ?? "spot-fix";
-            progress(`Revising "${targetBookId}" chapter ${chapterNumber ?? "latest"} in ${resolvedMode} mode...`);
+            const revisionTarget = chapterNumber ?? copy("最新章", "latest", "최신 회차");
+            progress(copy(
+              `正在以 ${resolvedMode} 模式修改“${targetBookId}”第 ${revisionTarget} 章……`,
+              `Revising "${targetBookId}" chapter ${revisionTarget} in ${resolvedMode} mode...`,
+              `“${targetBookId}” 작품 수정 중 — 대상: ${revisionTarget}, 모드: ${resolvedMode}`,
+            ));
             const result = await runPipelineWithAbortSignal(
               pipeline,
               _signal,
@@ -891,38 +988,60 @@ export function createSubAgentTool(
               revisionDiagnostics: result.revisionDiagnostics,
             };
             if (!applied) {
-              progress(`Revision not applied for "${targetBookId}".`);
+              progress(copy(
+                `未应用“${targetBookId}”的修改。`,
+                `Revision not applied for "${targetBookId}".`,
+                `“${targetBookId}” 작품에 수정 사항을 적용하지 않았습니다.`,
+              ));
               const diagnostics = result.revisionDiagnostics;
               const diagnosticText = diagnostics
                 ? [
                     "",
-                    "Revision gate:",
-                    `- Standard: ${diagnostics.standard}`,
-                    `- Before: blocking=${diagnostics.before.blockingCount}, critical=${diagnostics.before.criticalCount}, aiTell=${diagnostics.before.aiTellCount}`,
-                    `- After: blocking=${diagnostics.after.blockingCount}, critical=${diagnostics.after.criticalCount}, aiTell=${diagnostics.after.aiTellCount}`,
+                    copy("修改门禁：", "Revision gate:", "수정 게이트:"),
+                    `- ${copy("标准", "Standard", "기준")}: ${diagnostics.standard}`,
+                    `- ${copy("修改前", "Before", "수정 전")}: blocking=${diagnostics.before.blockingCount}, critical=${diagnostics.before.criticalCount}, aiTell=${diagnostics.before.aiTellCount}`,
+                    `- ${copy("修改后", "After", "수정 후")}: blocking=${diagnostics.after.blockingCount}, critical=${diagnostics.after.criticalCount}, aiTell=${diagnostics.after.aiTellCount}`,
                     ...(diagnostics.remainingIssues.length > 0
                       ? [
-                          "- Remaining issues:",
+                          copy("- 剩余问题：", "- Remaining issues:", "- 남은 문제:"),
                           ...diagnostics.remainingIssues.map((issue) => `  - [${issue.severity}] ${issue.category}: ${issue.description}${issue.suggestion ? ` (${issue.suggestion})` : ""}`),
                         ]
                       : []),
                   ].join("\n")
                 : "";
               return textResult(
-                `Revision not applied for "${targetBookId}" chapter ${resultChapter ?? "latest"}: ${result.skippedReason ?? result.status ?? "pipeline kept the original chapter"}.${diagnosticText}`,
+                copy(
+                  `未应用“${targetBookId}”第 ${resultChapter ?? "最新"} 章的修改：${result.skippedReason ?? result.status ?? "流程保留了原章节"}。${diagnosticText}`,
+                  `Revision not applied for "${targetBookId}" chapter ${resultChapter ?? "latest"}: ${result.skippedReason ?? result.status ?? "pipeline kept the original chapter"}.${diagnosticText}`,
+                  `“${targetBookId}” 작품 ${resultChapter ?? "최신"}회에 수정 사항을 적용하지 않았습니다: ${result.skippedReason ?? result.status ?? "원래 회차를 유지했습니다"}.${diagnosticText}`,
+                ),
                 details,
               );
             }
-            progress(`Revision complete for "${targetBookId}".`);
+            progress(copy(
+              `“${targetBookId}”修改完成。`,
+              `Revision complete for "${targetBookId}".`,
+              `“${targetBookId}” 작품 수정을 완료했습니다.`,
+            ));
             return textResult(
-              `Revision (${resolvedMode}) complete for "${targetBookId}" chapter ${resultChapter ?? "latest"}.`,
+              copy(
+                `“${targetBookId}”第 ${resultChapter ?? "最新"} 章修改完成（${resolvedMode}）。`,
+                `Revision (${resolvedMode}) complete for "${targetBookId}" chapter ${resultChapter ?? "latest"}.`,
+                `“${targetBookId}” 작품 ${resultChapter ?? "최신"}회 수정을 완료했습니다. (${resolvedMode})`,
+              ),
               details,
             );
           }
 
           case "exporter": {
             const targetBookId = resolveToolBookId("exporter", bookId, activeBookId);
-            if (!projectRoot) return textResult("Error: exporter requires projectRoot.");
+            if (!projectRoot) {
+              return textResult(copy(
+                "错误：exporter 需要 projectRoot。",
+                "Error: exporter requires projectRoot.",
+                "오류: exporter를 실행하려면 projectRoot가 필요합니다.",
+              ));
+            }
             const inferredFormat = format ?? (/epub/i.test(instruction)
               ? "epub"
               : /markdown|\bmd\b/i.test(instruction)
@@ -935,12 +1054,20 @@ export function createSubAgentTool(
               approvedOnly: exportApprovedOnly,
             });
             return textResult(
-              `Exported "${targetBookId}": ${result.chaptersExported} chapters, ${result.totalWords} words → ${result.outputPath}`,
+              copy(
+                `已导出“${targetBookId}”：${result.chaptersExported} 章，${result.totalWords} 字 → ${result.outputPath}`,
+                `Exported "${targetBookId}": ${result.chaptersExported} chapters, ${result.totalWords} words → ${result.outputPath}`,
+                `“${targetBookId}” 작품을 내보냈습니다: ${result.chaptersExported}회, 총 분량 ${result.totalWords} → ${result.outputPath}`,
+              ),
             );
           }
 
             default:
-              return textResult(`Unknown agent: ${agent}`);
+              return textResult(copy(
+                `未知 agent：${agent}`,
+                `Unknown agent: ${agent}`,
+                `알 수 없는 agent: ${agent}`,
+              ));
           }
         } catch (err: any) {
           if (agent === "architect" && err instanceof ArchitectIncompleteFoundationError) {
@@ -949,14 +1076,26 @@ export function createSubAgentTool(
               [
                 err.message,
                 "",
-                `缺失 section: ${missing}`,
-                "我会把已生成的部分保留下来，并继续补齐缺失 section；不要重新发明一本书。",
+                copy(
+                  `缺失 section: ${missing}`,
+                  `Missing sections: ${missing}`,
+                  `누락된 section: ${missing}`,
+                ),
+                copy(
+                  "我会把已生成的部分保留下来，并继续补齐缺失 section；不要重新发明一本书。",
+                  "I will preserve the generated foundation and fill only the missing sections instead of starting the book over.",
+                  "이미 생성된 작품 기반은 보존하고 누락된 section만 보완하겠습니다. 작품을 처음부터 다시 만들지 않습니다.",
+                ),
               ].join("\n"),
               {
                 kind: "architect_incomplete",
                 missing: [...err.missing],
                 partialContent: err.partialContent,
-                retryInstruction: `Continue repairing the architect foundation. Preserve the partial content and fill missing sections: ${missing}.`,
+                retryInstruction: copy(
+                  `继续修复 architect 基础。保留已有内容，并补齐缺失 section：${missing}。`,
+                  `Continue repairing the architect foundation. Preserve the partial content and fill missing sections: ${missing}.`,
+                  `작품 기반 수정을 계속합니다. 기존 내용을 보존하고 누락된 section을 채우세요: ${missing}.`,
+                ),
               },
             );
           }
@@ -1247,17 +1386,34 @@ const ManageBookReferenceParams = Type.Object({
 
 type ManageBookReferenceParamsType = Static<typeof ManageBookReferenceParams>;
 
+type BookReferenceToolLanguage = "zh" | "en" | "ko";
+
+function bookReferenceToolCopy(
+  language: BookReferenceToolLanguage,
+  zh: string,
+  en: string,
+  ko: string,
+): string {
+  if (language === "zh") return zh;
+  if (language === "ko") return ko;
+  return en;
+}
+
 export function createManageBookReferenceTool(
   projectRoot: string,
   activeBookId: string,
+  language: BookReferenceToolLanguage = "en",
 ): AgentTool<typeof ManageBookReferenceParams> {
   const bookId = assertSafeBookId(activeBookId, "manage_book_reference.bookId");
   return {
     name: "manage_book_reference",
-    description:
-      "Bind already-ingested project materials to the active book with user-defined purposes, list current bindings, or unbind them. " +
-      "The material remains stored once under .inkos/materials. Binding never copies prose into the book and never changes canon by itself.",
-    label: "Manage Book Reference",
+    description: bookReferenceToolCopy(
+      language,
+      "把已归档的项目资料按用户指定用途绑定到当前书籍，查看现有绑定，或解除绑定。资料只在 .inkos/materials 保存一份；绑定不会复制原文，也不会自行修改正典。",
+      "Bind already-ingested project materials to the active book with user-defined purposes, list current bindings, or unbind them. The material remains stored once under .inkos/materials. Binding never copies prose into the book and never changes canon by itself.",
+      "이미 보관된 프로젝트 자료를 사용자가 지정한 용도로 현재 작품에 연결하거나, 연결 목록을 확인하고 해제합니다. 자료는 .inkos/materials에 한 번만 저장되며 원문을 복제하거나 작품 정사를 자동 변경하지 않습니다.",
+    ),
+    label: bookReferenceToolCopy(language, "管理书籍参考资料", "Manage Book Reference", "작품 참고 자료 관리"),
     parameters: ManageBookReferenceParams,
     async execute(
       _toolCallId: string,
@@ -1278,14 +1434,28 @@ export function createManageBookReferenceTool(
         }));
         return textResult(
           references.length === 0
-            ? `No reference materials are bound to book "${bookId}".`
+            ? bookReferenceToolCopy(
+                language,
+                `书籍“${bookId}”尚未绑定参考资料。`,
+                `No reference materials are bound to book "${bookId}".`,
+                `“${bookId}” 작품에 연결된 참고 자료가 없습니다.`,
+              )
             : [
-                `Bound references for "${bookId}":`,
+                bookReferenceToolCopy(
+                  language,
+                  `书籍“${bookId}”已绑定的参考资料：`,
+                  `Bound references for "${bookId}":`,
+                  `“${bookId}” 작품에 연결된 참고 자료:`,
+                ),
                 ...references.map((reference) => [
                   `- ${reference.title ?? reference.materialId} (${reference.materialId})`,
-                  `  uses: ${reference.uses.join("; ")}`,
-                  reference.note ? `  note: ${reference.note}` : undefined,
-                  reference.available ? undefined : `  unavailable: ${reference.error ?? "material missing"}`,
+                  `  ${bookReferenceToolCopy(language, "用途", "uses", "용도")}: ${reference.uses.join("; ")}`,
+                  reference.note
+                    ? `  ${bookReferenceToolCopy(language, "备注", "note", "메모")}: ${reference.note}`
+                    : undefined,
+                  reference.available
+                    ? undefined
+                    : `  ${bookReferenceToolCopy(language, "不可用", "unavailable", "사용 불가")}: ${reference.error ?? bookReferenceToolCopy(language, "资料缺失", "material missing", "자료 없음")}`,
                 ].filter(Boolean).join("\n")),
               ].join("\n"),
           { kind: "book_reference_list", bookId, references },
@@ -1293,20 +1463,47 @@ export function createManageBookReferenceTool(
       }
 
       const materialId = params.materialId?.trim();
-      if (!materialId) throw new Error(`manage_book_reference.${params.action} requires materialId.`);
+      if (!materialId) {
+        throw new Error(bookReferenceToolCopy(
+          language,
+          `manage_book_reference.${params.action} 需要 materialId。`,
+          `manage_book_reference.${params.action} requires materialId.`,
+          `manage_book_reference.${params.action} 작업에는 materialId가 필요합니다.`,
+        ));
+      }
       if (params.action === "unbind") {
-        onUpdate?.(textResult(`Unbinding reference ${materialId} from ${bookId}...`));
+        onUpdate?.(textResult(bookReferenceToolCopy(
+          language,
+          `正在解除参考资料 ${materialId} 与 ${bookId} 的绑定……`,
+          `Unbinding reference ${materialId} from ${bookId}...`,
+          `${bookId} 작품에서 참고 자료 ${materialId} 연결을 해제하는 중...`,
+        )));
         const result = await unbindBookReference(projectRoot, bookId, materialId);
         return textResult(
           result.removed
-            ? `Reference ${materialId} was unbound from "${bookId}". The project asset was kept.`
-            : `Reference ${materialId} was not bound to "${bookId}".`,
+            ? bookReferenceToolCopy(
+                language,
+                `已解除参考资料 ${materialId} 与“${bookId}”的绑定，项目资料仍保留。`,
+                `Reference ${materialId} was unbound from "${bookId}". The project asset was kept.`,
+                `“${bookId}” 작품에서 참고 자료 ${materialId} 연결을 해제했습니다. 프로젝트 자료는 보존됩니다.`,
+              )
+            : bookReferenceToolCopy(
+                language,
+                `参考资料 ${materialId} 未绑定到“${bookId}”。`,
+                `Reference ${materialId} was not bound to "${bookId}".`,
+                `참고 자료 ${materialId}는 “${bookId}” 작품에 연결되어 있지 않습니다.`,
+              ),
           { kind: "book_reference_unbound", bookId, materialId, removed: result.removed },
         );
       }
 
       const uses = params.uses ?? [];
-      onUpdate?.(textResult(`Binding reference ${materialId} to ${bookId}...`));
+      onUpdate?.(textResult(bookReferenceToolCopy(
+        language,
+        `正在把参考资料 ${materialId} 绑定到 ${bookId}……`,
+        `Binding reference ${materialId} to ${bookId}...`,
+        `${bookId} 작품에 참고 자료 ${materialId}를 연결하는 중...`,
+      )));
       const manifest = await bindBookReference(projectRoot, bookId, {
         materialId,
         uses,
@@ -1315,10 +1512,22 @@ export function createManageBookReferenceTool(
       const binding = manifest.bindings.find((entry) => entry.materialId === materialId)!;
       return textResult(
         [
-          `Reference ${materialId} was bound to "${bookId}".`,
-          `Uses: ${binding.uses.join("; ")}`,
-          binding.note ? `Note: ${binding.note}` : undefined,
-          "Future chapter composition may select relevant sections; the reference does not override author intent or canon.",
+          bookReferenceToolCopy(
+            language,
+            `已把参考资料 ${materialId} 绑定到“${bookId}”。`,
+            `Reference ${materialId} was bound to "${bookId}".`,
+            `참고 자료 ${materialId}를 “${bookId}” 작품에 연결했습니다.`,
+          ),
+          `${bookReferenceToolCopy(language, "用途", "Uses", "용도")}: ${binding.uses.join("; ")}`,
+          binding.note
+            ? `${bookReferenceToolCopy(language, "备注", "Note", "메모")}: ${binding.note}`
+            : undefined,
+          bookReferenceToolCopy(
+            language,
+            "以后写章节时可以按需选择相关段落；参考资料不能覆盖作者意图或正典。",
+            "Future chapter composition may select relevant sections; the reference does not override author intent or canon.",
+            "이후 회차 구성에서 필요한 부분만 선택할 수 있으며, 참고 자료는 작가 의도나 작품 정사를 덮어쓸 수 없습니다.",
+          ),
         ].filter(Boolean).join("\n"),
         {
           kind: "book_reference_bound",

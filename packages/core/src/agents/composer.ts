@@ -391,7 +391,7 @@ export class ComposerAgent extends BaseAgent {
   }
 
   async selectReferenceSections(request: ReferenceSectionSelectionRequest): Promise<ReadonlyArray<string>> {
-    const isEn = request.language === "en";
+    const isEn = request.language !== "zh";
     const candidates = request.candidates.map((candidate, index) => [
       `#${index + 1} ${candidate.source}`,
       `title: ${candidate.title}`,
