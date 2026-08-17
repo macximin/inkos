@@ -60,4 +60,22 @@ describe("material ingestion", () => {
     expect(asset.excerpt).toContain("入库单需要签字");
     expect(asset.excerpt).not.toContain("bad()");
   });
+
+  it("archives supplied text with a stable logical provenance label", async () => {
+    const asset = await ingestMaterial(root, {
+      sourceKind: "text",
+      content: "# Reference card\n\n사건과 보상 구조를 연결한다.",
+      sourceLabel: "firefly-reference-core:materials/CHB-CORE-01.md",
+      filename: "CHB-CORE-01.md",
+      purpose: "reference",
+    }, {
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+
+    expect(asset.kind).toBe("text");
+    expect(asset.source).toBe("firefly-reference-core:materials/CHB-CORE-01.md");
+    expect(asset.excerpt).toContain("사건과 보상 구조");
+    const markdown = await readFile(join(root, asset.markdownPath), "utf-8");
+    expect(markdown).toContain("- source: firefly-reference-core:materials/CHB-CORE-01.md");
+  });
 });

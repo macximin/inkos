@@ -1,7 +1,7 @@
 # InkOS 한국어 웹소설 제작기 구현 컨텍스트
 
 - 작성일: 2026-08-09
-- 대상 저장소: `/Users/a2501/Desktop/inkos`
+- 대상 저장소: `/Users/a2501/Desktop/firefly_studio/edge_repos/inkos`
 - 문서 목적: 새 Codex 세션이 이전 논의를 반복하지 않고 바로 구현을 이어가기 위한 인수인계
 - 최종 결정: **InkOS를 웹소설 집필의 본체로 사용한다.**
 
@@ -255,7 +255,7 @@ interface ArcPacket {
 
 문서 작성 시점의 기준:
 
-- 저장소: `/Users/a2501/Desktop/inkos`
+- 저장소: `/Users/a2501/Desktop/firefly_studio/edge_repos/inkos`
 - 기준 커밋: `a6e05d4d docs: update Kimi K3 sponsorship copy`
 - 작업 트리에는 기존 작업이 있다.
 - 추적 파일 24개가 수정되어 있다.
@@ -372,4 +372,4 @@ Storyyard가 필요해지면 나중에 완성 원고 내보내기 대상으로�
 
 새 세션에는 아래 문장을 그대로 전달하면 된다.
 
-> `/Users/a2501/Desktop/inkos/WEBNOVEL_KO_IMPLEMENTATION_CONTEXT.md`를 처음부터 끝까지 읽어라. 현재 작업 트리의 미커밋 변경은 기존 작업이므로 절대 초기화하거나 덮어쓰지 말고 먼저 diff와 테스트 상태를 확인하라. Foundry 중심 설계를 다시 제안하지 말고, InkOS를 단일 한국어 웹소설 제작기로 만드는 목표에 집중하라. 우선 기존 Codex ChatGPT 구독 연결과 부분 한국어화를 검증한 뒤, 핵심 집필 흐름의 완전 한국어화와 `Arc(1~3화)` 1급 객체 구현 계획을 세우고 실행하라. 막히지 않는 한 질문만 하고 멈추지 말고, 구현·테스트·브라우저 검증까지 진행하라.
+> `/Users/a2501/Desktop/firefly_studio/edge_repos/inkos/WEBNOVEL_KO_IMPLEMENTATION_CONTEXT.md`를 처음부터 끝까지 읽어라. 현재 작업 트리의 미커밋 변경은 기존 작업이므로 절대 초기화하거나 덮어쓰지 말고 먼저 diff와 테스트 상태를 확인하라. Foundry 중심 설계를 다시 제안하지 말고, InkOS를 단일 한국어 웹소설 제작기로 만드는 목표에 집중하라. 우선 기존 Codex ChatGPT 구독 연결과 부분 한국어화를 검증한 뒤, 핵심 집필 흐름의 완전 한국어화와 `Arc(1~3화)` 1급 객체 구현 계획을 세우고 실행하라. 막히지 않는 한 질문만 하고 멈추지 말고, 구현·테스트·브라우저 검증까지 진행하라.

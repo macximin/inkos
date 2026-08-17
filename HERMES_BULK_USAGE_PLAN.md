@@ -1,7 +1,7 @@
 # Hermes × InkOS 대량 사용 계획
 
 - 작성일: 2026-08-11
-- 대상: `/Users/a2501/Desktop/inkos`
+- 대상: `/Users/a2501/Desktop/firefly_studio/edge_repos/inkos`
 - 상태: **계획 문서 — 아직 Hermes 설정, 스케줄러, 서비스, 작업 큐를 만들거나 실행하지 않음**
 
 ## 1. 목적과 범위

@@ -5,13 +5,15 @@ import { safeChildPath } from "../utils/path-safety.js";
 import { toPosixPath } from "../utils/posix-path.js";
 
 export type MaterialPurpose = "reference" | "worldbuilding" | "script" | "storyboard" | "research" | "general";
-export type MaterialSourceKind = "url" | "file";
+export type MaterialSourceKind = "url" | "file" | "text";
 export type MaterialKind = "webpage" | "pdf" | "text";
 
 export interface IngestMaterialInput {
   readonly sourceKind: MaterialSourceKind;
   readonly url?: string;
   readonly filePath?: string;
+  readonly content?: string;
+  readonly sourceLabel?: string;
   readonly filename?: string;
   readonly mimeType?: string;
   readonly title?: string;
@@ -99,6 +101,26 @@ async function readMaterialSource(
   if (input.sourceKind === "url") {
     if (!input.url) throw new Error("ingest_material.url is required for URL sources.");
     return readUrlMaterial(input.url, deps.fetch ?? fetch);
+  }
+  if (input.sourceKind === "text") {
+    if (typeof input.content !== "string") throw new Error("ingest_material.content is required for text sources.");
+    if (!input.sourceLabel?.trim()) throw new Error("ingest_material.sourceLabel is required for text sources.");
+    const byteLength = Buffer.byteLength(input.content, "utf-8");
+    if (byteLength > MAX_SOURCE_BYTES) {
+      throw new Error(`Material text is too large (${byteLength} bytes).`);
+    }
+    const sourceLabel = input.sourceLabel.trim();
+    if (sourceLabel.length > 2_000 || sourceLabel.includes("\0")) {
+      throw new Error("ingest_material.sourceLabel is invalid.");
+    }
+    const filename = input.filename || basename(sourceLabel) || "material.txt";
+    return {
+      kind: "text",
+      source: sourceLabel,
+      title: stripExtension(filename),
+      mimeType: input.mimeType || mimeFromFilename(filename),
+      text: normalizeText(input.content),
+    };
   }
   if (!input.filePath) throw new Error("ingest_material.filePath is required for file sources.");
   const safePath = safeChildPath(projectRoot, input.filePath);
