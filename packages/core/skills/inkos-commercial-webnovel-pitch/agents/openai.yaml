@@ -1,0 +1,4 @@
+interface:
+  display_name: "한국 웹소설 신작 피치"
+  short_description: "검증된 골격과 사건·보상을 라우팅하는 웹소설 피치"
+  default_prompt: "$inkos-commercial-webnovel-pitch를 사용해 주축 참고작의 골격과 여러 작품의 사건·보상을 라우팅한 한국 상업 웹소설 피치를 설계해 주세요."

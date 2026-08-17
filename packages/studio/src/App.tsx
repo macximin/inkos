@@ -337,7 +337,7 @@ export function App() {
           )}
           {route.page === "translation" && (
             <div className="max-w-6xl mx-auto px-6 py-12 md:px-12 lg:py-16 fade-in">
-              <TranslationManager nav={nav} theme={theme} t={t} />
+              <TranslationManager nav={nav} theme={theme} t={t} uiLanguage={currentLang} />
             </div>
           )}
           {route.page === "import" && (

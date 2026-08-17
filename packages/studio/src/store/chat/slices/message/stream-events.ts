@@ -633,23 +633,23 @@ export function attachSessionStreamListeners({
 
 function compressionLabel(category: ContextCompressionCategory): string {
   return category === "session_context"
-    ? tr("整理会话记忆", "Organize session memory")
-    : tr("压缩故事上下文", "Compress story context");
+    ? tr("整理会话记忆", "Organize session memory", "대화 기억 정리")
+    : tr("压缩故事上下文", "Compress story context", "작품 맥락 압축");
 }
 
 function compressionSourceSummary(sources: readonly string[] | undefined): string {
   if (!sources || sources.length === 0) return "";
   const preview = sources.slice(0, 3).join(", ");
   const suffix = sources.length > 3 ? ` +${sources.length - 3}` : "";
-  return `${tr("来源", "sources")} ${sources.length}: ${preview}${suffix}`;
+  return `${tr("来源", "sources", "출처")} ${sources.length}: ${preview}${suffix}`;
 }
 
 function compressionProgress(data: ContextCompressionEventPayload): PipelineStage["progress"] | undefined {
   if (data.phase !== "start") return undefined;
   const parts = [
-    data.protectedTokens !== undefined ? `${tr("保护", "protected")} ${data.protectedTokens}` : "",
-    data.compressibleTokens !== undefined ? `${tr("可压缩", "compressible")} ${data.compressibleTokens}` : "",
-    data.budgetTokens !== undefined ? `${tr("预算", "budget")} ${data.budgetTokens}` : "",
+    data.protectedTokens !== undefined ? `${tr("保护", "protected", "보호")} ${data.protectedTokens}` : "",
+    data.compressibleTokens !== undefined ? `${tr("可压缩", "compressible", "압축 가능")} ${data.compressibleTokens}` : "",
+    data.budgetTokens !== undefined ? `${tr("预算", "budget", "예산")} ${data.budgetTokens}` : "",
     compressionSourceSummary(data.sources),
   ].filter(Boolean);
   return {
@@ -695,7 +695,7 @@ function applyContextCompressionToExecution(
       ...execution,
       stages,
       status: "error",
-      error: data.message ?? `${compressionLabel(category)}${tr("失败", " failed")}`,
+      error: data.message ?? `${compressionLabel(category)}${tr("失败", " failed", " 실패")}`,
     };
   }
   return { ...execution, stages };
@@ -712,7 +712,7 @@ function applyContextCompressionToParts(
     running.stages = upsertCompressionStage(running.stages, category, phase, data);
     if (phase === "error") {
       running.status = "error";
-      running.error = data.message ?? `${compressionLabel(category)}${tr("失败", " failed")}`;
+      running.error = data.message ?? `${compressionLabel(category)}${tr("失败", " failed", " 실패")}`;
     }
     return;
   }
@@ -734,6 +734,6 @@ function applyContextCompressionToParts(
   execution.label = compressionLabel(category);
   execution.stages = upsertCompressionStage(execution.stages, category, phase, data);
   if (phase !== "start") execution.completedAt = Date.now();
-  if (phase === "error") execution.error = data.message ?? `${compressionLabel(category)}${tr("失败", " failed")}`;
+  if (phase === "error") execution.error = data.message ?? `${compressionLabel(category)}${tr("失败", " failed", " 실패")}`;
   if (!existing) parts.push({ type: "tool", execution });
 }

@@ -5,6 +5,7 @@ import {
 } from "./memory-retrieval.js";
 import {
   isHookWithinChapterWindow,
+  normalizeStoredHookStatus,
 } from "./hook-lifecycle.js";
 
 export function buildGovernedHookWorkingSet(params: {
@@ -106,11 +107,19 @@ export function mergeTableMarkdownByKey(
 ): string {
   const originalTable = parseSingleTable(original);
   const updatedTable = parseSingleTable(updated);
+  if (originalTable && (!updatedTable || updatedTable.dataRows.length === 0)) {
+    return original;
+  }
   if (!originalTable || !updatedTable || updatedTable.dataRows.length === 0) {
     return updated;
   }
 
   const mergedRows = [...originalTable.dataRows];
+  const originalHeader = originalTable.leadingLines
+    .find((line) => line.trim().startsWith("|"));
+  const isHookTable = originalHeader
+    ? (parseRow(originalHeader)[0] ?? "").trim().toLowerCase() === "hook_id"
+    : false;
   const originalIndex = new Map<string, number>();
   mergedRows.forEach((row, index) => {
     originalIndex.set(buildKey(row, keyColumns), index);
@@ -123,7 +132,14 @@ export function mergeTableMarkdownByKey(
       originalIndex.set(key, mergedRows.length);
       mergedRows.push(row);
     } else {
-      mergedRows[existing] = row;
+      const originalRow = mergedRows[existing]!;
+      if (isHookTable && shouldPreserveHookStatus(originalRow[3] ?? "", row[3] ?? "")) {
+        const monotonicRow = [...row];
+        monotonicRow[3] = originalRow[3] ?? "";
+        mergedRows[existing] = monotonicRow;
+      } else {
+        mergedRows[existing] = row;
+      }
     }
   }
 
@@ -132,6 +148,13 @@ export function mergeTableMarkdownByKey(
     ...mergedRows.map(renderRow),
     ...pickScaffold(originalTable.trailingLines, updatedTable.trailingLines),
   ].join("\n").trimEnd();
+}
+
+function shouldPreserveHookStatus(original: string, updated: string): boolean {
+  const originalStatus = normalizeStoredHookStatus(original);
+  const updatedStatus = normalizeStoredHookStatus(updated);
+  return originalStatus === "resolved" && updatedStatus !== "resolved"
+    || originalStatus === "progressing" && updatedStatus === "open";
 }
 
 export function mergeCharacterMatrixMarkdown(original: string, updated: string): string {

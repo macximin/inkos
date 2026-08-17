@@ -78,7 +78,7 @@ export function formatBookCreateCreating(
 ): string {
   return localize(language, {
     zh: `创建书籍 "${title}"（${genre} / ${platform}）...`,
-    ko: `책 "${title}" 생성 중 (${genre} / ${platform})...`,
+    ko: `작품 "${title}" 생성 중 (${genre} / ${platform})...`,
     en: `Creating book "${title}" (${genre} / ${platform})...`,
   });
 }
@@ -86,7 +86,7 @@ export function formatBookCreateCreating(
 export function formatBookCreateCreated(language: CliLanguage, bookId: string): string {
   return localize(language, {
     zh: `已创建书籍：${bookId}`,
-    ko: `책이 생성되었습니다: ${bookId}`,
+    ko: `작품이 생성되었습니다: ${bookId}`,
     en: `Book created: ${bookId}`,
   });
 }
@@ -102,7 +102,7 @@ export function formatBookCreateLocation(language: CliLanguage, bookId: string):
 export function formatBookCreateFoundationReady(language: CliLanguage): string {
   return localize(language, {
     zh: "  故事圣经、大纲和书籍规则已生成。",
-    ko: "  스토리 바이블, 개요, 책 규칙이 생성되었습니다.",
+    ko: "  이야기 기반, 개요, 작품 규칙이 생성되었습니다.",
     en: "  Story bible, outline, book rules generated.",
   });
 }
@@ -123,7 +123,7 @@ export function formatWriteNextProgress(
 ): string {
   return localize(language, {
     zh: `[${current}/${total}] 为「${bookId}」撰写章节...`,
-    ko: `[${current}/${total}] "${bookId}" 챕터 작성 중...`,
+    ko: `[${current}/${total}] "${bookId}" 회차 작성 중...`,
     en: `[${current}/${total}] Writing chapter for "${bookId}"...`,
   });
 }
@@ -137,7 +137,7 @@ export function formatWriteNextResultLines(
   const lines = [
     localize(language, {
       zh: `  第${result.chapterNumber}章：${result.title}`,
-      ko: `  챕터 ${result.chapterNumber}: ${result.title}`,
+      ko: `  ${result.chapterNumber}화: ${result.title}`,
       en: `  Chapter ${result.chapterNumber}: ${result.title}`,
     }),
     localize(language, {
@@ -196,7 +196,7 @@ export function formatAutoWriteStart(
 ): string {
   return localize(language, {
     zh: `自动写作「${bookId}」：从第${startChapter}章连续写到第${targetChapter}章...`,
-    ko: `"${bookId}" 자동 작성: 챕터 ${startChapter}부터 ${targetChapter}까지 연속 작성 중...`,
+    ko: `"${bookId}" 자동 작성: ${startChapter}화부터 ${targetChapter}화까지 연속 작성 중...`,
     en: `Auto-writing "${bookId}": chapter ${startChapter} through chapter ${targetChapter}...`,
   });
 }
@@ -253,14 +253,14 @@ export function formatNotifyBatchWriteBody(
   const lines = [
     localize(language, {
       zh: `本次完成 ${chapters.length} 章（第${first.chapterNumber}章到第${last.chapterNumber}章）`,
-      ko: `이번에 ${chapters.length}개 챕터 작성 완료 (${first.chapterNumber}화~${last.chapterNumber}화)`,
+      ko: `이번에 ${chapters.length}개 회차 작성 완료 (${first.chapterNumber}화~${last.chapterNumber}화)`,
       en: `${chapters.length} chapter(s) written (chapter ${first.chapterNumber} to ${last.chapterNumber})`,
     }),
     ...chapters.map((ch) => {
       const lengthLabel = formatLengthCount(ch.wordCount, lengthMode(language));
       return localize(language, {
         zh: `第${ch.chapterNumber}章 ${ch.title} | ${lengthLabel} | ${ch.auditPassed ? "审计通过" : "需复核"}`,
-        ko: `챕터 ${ch.chapterNumber} ${ch.title} | ${lengthLabel} | ${ch.auditPassed ? "검수 통과" : "검토 필요"}`,
+        ko: `${ch.chapterNumber}화 ${ch.title} | ${lengthLabel} | ${ch.auditPassed ? "검수 통과" : "검토 필요"}`,
         en: `Chapter ${ch.chapterNumber} ${ch.title} | ${lengthLabel} | ${ch.auditPassed ? "audit passed" : "needs review"}`,
       });
     }),
@@ -279,7 +279,7 @@ export function formatNotifyAuditBody(
 ): string {
   const head = localize(language, {
     zh: `第${result.chapterNumber}章审计${result.passed ? "通过" : "未通过"}（${result.issueCount} 个问题）`,
-    ko: `챕터 ${result.chapterNumber} 검수 ${result.passed ? "통과" : "실패"} (${result.issueCount}개 문제)`,
+    ko: `${result.chapterNumber}화 검수 ${result.passed ? "통과" : "실패"} (${result.issueCount}개 문제)`,
     en: `Chapter ${result.chapterNumber} audit ${result.passed ? "passed" : "failed"} (${result.issueCount} issue(s))`,
   });
   return result.summary ? `${head}\n${result.summary}` : head;
@@ -298,14 +298,14 @@ export function formatNotifyReviseBody(
   if (!result.applied) {
     return localize(language, {
       zh: `第${result.chapterNumber}章保留原稿${result.skippedReason ? `：${result.skippedReason}` : ""}`,
-      ko: `챕터 ${result.chapterNumber} 원고 유지${result.skippedReason ? `: ${result.skippedReason}` : ""}`,
+      ko: `${result.chapterNumber}화 원고 유지${result.skippedReason ? `: ${result.skippedReason}` : ""}`,
       en: `Chapter ${result.chapterNumber} kept original draft${result.skippedReason ? `: ${result.skippedReason}` : ""}`,
     });
   }
   const lengthLabel = formatLengthCount(result.wordCount, lengthMode(language));
   return localize(language, {
     zh: `第${result.chapterNumber}章已修订 | ${lengthLabel} | 修复 ${result.fixedCount} 个问题`,
-    ko: `챕터 ${result.chapterNumber} 수정 완료 | ${lengthLabel} | ${result.fixedCount}개 문제 수정`,
+    ko: `${result.chapterNumber}화 수정 완료 | ${lengthLabel} | ${result.fixedCount}개 문제 수정`,
     en: `Chapter ${result.chapterNumber} revised | ${lengthLabel} | ${result.fixedCount} issue(s) fixed`,
   });
 }
@@ -326,7 +326,7 @@ export function formatImportChaptersDiscovery(
 ): string {
   return localize(language, {
     zh: `发现 ${chapterCount} 章，准备导入到「${bookId}」。`,
-    ko: `${chapterCount}개 챕터를 찾았습니다. "${bookId}"로 가져올 준비 중입니다.`,
+    ko: `${chapterCount}개 회차를 찾았습니다. "${bookId}"로 가져올 준비 중입니다.`,
     en: `Found ${chapterCount} chapters to import into "${bookId}".`,
   });
 }
@@ -342,7 +342,7 @@ export function formatImportNoFiles(language: CliLanguage, path: string): string
 export function formatImportNoChapters(language: CliLanguage, path: string): string {
   return localize(language, {
     zh: `在 ${path} 中找不到章节。默认模式匹配“第X章”和“Chapter X”。可使用 --split 提供自定义正则。`,
-    ko: `${path}에서 챕터를 찾지 못했습니다. 기본 패턴은 "第X章"과 "Chapter X"를 인식합니다. --split으로 사용자 지정 정규식을 제공할 수 있습니다.`,
+    ko: `${path}에서 회차를 찾지 못했습니다. 기본 패턴은 "第X章"과 "Chapter X"를 인식합니다. --split으로 사용자 지정 정규식을 제공할 수 있습니다.`,
     en: `No chapters found in ${path}. Default pattern matches "第X章" and "Chapter X". Use --split to provide a custom regex.`,
   });
 }
@@ -371,7 +371,7 @@ export function formatImportChaptersComplete(
     }),
     localize(language, {
       zh: `  已导入章节：${result.importedCount}`,
-      ko: `  가져온 챕터: ${result.importedCount}`,
+      ko: `  가져온 회차: ${result.importedCount}`,
       en: `  Chapters imported: ${result.importedCount}`,
     }),
     localize(language, {
@@ -381,7 +381,7 @@ export function formatImportChaptersComplete(
     }),
     localize(language, {
       zh: `  下一章编号：${result.nextChapter}`,
-      ko: `  다음 챕터 번호: ${result.nextChapter}`,
+      ko: `  다음 회차 번호: ${result.nextChapter}`,
       en: `  Next chapter number: ${result.nextChapter}`,
     }),
     "",
@@ -501,7 +501,7 @@ export function formatFanficSourceTooShortError(length: number, language?: CliLa
 }
 
 export function formatFanficCanonMissingError(language?: CliLanguage): string {
-  if (language === "ko") return "이 책에 동인 정본이 없습니다. `inkos fanfic init`으로 생성하세요.";
+  if (language === "ko") return "이 작품에 팬픽 정본이 없습니다. `inkos fanfic init`으로 생성하세요.";
   return "No fanfic canon found for this book. Create one with `inkos fanfic init`（该书没有同人正典文件，用 inkos fanfic init 创建同人书）";
 }
 
@@ -513,7 +513,7 @@ export function formatFanficSourceDirEmptyError(sourcePath: string, language?: C
 export function formatChapterSyncNoChanges(language: CliLanguage, checked: number): string {
   return localize(language, {
     zh: `已核对 ${checked} 章，index.json 字数无需修正。`,
-    ko: `${checked}개 챕터를 확인했습니다. index.json 분량은 수정할 필요가 없습니다.`,
+    ko: `${checked}개 회차를 확인했습니다. index.json 분량은 수정할 필요가 없습니다.`,
     en: `Checked ${checked} chapter(s); index.json word counts already match the files.`,
   });
 }
@@ -527,7 +527,7 @@ export function formatChapterSyncChange(
   const to = formatLengthCount(change.wordCount, countingMode);
   return localize(language, {
     zh: `  第${change.number}章 ${change.title}：${from} → ${to}`,
-    ko: `  챕터 ${change.number} ${change.title}: ${from} → ${to}`,
+    ko: `  ${change.number}화 ${change.title}: ${from} → ${to}`,
     en: `  Chapter ${change.number} ${change.title}: ${from} → ${to}`,
   });
 }
@@ -535,7 +535,7 @@ export function formatChapterSyncChange(
 export function formatChapterSyncSummary(language: CliLanguage, changed: number, checked: number): string {
   return localize(language, {
     zh: `已核对 ${checked} 章，修正了 ${changed} 章的 index.json 字数。`,
-    ko: `${checked}개 챕터를 확인했고 ${changed}개 챕터의 index.json 분량을 수정했습니다.`,
+    ko: `${checked}개 회차를 확인했고 ${changed}개 회차의 index.json 분량을 수정했습니다.`,
     en: `Checked ${checked} chapter(s); corrected ${changed} index.json word count(s).`,
   });
 }
@@ -543,7 +543,7 @@ export function formatChapterSyncSummary(language: CliLanguage, changed: number,
 export function formatChapterSyncMissingFiles(language: CliLanguage, numbers: ReadonlyArray<number>): string {
   return localize(language, {
     zh: `警告：index.json 中的第 ${numbers.join("、")} 章找不到对应的章节文件，已跳过。`,
-    ko: `경고: index.json의 챕터 ${numbers.join(", ")}에 해당하는 파일을 찾지 못해 건너뛰었습니다.`,
+    ko: `경고: index.json의 ${numbers.join(", ")}화에 해당하는 파일을 찾지 못해 건너뛰었습니다.`,
     en: `Warning: chapter(s) ${numbers.join(", ")} exist in index.json but have no chapter file on disk; skipped.`,
   });
 }
@@ -555,8 +555,8 @@ export function formatChapterDeleteConfirm(
   return localize(language, {
     zh: `将删除《${params.bookTitle}》(${params.bookId}) 的最新章：第${params.number}章 ${params.title}。`
       + `章节文件会移入 chapters/.trash/，索引和故事状态回滚到第${params.number - 1}章。确认删除？(y/N) `,
-    ko: `《${params.bookTitle}》(${params.bookId})의 최신 챕터 ${params.number} ${params.title}을(를) 삭제합니다.`
-      + ` 챕터 파일은 chapters/.trash/로 이동하고 색인과 스토리 상태는 ${params.number - 1}화로 되돌아갑니다. 삭제할까요? (y/N) `,
+    ko: `《${params.bookTitle}》(${params.bookId})의 최신 회차인 ${params.number}화 ${params.title}을(를) 삭제합니다.`
+      + ` 회차 파일은 chapters/.trash/로 이동하고 색인과 작품 상태는 ${params.number - 1}화로 되돌아갑니다. 삭제할까요? (y/N) `,
     en: `Delete the latest chapter of "${params.bookTitle}" (${params.bookId}): chapter ${params.number} ${params.title}? `
       + `The chapter file moves to chapters/.trash/ and the index and story state roll back to chapter ${params.number - 1}. (y/N) `,
   });
@@ -576,10 +576,10 @@ export function formatChapterDeleteDone(
 ): string {
   const trashNote = params.trashedFiles.length > 0
     ? params.trashedFiles.join(", ")
-    : localize(language, { zh: "（章节文件已不存在，未移动）", ko: "(챕터 파일이 이미 없어 이동하지 않음)", en: "(chapter file was already gone; nothing moved)" });
+    : localize(language, { zh: "（章节文件已不存在，未移动）", ko: "(회차 파일이 이미 없어 이동하지 않음)", en: "(chapter file was already gone; nothing moved)" });
   return localize(language, {
     zh: `已删除第${params.number}章 ${params.title}：章节文件保留在 ${trashNote}，索引和故事状态已回滚到第${params.rolledBackTo}章。`,
-    ko: `챕터 ${params.number} ${params.title}을(를) 삭제했습니다. 파일은 ${trashNote}에 보관되며 색인과 스토리 상태는 ${params.rolledBackTo}화로 되돌아갔습니다.`,
+    ko: `${params.number}화 ${params.title}을(를) 삭제했습니다. 파일은 ${trashNote}에 보관되며 색인과 작품 상태는 ${params.rolledBackTo}화로 되돌아갔습니다.`,
     en: `Deleted chapter ${params.number} ${params.title}: chapter file kept at ${trashNote}; index and story state rolled back to chapter ${params.rolledBackTo}.`,
   });
 }
@@ -612,7 +612,7 @@ export function formatBookRestoreDone(
       })
     : localize(language, {
         zh: "书目录当时不存在，未创建恢复前备份。",
-        ko: "당시 책 디렉터리가 없어 복원 전 백업을 만들지 않았습니다.",
+        ko: "당시 작품 디렉터리가 없어 복원 전 백업을 만들지 않았습니다.",
         en: "The book directory did not exist, so no pre-restore backup was created.",
       });
   return localize(language, {

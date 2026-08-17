@@ -163,6 +163,44 @@ describe("StateValidatorAgent", () => {
     expect(messages[1]?.content).toContain("第1章：发现第五条规则的漏洞");
   });
 
+  it("treats dependencies on resolved upstream hooks as satisfied causal history", async () => {
+    const agent = new StateValidatorAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 8192,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+
+    const chatSpy = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({ content: "PASS", usage: ZERO_USAGE });
+
+    await agent.validate(
+      "H001의 주문 취소를 해결하고 H002의 자동 퇴거 처리를 확인했다.",
+      1,
+      "old state",
+      "new state",
+      "| H001 | open |\n| H002 | open | H001 |",
+      "| H001 | resolved |\n| H002 | progressing | H001 |",
+      "ko",
+    );
+
+    const messages = chatSpy.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("If every referenced upstream hook is resolved");
+    expect(messages[0]?.content).toContain("dependency is satisfied");
+    expect(messages[0]?.content).toContain("Preserve satisfied dependency IDs as causal history");
+  });
+
   it("does not silently truncate chapter or authority context before validation", async () => {
     const agent = new StateValidatorAgent({
       client: {

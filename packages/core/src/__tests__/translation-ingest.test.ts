@@ -119,6 +119,8 @@ describe("translation ingestion", () => {
     expect(created.manifest.source.kind).toBe("text");
     expect(created.manifest.targetLanguage).toBe("ko");
     expect(created.manifest.chapters).toHaveLength(1);
+    await expect(readFile(join(root, created.projectDir, "review-report.md"), "utf-8"))
+      .resolves.toBe("# 번역 검수\n\n대기 중입니다.\n");
 
     const chapter = await readJson<{ segments: Array<{ source: string }> }>(
       join(root, created.manifest.chapters[0]!.sourcePath),

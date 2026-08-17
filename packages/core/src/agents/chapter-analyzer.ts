@@ -562,6 +562,7 @@ ${overrides}\n`;
     const chapterPatterns = [
       new RegExp(`^#+\\s*Chapter\\s*${chapterNumber}\\b`, "i"),
       new RegExp(`^#+\\s*第\\s*${chapterNumber}\\s*章`),
+      new RegExp(`^#+\\s*(?:제\\s*)?${chapterNumber}\\s*화`),
     ];
 
     const heading = lines.find((line) => chapterPatterns.some((pattern) => pattern.test(line)));
@@ -589,7 +590,12 @@ ${overrides}\n`;
       return this.missingFilePlaceholder(language);
     }
 
-    const header = language !== "zh"
+    const header = language === "ko"
+      ? [
+          "| 회차 | 제목 | 등장인물 | 주요 사건 | 상태 변화 | 복선 변화 | 정서 | 회차 유형 |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+      : language === "en"
       ? [
           "| Chapter | Title | Characters | Key Events | State Changes | Hook Activity | Mood | Chapter Type |",
           "| --- | --- | --- | --- | --- | --- | --- | --- |",

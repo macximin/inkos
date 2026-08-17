@@ -268,7 +268,7 @@ function buildKoreanSettlerOutputFormat(gp: GenreProfile): string {
     "characters": "인물1, 인물2",
     "events": "핵심 사건 한 문장 요약",
     "stateChanges": "상태 변화 한 문장 요약",
-    "hookActivity": "mentor-oath advanced",
+    "hookActivity": "mentor-oath 진전",
     "mood": "긴장",
     "chapterType": "${chapterTypeExample}"
   },

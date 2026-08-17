@@ -80,8 +80,8 @@ export class StateManager {
     const storyDir = join(bookDir, "story");
     const runtimeDir = join(storyDir, "runtime");
     const outlineDir = join(storyDir, "outline");
-    const rolesMajorDir = join(storyDir, "roles", "主要角色");
-    const rolesMinorDir = join(storyDir, "roles", "次要角色");
+    const rolesMajorDir = join(storyDir, "roles", language === "ko" ? "major" : "主要角色");
+    const rolesMinorDir = join(storyDir, "roles", language === "ko" ? "minor" : "次要角色");
 
     await mkdir(storyDir, { recursive: true });
     await mkdir(runtimeDir, { recursive: true });

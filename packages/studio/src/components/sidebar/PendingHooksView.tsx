@@ -17,6 +17,16 @@ function hookTypeColor(type: string): string {
   return HOOK_TYPE_COLOR[type] ?? "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400";
 }
 
+function hookTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    "主线伏笔": tr("主线伏笔", "Main-story hook", "메인 복선"),
+    "角色前置": tr("角色前置", "Character setup", "인물 사전 설정"),
+    "情感线伏笔": tr("情感线伏笔", "Emotional hook", "감정선 복선"),
+    "次要伏笔": tr("次要伏笔", "Minor hook", "보조 복선"),
+  };
+  return labels[type] ?? type;
+}
+
 // Renders pending_hooks.md (a 13-column tracking table) as browsable cards: the
 // actual foreshadow text up front, with type / core / payoff as small tags.
 // Bookkeeping columns (half-life, dependencies, …) are intentionally dropped.
@@ -25,7 +35,7 @@ export function PendingHooksView({ content }: PendingHooksViewProps) {
   if (hooks.length === 0) {
     return (
       <p className="text-[14px] leading-6 text-muted-foreground/60 italic">
-        {tr("还没有埋下伏笔。", "No foreshadowing planted yet.")}
+        {tr("还没有埋下伏笔。", "No foreshadowing planted yet.", "아직 심어 둔 복선이 없습니다.")}
       </p>
     );
   }
@@ -36,26 +46,26 @@ export function PendingHooksView({ content }: PendingHooksViewProps) {
           <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
             {hook.promoted === false && (
               <span className="text-[12px] px-1.5 py-0.5 rounded-full bg-zinc-500/10 text-muted-foreground">
-                {tr("种子", "Seed")}
+                {tr("种子", "Seed", "씨앗")}
               </span>
             )}
             {hook.promoted === true && (
               <span className="text-[12px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                {tr("活跃", "Active")}
+                {tr("活跃", "Active", "활성")}
               </span>
             )}
             {hook.type && (
               <span className={cn("text-[12px] px-1.5 py-0.5 rounded-full", hookTypeColor(hook.type))}>
-                {hook.type}
+                {hookTypeLabel(hook.type)}
               </span>
             )}
             {hook.core && (
               <span className="text-[12px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
-                {tr("核心", "Core")}
+                {tr("核心", "Core", "핵심")}
               </span>
             )}
             {hook.payoff && (
-              <span className="text-[12px] text-muted-foreground/50 ml-auto">{tr("回收", "Payoff")} · {hook.payoff}</span>
+              <span className="text-[12px] text-muted-foreground/50 ml-auto">{tr("回收", "Payoff", "회수")} · {hook.payoff}</span>
             )}
           </div>
           <p className="text-[15px] text-foreground leading-7 font-['SimSun','Songti_SC','STSong',serif]">

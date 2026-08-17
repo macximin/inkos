@@ -61,6 +61,7 @@ export async function loadPersistedPlan(
   }
 
   if (raw.trimStart().startsWith("---")) return null;
+  const korean = /^#\s+\d+화\s+기획\s*$/m.test(raw) || raw.includes("## 메타데이터");
 
   // Reconstruct memo via the same strict parser planner uses. This guarantees
   // the 7 required section headings are still present — any drift triggers
@@ -69,7 +70,11 @@ export async function loadPersistedPlan(
   try {
     const memoBlock = extractMarkedBlock(raw, "MEMO");
     if (!memoBlock) return null;
-    memo = parseMemo(memoBlock, chapterNumber, readBooleanField(raw, "Golden Opening") ?? false);
+    memo = parseMemo(
+      memoBlock,
+      chapterNumber,
+      readBooleanField(raw, korean ? ["골든 오프닝", "Golden Opening"] : "Golden Opening") ?? false,
+    );
   } catch (error) {
     if (error instanceof PlannerParseError) return null;
     throw error;
@@ -79,18 +84,18 @@ export async function loadPersistedPlan(
   try {
     intent = ChapterIntentSchema.parse({
       chapter: chapterNumber,
-      goal: readField(raw, "Intent Goal") ?? memo.goal,
-      outlineNode: readOptionalField(raw, "Outline Node"),
-      arcContext: readOptionalField(raw, "Arc Context"),
-      mustKeep: readListSection(raw, "Must Keep"),
-      mustAvoid: readListSection(raw, "Must Avoid"),
-      styleEmphasis: readListSection(raw, "Style Emphasis"),
+      goal: readField(raw, korean ? ["의도 목표", "Intent Goal"] : "Intent Goal") ?? memo.goal,
+      outlineNode: readOptionalField(raw, korean ? ["개요 노드", "Outline Node"] : "Outline Node"),
+      arcContext: readOptionalField(raw, korean ? ["이야기 흐름 맥락", "Arc Context"] : "Arc Context"),
+      mustKeep: readListSection(raw, korean ? ["반드시 유지", "Must Keep"] : "Must Keep"),
+      mustAvoid: readListSection(raw, korean ? ["반드시 회피", "Must Avoid"] : "Must Avoid"),
+      styleEmphasis: readListSection(raw, korean ? ["문체 강조점", "Style Emphasis"] : "Style Emphasis"),
     });
   } catch {
     return null;
   }
 
-  const plannerInputs = readListSection(raw, "Planner Inputs");
+  const plannerInputs = readListSection(raw, korean ? ["기획 입력", "Planner Inputs"] : "Planner Inputs");
   const arcProvenanceBlock = extractMarkedBlock(raw, "ARC_PROVENANCE");
   let arcProvenance: ChapterArcProvenance | undefined;
   if (arcProvenanceBlock) {
@@ -129,12 +134,14 @@ function renderPersistedPlanMarkdown(
   plannerInputs: ReadonlyArray<string>,
   arcProvenance?: ChapterArcProvenance,
 ): string {
+  const language = inferMemoLanguage(memo.body);
+  const korean = language === "ko";
   return [
-    `# Chapter ${memo.chapter} Plan`,
+    korean ? `# ${memo.chapter}화 기획` : `# Chapter ${memo.chapter} Plan`,
     "",
-    "## Metadata",
-    `Chapter: ${memo.chapter}`,
-    `Golden Opening: ${memo.isGoldenOpening ? "yes" : "no"}`,
+    korean ? "## 메타데이터" : "## Metadata",
+    korean ? `회차: ${memo.chapter}` : `Chapter: ${memo.chapter}`,
+    korean ? `골든 오프닝: ${memo.isGoldenOpening ? "예" : "아니요"}` : `Golden Opening: ${memo.isGoldenOpening ? "yes" : "no"}`,
     "",
     ...(arcProvenance
       ? [
@@ -148,32 +155,28 @@ function renderPersistedPlanMarkdown(
     renderMemoMarkdown(memo),
     "<!-- INKOS_PLAN_MEMO_END -->",
     "",
-    "## Intent",
-    `Intent Goal: ${intent.goal}`,
-    `Outline Node: ${intent.outlineNode ?? "(none)"}`,
-    `Arc Context: ${intent.arcContext ?? "(none)"}`,
+    korean ? "## 집필 의도" : "## Intent",
+    korean ? `의도 목표: ${intent.goal}` : `Intent Goal: ${intent.goal}`,
+    korean ? `개요 노드: ${intent.outlineNode ?? "(없음)"}` : `Outline Node: ${intent.outlineNode ?? "(none)"}`,
+    korean ? `이야기 흐름 맥락: ${intent.arcContext ?? "(없음)"}` : `Arc Context: ${intent.arcContext ?? "(none)"}`,
     "",
-    "### Must Keep",
-    renderList(intent.mustKeep),
+    korean ? "### 반드시 유지" : "### Must Keep",
+    renderList(intent.mustKeep, korean ? "없음" : "none"),
     "",
-    "### Must Avoid",
-    renderList(intent.mustAvoid),
+    korean ? "### 반드시 회피" : "### Must Avoid",
+    renderList(intent.mustAvoid, korean ? "없음" : "none"),
     "",
-    "### Style Emphasis",
-    renderList(intent.styleEmphasis),
+    korean ? "### 문체 강조점" : "### Style Emphasis",
+    renderList(intent.styleEmphasis, korean ? "없음" : "none"),
     "",
-    "## Planner Inputs",
-    renderList(plannerInputs),
+    korean ? "## 기획 입력" : "## Planner Inputs",
+    renderList(plannerInputs, korean ? "없음" : "none"),
     "",
   ].join("\n");
 }
 
 function renderMemoMarkdown(memo: PlanChapterOutput["memo"]): string {
-  const language = memo.body.includes("## 현재 작업")
-    ? "ko"
-    : memo.body.includes("## Current task")
-      ? "en"
-      : "zh";
+  const language = inferMemoLanguage(memo.body);
   const heading = language === "ko"
     ? `# ${memo.chapter}화 메모`
     : language === "en"
@@ -202,8 +205,16 @@ function renderMemoMarkdown(memo: PlanChapterOutput["memo"]): string {
   ].join("\n");
 }
 
-function renderList(items: ReadonlyArray<string>): string {
-  return items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : "- none";
+function inferMemoLanguage(body: string): "zh" | "ko" | "en" {
+  return body.includes("## 현재 작업")
+    ? "ko"
+    : body.includes("## Current task")
+      ? "en"
+      : "zh";
+}
+
+function renderList(items: ReadonlyArray<string>, empty = "none"): string {
+  return items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : `- ${empty}`;
 }
 
 function extractMarkedBlock(markdown: string, name: string): string | undefined {
@@ -211,34 +222,38 @@ function extractMarkedBlock(markdown: string, name: string): string | undefined 
   return match?.[1]?.trim();
 }
 
-function readField(markdown: string, label: string): string | undefined {
-  const match = markdown.match(new RegExp(`^${escapeRegExp(label)}:\\s*(.*)$`, "m"));
-  const value = match?.[1]?.trim();
-  return value && value !== "(none)" ? value : undefined;
+function readField(markdown: string, label: string | ReadonlyArray<string>): string | undefined {
+  for (const candidate of Array.isArray(label) ? label : [label]) {
+    const match = markdown.match(new RegExp(`^${escapeRegExp(candidate)}:\\s*(.*)$`, "m"));
+    const value = match?.[1]?.trim();
+    if (value && value !== "(none)" && value !== "(없음)") return value;
+  }
+  return undefined;
 }
 
-function readOptionalField(markdown: string, label: string): string | undefined {
+function readOptionalField(markdown: string, label: string | ReadonlyArray<string>): string | undefined {
   const value = readField(markdown, label);
   return value && isMeaningfulLegacyValue(value) ? value : undefined;
 }
 
-function readBooleanField(markdown: string, label: string): boolean | undefined {
+function readBooleanField(markdown: string, label: string | ReadonlyArray<string>): boolean | undefined {
   const value = readField(markdown, label);
   if (!value) return undefined;
-  if (/^(yes|true|是)$/i.test(value)) return true;
-  if (/^(no|false|否)$/i.test(value)) return false;
+  if (/^(yes|true|是|예)$/i.test(value)) return true;
+  if (/^(no|false|否|아니요)$/i.test(value)) return false;
   return undefined;
 }
 
-function readListSection(markdown: string, heading: string): string[] {
-  const section = markdown.match(new RegExp(`^#{2,3}\\s+${escapeRegExp(heading)}\\s*\\n([\\s\\S]*?)(?=\\n#{2,3}\\s+|(?![\\s\\S]))`, "m"))?.[1]?.trim();
+function readListSection(markdown: string, heading: string | ReadonlyArray<string>): string[] {
+  const alternatives = (Array.isArray(heading) ? heading : [heading]).map(escapeRegExp).join("|");
+  const section = markdown.match(new RegExp(`^#{2,3}\\s+(?:${alternatives})\\s*\\n([\\s\\S]*?)(?=\\n#{2,3}\\s+|(?![\\s\\S]))`, "m"))?.[1]?.trim();
   if (!section) return [];
   return section
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.startsWith("-"))
     .map((line) => line.replace(/^-\s*/, "").trim())
-    .filter((line) => line.length > 0 && line.toLowerCase() !== "none");
+    .filter((line) => line.length > 0 && !["none", "없음", "(없음)"].includes(line.toLowerCase()));
 }
 
 async function loadLegacyIntentPlan(

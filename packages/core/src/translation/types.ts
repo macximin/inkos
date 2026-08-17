@@ -19,6 +19,7 @@ export interface TranslationSourceManifest {
 export interface TranslationChapterManifest {
   readonly number: number;
   readonly title: string;
+  readonly translatedTitle?: string;
   readonly sourcePath: string;
   readonly translatedPath: string;
   readonly segmentCount: number;
@@ -47,6 +48,7 @@ export interface TranslationSegment {
 export interface TranslationChapterFile {
   readonly number: number;
   readonly title: string;
+  readonly translatedTitle?: string;
   readonly sourceLanguage: string;
   readonly targetLanguage: string;
   readonly segments: ReadonlyArray<TranslationSegment>;
@@ -65,6 +67,12 @@ export interface TranslationGlossaryTerm {
 }
 
 export interface TranslationModelPort {
+  readonly translateTitle?: (input: {
+    readonly sourceLanguage: string;
+    readonly targetLanguage: string;
+    readonly title: string;
+    readonly glossary: ReadonlyArray<TranslationGlossaryTerm>;
+  }) => Promise<{ readonly title: string }>;
   readonly translateSegments: (input: {
     readonly sourceLanguage: string;
     readonly targetLanguage: string;
@@ -83,6 +91,7 @@ export interface TranslationModelPort {
     readonly sourceLanguage: string;
     readonly targetLanguage: string;
     readonly chapterTitle: string;
+    readonly translatedTitle?: string;
     readonly segments: ReadonlyArray<TranslationSegment>;
     readonly glossary: ReadonlyArray<TranslationGlossaryTerm>;
   }) => Promise<{
@@ -90,12 +99,31 @@ export interface TranslationModelPort {
     readonly summary: string;
     readonly issues: ReadonlyArray<string>;
   }>;
+  readonly reviseChapter?: (input: {
+    readonly sourceLanguage: string;
+    readonly targetLanguage: string;
+    readonly chapterTitle: string;
+    readonly translatedTitle?: string;
+    readonly segments: ReadonlyArray<TranslationSegment>;
+    readonly glossary: ReadonlyArray<TranslationGlossaryTerm>;
+    readonly issues: ReadonlyArray<string>;
+  }) => Promise<{
+    readonly translatedTitle?: string;
+    readonly segments: ReadonlyArray<{
+      readonly index: number;
+      readonly target: string;
+      readonly notes?: string;
+    }>;
+    readonly glossary?: ReadonlyArray<TranslationGlossaryTerm>;
+  }>;
 }
 
 export interface RunTranslationProjectResult {
   readonly projectId: string;
   readonly translatedSegments: number;
   readonly reviewedChapters: number;
+  readonly reviewAttempts: number;
+  readonly revisedChapters: number;
   readonly reportPath: string;
 }
 

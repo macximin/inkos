@@ -7,6 +7,27 @@ export function createLLMTranslationModel(input: {
   readonly maxTokens?: number;
 }): TranslationModelPort {
   return {
+    async translateTitle(request) {
+      const response = await chatCompletion(input.client, input.model, [
+        {
+          role: "system",
+          content: [
+            "You are InkOS Translation Agent.",
+            "Translate the chapter title faithfully and naturally into the requested target language.",
+            "Preserve names and terminology. Do not add explanations.",
+            "Return JSON only: {\"title\":\"...\"}.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify(request, null, 2),
+        },
+      ], { temperature: 0.1, maxTokens: 512 });
+      const parsed = parseJsonObject(response.content);
+      const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+      if (!title) throw new Error("Translation model did not return a translated chapter title.");
+      return { title };
+    },
     async translateSegments(request) {
       const response = await chatCompletion(input.client, input.model, [
         {
@@ -47,6 +68,7 @@ export function createLLMTranslationModel(input: {
             "You are InkOS Translation Review Agent.",
             "Check fidelity, omissions, terminology, pronouns, names, and target-language readability.",
             "Return JSON only: {\"passed\":true,\"summary\":\"...\",\"issues\":[\"...\"]}.",
+            "Set passed=true only when issues is empty. If any correction or improvement remains, set passed=false and list it in issues.",
           ].join("\n"),
         },
         {
@@ -55,6 +77,7 @@ export function createLLMTranslationModel(input: {
             sourceLanguage: request.sourceLanguage,
             targetLanguage: request.targetLanguage,
             chapterTitle: request.chapterTitle,
+            translatedTitle: request.translatedTitle,
             glossary: request.glossary,
             segments: request.segments.map((segment) => ({
               index: segment.index,
@@ -65,10 +88,57 @@ export function createLLMTranslationModel(input: {
         },
       ], { temperature: 0.1, maxTokens: 4096 });
       const parsed = parseJsonObject(response.content);
+      const issues = Array.isArray(parsed.issues)
+        ? parsed.issues.filter((issue): issue is string => typeof issue === "string" && issue.trim().length > 0)
+        : [];
       return {
-        passed: parsed.passed === true,
+        passed: parsed.passed === true && issues.length === 0,
         summary: typeof parsed.summary === "string" ? parsed.summary : "Translation review completed.",
-        issues: Array.isArray(parsed.issues) ? parsed.issues.filter((issue): issue is string => typeof issue === "string") : [],
+        issues,
+      };
+    },
+    async reviseChapter(request) {
+      const response = await chatCompletion(input.client, input.model, [
+        {
+          role: "system",
+          content: [
+            "You are InkOS Translation Revision Agent.",
+            "Correct every review issue while preserving all source meaning, paragraph order, names, numbers, tone, and terminology.",
+            "Return every segment exactly once, including unchanged segments. Do not summarize or add commentary outside JSON.",
+            "Return JSON only: {\"translatedTitle\":\"...\",\"segments\":[{\"index\":1,\"target\":\"...\",\"notes\":\"optional\"}],\"glossary\":[{\"source\":\"...\",\"target\":\"...\",\"note\":\"optional\"}]}",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            sourceLanguage: request.sourceLanguage,
+            targetLanguage: request.targetLanguage,
+            chapterTitle: request.chapterTitle,
+            translatedTitle: request.translatedTitle,
+            glossary: request.glossary,
+            reviewIssues: request.issues,
+            segments: request.segments.map((segment) => ({
+              index: segment.index,
+              source: segment.source,
+              target: segment.target ?? "",
+            })),
+          }, null, 2),
+        },
+      ], { temperature: 0.1, maxTokens: input.maxTokens ?? 8192 });
+      const parsed = parseJsonObject(response.content);
+      const segments = parseTranslatedSegments(parsed.segments, request.segments);
+      const returnedIndexes = new Set(segments.map((segment) => segment.index));
+      const missingIndexes = request.segments
+        .map((segment) => segment.index)
+        .filter((index) => !returnedIndexes.has(index));
+      if (missingIndexes.length > 0) {
+        throw new Error(`Translation revision omitted segments: ${missingIndexes.join(", ")}`);
+      }
+      const translatedTitle = typeof parsed.translatedTitle === "string" ? parsed.translatedTitle.trim() : "";
+      return {
+        ...(translatedTitle ? { translatedTitle } : {}),
+        segments,
+        glossary: parseGlossary(parsed.glossary),
       };
     },
   };

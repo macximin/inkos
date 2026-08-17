@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ArchitectAgent } from "../agents/architect.js";
 import { buildWriterSystemPrompt } from "../agents/writer-prompts.js";
 import { buildObserverSystemPrompt } from "../agents/observer-prompts.js";
 import { getPlannerMemoSystemPrompt } from "../agents/planner-prompts.js";
@@ -18,6 +22,9 @@ import { resolveEpubLanguage } from "../interaction/export-artifact.js";
 import { buildStateDegradedIssues, buildStateValidationFeedback } from "../pipeline/chapter-state-recovery.js";
 import { renderChapterHeading } from "../pipeline/runner.js";
 import { parseCurrentStateFacts } from "../utils/story-markdown.js";
+import { renderHookSnapshot } from "../utils/story-markdown.js";
+import { parseBookRules } from "../models/book-rules.js";
+import { normalizeHookPayoffTiming, normalizeStoredHookStatus } from "../utils/hook-lifecycle.js";
 
 describe("native Korean writing contracts", () => {
   it("accepts ko across project, book, interaction, and runtime schemas", () => {
@@ -68,6 +75,43 @@ describe("native Korean writing contracts", () => {
     expect(rendered).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
+  it("writes Korean foundation files without Chinese compatibility labels or role paths", async () => {
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-ko-foundation-"));
+    try {
+      const architect = new ArchitectAgent({} as never);
+      await architect.writeFoundationFiles(bookDir, {
+        storyBible: "",
+        volumeOutline: "",
+        storyFrame: "# 이야기 틀\n\n한서진은 동네 서점을 지킨다.",
+        volumeMap: "# 장거리 지도\n\n1화에서 첫 단서를 발견한다.",
+        bookRules: "# 작품 규칙\n\n- 현실의 절차를 지킨다.",
+        currentState: "",
+        pendingHooks: "# 미회수 복선\n\n| 복선 | 상태 |\n| --- | --- |\n",
+        roles: [
+          { tier: "major", name: "한서진", content: "# 한서진\n\n폐업 직전의 서점주." },
+          { tier: "minor", name: "유민아", content: "# 유민아\n\n단골 독자." },
+        ],
+      }, false, "ko");
+
+      await expect(readdir(join(bookDir, "story", "roles")).then((entries) => entries.sort())).resolves.toEqual(["major", "minor"]);
+      const generated = await Promise.all([
+        "story_bible.md",
+        "character_matrix.md",
+        "current_state.md",
+        "emotional_arcs.md",
+      ].map((name) => readFile(join(bookDir, "story", name), "utf-8")));
+      const rendered = generated.join("\n");
+
+      expect(rendered).toContain("# 스토리 바이블");
+      expect(rendered).toContain("roles/major/한서진.md");
+      expect(rendered).toContain("# 현재 상태");
+      expect(rendered).toContain("# 감정선");
+      expect(rendered).not.toMatch(/[\u3400-\u9fff]/u);
+    } finally {
+      await rm(bookDir, { recursive: true, force: true });
+    }
+  });
+
   it("parses Korean current-state tables without treating headers as facts", () => {
     const facts = parseCurrentStateFacts(`
 # 현재 상태
@@ -82,6 +126,53 @@ describe("native Korean writing contracts", () => {
     expect(facts).toHaveLength(2);
     expect(facts.map((fact) => fact.predicate)).toEqual(["현재 위치", "현재 목표"]);
     expect(facts.every((fact) => fact.subject === "protagonist")).toBe(true);
+  });
+
+  it("parses Korean human-readable book rules", () => {
+    const parsed = parseBookRules(`
+## 주인공
+- 이름: 한서진
+- 성격 고정점: 무심한 다정함, 관찰력
+- 행동 제약: 타인의 선택을 대신하지 않는다, 예언을 협박에 쓰지 않는다
+
+## 장르 고정
+- 주 장르: 현대 판타지
+- 금지 요소: 상태창, 손쉬운 기억 복구
+
+## 서술 시점
+3인칭
+
+## 금지 사항
+- 대가를 취소하지 않는다.
+`);
+
+    expect(parsed?.rules.protagonist?.name).toBe("한서진");
+    expect(parsed?.rules.protagonist?.personalityLock).toEqual(["무심한 다정함", "관찰력"]);
+    expect(parsed?.rules.genreLock?.primary).toBe("현대 판타지");
+    expect(parsed?.rules.narrativePerson).toBe("third");
+    expect(parsed?.rules.prohibitions).toEqual(["대가를 취소하지 않는다."]);
+  });
+
+  it("renders the hook ledger with Korean reader-facing headers", () => {
+    const rendered = renderHookSnapshot([{
+      hookId: "H001",
+      startChapter: 0,
+      type: "미래 문장",
+      status: "deferred",
+      lastAdvancedChapter: 0,
+      expectedPayoff: "주문 취소를 막는다",
+      payoffTiming: "near-term",
+      notes: "초기 신호",
+    }], "ko");
+
+    expect(rendered).toContain("| hook_id | 시작 회차 | 유형 | 상태 |");
+    expect(rendered).toContain("근시일");
+    expect(rendered).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(normalizeHookPayoffTiming("근시일")).toBe("near-term");
+    expect(normalizeHookPayoffTiming("최종부")).toBe("endgame");
+    expect(normalizeStoredHookStatus("해결됨")).toBe("resolved");
+    expect(normalizeStoredHookStatus("보류됨")).toBe("deferred");
+    expect(normalizeStoredHookStatus("진행 중")).toBe("progressing");
   });
 
   it("builds a Korean writer route with Korean prose and character-count requirements", () => {
@@ -181,10 +272,15 @@ describe("native Korean writing contracts", () => {
     expect(planner).toContain("## 회차 목표");
     expect(planner).toContain("## 현재 작업");
     expect(planner).toContain("## 이번 화 훅 장부");
+    expect(planner).toContain("- 회수:");
+    expect(planner).toContain("- 계속 묻어두기:");
+    expect(planner).not.toContain("- 지급:");
     expect(planner).not.toContain("## 本章目标");
     expect(observer).toContain("모든 관찰 결과를 자연스러운 한국어로 작성하세요");
     expect(observer).not.toMatch(/[\u3400-\u9fff]/u);
     expect(settler).toContain("모든 자연어 값은 자연스러운 한국어로 작성하세요");
+    expect(settler).toContain('"hookActivity": "mentor-oath 진전"');
+    expect(settler).not.toContain('"hookActivity": "mentor-oath advanced"');
     expect(`${settler}\n${settlerUser}`).not.toMatch(/[\u3400-\u9fff]/u);
   });
 

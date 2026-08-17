@@ -10,6 +10,7 @@ import {
   type PromotionContext,
   type VolumeBoundary,
 } from "../utils/hook-promotion.js";
+import { normalizeStoredHookStatus } from "../utils/hook-lifecycle.js";
 import type { StoredHook } from "../state/memory-db.js";
 
 // ---------------------------------------------------------------------------
@@ -170,7 +171,16 @@ export class ArchitectAgent extends BaseAgent {
       : this.buildChineseFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock);
 
     const langPrefix = resolvedLanguage === "ko"
-      ? `【한국어 출력 강제】story_frame, volume_map, roles, book_rules, pending_hooks의 모든 자연어는 반드시 한국어로 작성하세요. 인물명, 지명, 설명문도 한국어로 쓰되 === SECTION: === 태그는 그대로 유지하세요. rhythm_principles나 current_state 섹션을 별도로 만들지 마세요.\n\n`
+      ? `【한국어 출력 강제】story_frame, volume_map, roles, book_rules, pending_hooks의 모든 자연어는 반드시 한국어로 작성하세요. 인물명, 지명, 설명문도 한국어로 쓰되 === SECTION: === 태그와 ---ROLE--- / ---CONTENT---, tier / name 값 형식은 그대로 유지하세요. rhythm_principles나 current_state 섹션을 별도로 만들지 마세요.
+
+사람이 읽는 제목과 항목명에는 아래 한국어 표기를 정확히 사용하세요. 영어 원형을 제목이나 본문에 병기하지 마세요.
+- story_frame: 01_주제와_분위기 / 02_핵심_갈등과_전경_배경_이야기 / 03_세계관_바탕 / 04_결말_방향과_전권_목표. 마지막 목표는 "전권 목표:"로 씁니다.
+- volume_map: 01_권별_주제와_감정_곡선 / 02_권간_복선과_회수_약속 / 03_권별_목표와_핵심_결과 / 04_권말_필수_변화 / 05_리듬_원칙.
+- roles 주요 인물: 핵심 태그 / 반전 디테일 / 과거 / 주인공 변화선 / 현재 상태 / 관계망 / 내적 동력 / 성장선. 보조 인물: 핵심 태그 / 반전 디테일 / 현재 상태 / 주인공과의 관계.
+- book_rules: 주인공(이름 / 성격 고정점 / 행동 제약), 장르 고정(주 장르 / 금지 요소), 서술 시점, 금지 사항. 사용자가 시점을 지정하지 않았으면 서술 시점 값은 "미지정"으로 씁니다.
+- pending_hooks의 SECTION 이름과 입력용 열 순서는 유지하되, 저장본의 표 머리글은 호스트가 한국어로 변환합니다. status와 기계 판정값 외의 자연어 셀은 한국어로 씁니다.
+
+`
       : resolvedLanguage === "en"
         ? `【LANGUAGE OVERRIDE】ALL output (story_frame, volume_map, roles, book_rules, pending_hooks) MUST be written in English. Character names, place names, and all prose must be in English. The === SECTION: === tags remain unchanged. Do NOT emit rhythm_principles or current_state sections — rhythm principles live inside the last paragraph of volume_map; environment/era anchors (when relevant) are woven into story_frame's world-tonal-ground paragraph.\n\n`
         : "";
@@ -867,6 +877,9 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
   }
 
   private buildStoryBibleShim(storyFrame: string, language: "zh" | "ko" | "en"): string {
+    if (language === "ko") {
+      return `# 스토리 바이블 (호환 포인터 — 사용 중단)\n\n> 외부 리더 호환을 위해 남긴 파일입니다. 현재 정본은 다음과 같습니다.\n> - outline/story_frame.md (주제 / 분위기 / 핵심 갈등 / 세계 규칙 / 결말)\n> - outline/volume_map.md (회차 단위 장거리 지도)\n> - roles/ 디렉터리 (인물별 역할 카드)\n\n## story_frame 발췌\n\n${storyFrame.slice(0, 2000)}\n`;
+    }
     if (language !== "zh") {
       return `# Story Bible (compat pointer — deprecated)\n\n> This file is kept for external readers only. The authoritative source is now:\n> - outline/story_frame.md (theme / tonal ground / core conflict / world rules / endgame)\n> - outline/volume_map.md (chapter-granular plot map)\n> - roles/ directory (one-file-per-character sheets)\n\n## Excerpt from story_frame\n\n${storyFrame.slice(0, 2000)}\n`;
     }
@@ -874,10 +887,16 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
   }
 
   private buildCharacterMatrixShim(roles: ReadonlyArray<ArchitectRole>, language: "zh" | "ko" | "en"): string {
+    const majorDir = language === "ko" ? "major" : "主要角色";
+    const minorDir = language === "ko" ? "minor" : "次要角色";
     const majorLines = roles.filter((role) => role.tier === "major")
-      .map((role) => `- roles/主要角色/${role.name}.md`);
+      .map((role) => `- roles/${majorDir}/${role.name}.md`);
     const minorLines = roles.filter((role) => role.tier === "minor")
-      .map((role) => `- roles/次要角色/${role.name}.md`);
+      .map((role) => `- roles/${minorDir}/${role.name}.md`);
+
+    if (language === "ko") {
+      return `# 인물 매트릭스 (호환 포인터 — 사용 중단)\n\n> 외부 리더 호환을 위해 남긴 파일입니다. 인물별 정본은 roles/ 디렉터리에 있습니다.\n\n## 주요 인물\n\n${majorLines.join("\n") || "(없음)"}\n\n## 보조 인물\n\n${minorLines.join("\n") || "(없음)"}\n`;
+    }
 
     if (language !== "zh") {
       return `# Character Matrix (compat pointer — deprecated)\n\n> This file is kept for external readers only. Authoritative source is now the roles/ directory (one-file-per-character).\n\n## Major characters\n\n${majorLines.join("\n") || "(none)"}\n\n## Minor characters\n\n${minorLines.join("\n") || "(none)"}\n`;
@@ -898,8 +917,8 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     const storyDir = join(bookDir, "story");
     const outlineDir = join(storyDir, "outline");
     const rolesDir = join(storyDir, "roles");
-    const rolesMajorDir = join(rolesDir, "主要角色");
-    const rolesMinorDir = join(rolesDir, "次要角色");
+    const rolesMajorDir = join(rolesDir, language === "ko" ? "major" : "主要角色");
+    const rolesMinorDir = join(rolesDir, language === "ko" ? "minor" : "次要角色");
 
     await Promise.all([
       mkdir(storyDir, { recursive: true }),
@@ -936,7 +955,9 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       writes.push(writeFile(join(storyDir, "book_rules.md"), output.bookRules, "utf-8"));
       writes.push(writeFile(
         join(storyDir, "character_matrix.md"),
-        language !== "zh"
+        language === "ko"
+          ? "# 인물 매트릭스\n\n<!-- 인물마다 ## 구획을 하나씩 사용하고 새 인물은 새 구획으로 추가하세요. -->\n"
+          : language !== "zh"
           ? "# Character Matrix\n\n<!-- One ## section per character. Add new characters as new ## blocks. -->\n"
           : "# 角色矩阵\n\n<!-- 每个角色一个 ## 块，新角色追加新 ## 即可。 -->\n",
         "utf-8",
@@ -945,15 +966,19 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       if (mode === "init") {
         const currentStateSeed = output.currentState?.trim()
           ? output.currentState
-          : (language !== "zh"
+          : (language === "ko"
+              ? "# 현재 상태\n\n> 작품 생성 시 만든 초기 자리표시자입니다. 각 회차가 끝나면 정리기가 최신 상태를 덧붙입니다.\n"
+              : language !== "zh"
               ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter.\n"
               : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。\n");
         writes.push(writeFile(join(storyDir, "current_state.md"), currentStateSeed, "utf-8"));
         writes.push(writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"));
         writes.push(writeFile(
-          join(storyDir, "emotional_arcs.md"),
-          language !== "zh"
-            ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
+        join(storyDir, "emotional_arcs.md"),
+          language === "ko"
+          ? "# 감정선\n\n| 인물 | 회차 | 감정 상태 | 촉발 사건 | 강도 (1-10) | 변화 방향 |\n| --- | --- | --- | --- | --- | --- |\n"
+          : language !== "zh"
+          ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
             : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
           "utf-8",
         ));
@@ -1020,14 +1045,18 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     if (mode === "init") {
       const currentStateSeed = output.currentState?.trim()
         ? output.currentState
-        : (language !== "zh"
+        : (language === "ko"
+            ? "# 현재 상태\n\n> 작품 생성 시 만든 초기 자리표시자입니다. 각 회차가 끝나면 정리기가 최신 상태를 덧붙입니다. 인물별 초기 상태는 roles/* 역할 카드에 있고, 중요한 초기 세계 사실은 pending_hooks의 start_chapter=0 행에 있습니다.\n"
+            : language !== "zh"
             ? "# Current State\n\n> Seeded at book creation. Runtime state is appended by the consolidator after each chapter. Initial per-character state lives in roles/*.Current_State; load-bearing initial world facts live in pending_hooks rows with start_chapter=0.\n"
             : "# 当前状态\n\n> 建书时占位。运行时每章之后由 consolidator 追加最新状态。每个角色的初始状态详见 roles/*.当前现状；承重的初始世界设定见 pending_hooks 里 startChapter=0 的行。\n");
       writes.push(writeFile(join(storyDir, "current_state.md"), currentStateSeed, "utf-8"));
       writes.push(writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"));
       writes.push(writeFile(
         join(storyDir, "emotional_arcs.md"),
-        language !== "zh"
+        language === "ko"
+          ? "# 감정선\n\n| 인물 | 회차 | 감정 상태 | 촉발 사건 | 강도 (1-10) | 변화 방향 |\n| --- | --- | --- | --- | --- | --- |\n"
+          : language !== "zh"
           ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
           : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n",
         "utf-8",
@@ -1327,12 +1356,20 @@ ${trimmed}\n`;
       return section;
     }
 
-    const language: "zh" | "ko" | "en" = /[\u4e00-\u9fff]/.test(section) ? "zh" : "en";
+    const language: "zh" | "ko" | "en" = /[\uac00-\ud7a3]/.test(section)
+      ? "ko"
+      : /[\u4e00-\u9fff]/.test(section)
+        ? "zh"
+        : "en";
     const normalizedHooks = dataRows.map((row, index) => {
       const rawProgress = row[4] ?? "";
       const normalizedProgress = this.parseHookChapterNumber(rawProgress);
       const seedNote = normalizedProgress === 0 && this.hasNarrativeProgress(rawProgress)
-        ? (language === "zh" ? `初始线索：${rawProgress}` : `initial signal: ${rawProgress}`)
+        ? (language === "ko"
+            ? `초기 단서: ${rawProgress}`
+            : language === "zh"
+              ? `初始线索：${rawProgress}`
+              : `initial signal: ${rawProgress}`)
         : "";
 
       const phase7 = row.length >= 12;
@@ -1378,9 +1415,13 @@ ${trimmed}\n`;
     };
     const promotedHooks = normalizedHooks.map((hook) => {
       const decision = shouldPromoteHook(hook, promotionContext);
-      const status = !decision.promote && hook.lastAdvancedChapter <= 0
-        ? this.normalizeDormantSeedStatus(hook.status, language)
-        : hook.status;
+      const status = decision.promote
+        ? normalizeStoredHookStatus(hook.status) === "deferred"
+          ? "open"
+          : hook.status
+        : hook.lastAdvancedChapter <= 0
+          ? this.normalizeDormantSeedStatus(hook.status, language)
+          : hook.status;
       return { ...hook, status, promoted: decision.promote };
     });
 
@@ -1398,8 +1439,8 @@ ${trimmed}\n`;
   private parseVolumeBoundariesForPromotion(raw: string): ReadonlyArray<VolumeBoundary> {
     if (!raw) return [];
     const lines = raw.split("\n");
-    const volumeHeader = /^(第[一二三四五六七八九十百千万零〇\d]+卷|Volume\s+\d+)/i;
-    const rangePattern = /[（(]\s*(?:第|[Cc]hapters?\s+)?(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章)?\s*[）)]|(?:第|[Cc]hapters?\s+)(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章)?/i;
+    const volumeHeader = /^(第[一二三四五六七八九十百千万零〇\d]+卷|제\s*\d+\s*권|Volume\s+\d+)/i;
+    const rangePattern = /[（(]\s*(?:第|제\s*|[Cc]hapters?\s+)?(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章|화)?\s*[）)]|(?:第|제\s*|[Cc]hapters?\s+)(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章|화)?/i;
 
     const volumes: VolumeBoundary[] = [];
     for (const rawLine of lines) {
@@ -1437,7 +1478,7 @@ ${trimmed}\n`;
     const trimmed = value.trim();
     if (!trimmed) return [];
     const lower = trimmed.toLowerCase();
-    if (lower === "none" || lower === "n/a" || lower === "-" || trimmed === "无") return [];
+    if (lower === "none" || lower === "n/a" || lower === "-" || trimmed === "无" || trimmed === "없음") return [];
     const stripped = trimmed.replace(/^[\[\(]\s*/, "").replace(/\s*[\]\)]$/, "");
     return stripped
       .split(/[,，、\/]+/)
@@ -1448,7 +1489,7 @@ ${trimmed}\n`;
   private parseBooleanCell(value: string | undefined): boolean {
     const normalized = (value ?? "").trim().toLowerCase();
     if (!normalized) return false;
-    return /^(true|yes|y|是|核心|core|1|✓|✔)$/.test(normalized);
+    return /^(true|yes|y|是|核心|예|맞음|core|1|✓|✔)$/.test(normalized);
   }
 
   private parseOptionalInt(value: string | undefined): number | undefined {
@@ -1463,7 +1504,7 @@ ${trimmed}\n`;
   private hasNarrativeProgress(value: string | undefined): boolean {
     const normalized = (value ?? "").trim().toLowerCase();
     if (!normalized) return false;
-    return !["0", "none", "n/a", "na", "-", "无", "未推进"].includes(normalized);
+    return !["0", "none", "n/a", "na", "-", "无", "未推进", "없음", "미진행"].includes(normalized);
   }
 
   private mergeHookNotes(notes: string, seedNote: string, language: "zh" | "ko" | "en"): string {

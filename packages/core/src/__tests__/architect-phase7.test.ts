@@ -142,8 +142,8 @@ describe("ArchitectAgent — Phase 7 extended hook frontmatter", () => {
     // from core_hook / depends_on / cross_volume at seed time. H01 (core=是)
     // and H02 (depends_on=[H01]) both get promoted=是; H03 has no rule firing.
     expect(result.pendingHooks).toContain("| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收卷 | 核心 | 半衰期 | 升级 | 备注 |");
-    expect(result.pendingHooks).toContain("| H01 | 1 | 主线 | 未开启 | 0 | 终章揭晓 | 终局 | 无 | 第3卷终章前 | 是 | 80 | 是 | 父亲笔记本 |");
-    expect(result.pendingHooks).toContain("| H02 | 3 | 谜团 | 未开启 | 0 | 第2卷揭开 | 中程 | [H01] | 第2卷中段 | 否 | 30 | 是 | 码头名单碎片 |");
+    expect(result.pendingHooks).toContain("| H01 | 1 | 主线 | open | 0 | 终章揭晓 | 终局 | 无 | 第3卷终章前 | 是 | 80 | 是 | 父亲笔记本 |");
+    expect(result.pendingHooks).toContain("| H02 | 3 | 谜团 | open | 0 | 第2卷揭开 | 中程 | [H01] | 第2卷中段 | 否 | 30 | 是 | 码头名单碎片 |");
     // H03 omits half_life; cell renders empty. No rule fires so 升级=否.
     expect(result.pendingHooks).toContain("| H03 | 7 | 小承诺 | 未开启 | 0 | 15章 | 近期 | 无 | 第1卷末 | 否 |  | 否 | 对妹妹的承诺 |");
   });
@@ -207,5 +207,30 @@ describe("ArchitectAgent — Phase 7 extended hook frontmatter", () => {
     expect(hook.dependsOn).toBeUndefined();
     expect(hook.paysOffInArc).toBeUndefined();
     expect(hook.halfLifeChapters).toBeUndefined();
+  });
+
+  it("normalizes a Korean hook table even when Korean prose contains Hanja", () => {
+    const agent = buildAgent();
+    const subject = agent as unknown as {
+      normalizePendingHooksSection: (section: string, volumeMapRaw: string) => string;
+      parseVolumeBoundariesForPromotion: (raw: string) => ReadonlyArray<{ name: string; startCh: number; endCh: number }>;
+    };
+    const section = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 최근 진행 | 예상 회수 | 회수 시점 | 선행 복선 | 회수 Arc | 핵심 | 반감기 | 메모 |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| H01 | 0 | 契約증거 | 대기 | 초기 장부 확인 | 원본 계약을 확보한다 | 근시일 | 없음 | 제2권 | 예 | 10 | 장부의 첫 흔적 |",
+    ].join("\n");
+
+    const normalized = subject.normalizePendingHooksSection(section, "### 제1권 (1-10화)\n### 제2권 (11-20화)");
+    expect(normalized).toContain("| hook_id | 시작 회차 | 유형 | 상태 |");
+    expect(normalized).toContain("| H01 | 0 | 契約증거 | open | 0 |");
+    expect(normalized).toContain("| 없음 | 제2권 | true | 10 | true |");
+    expect(normalized).toContain("초기 단서: 초기 장부 확인");
+    expect(normalized).not.toContain("初始线索");
+    expect(subject.parseVolumeBoundariesForPromotion("### 제1권 (1-10화)\n### 제2권 (11-20화)"))
+      .toEqual([
+        { name: "제1권", startCh: 1, endCh: 10 },
+        { name: "제2권", startCh: 11, endCh: 20 },
+      ]);
   });
 });

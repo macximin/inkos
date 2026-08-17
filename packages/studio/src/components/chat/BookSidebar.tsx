@@ -14,8 +14,9 @@ import { ChaptersSection } from "../sidebar/ChaptersSection";
 import { CharacterSection } from "../sidebar/CharacterSection";
 import { FrontmatterCards } from "../sidebar/FrontmatterCards";
 import { PendingHooksView } from "../sidebar/PendingHooksView";
+import { tr } from "../../lib/app-language";
 import {
-  FOUNDATION_FILE_LABELS,
+  foundationFileLabel,
   frontmatterToCards,
   hasTableRows,
   presentCurrentState,
@@ -38,7 +39,7 @@ const streamdownPlugins = { cjk };
 // character's name, foundation files their friendly label, everything else its
 // path as a last resort.
 function artifactLabel(file: string): string {
-  return roleFromPath(file)?.name ?? FOUNDATION_FILE_LABELS[file] ?? file;
+  return roleFromPath(file)?.name ?? foundationFileLabel(file) ?? file;
 }
 
 // Read-mode body for an opened file. A few files need reader-friendly handling
@@ -58,7 +59,7 @@ function renderTruthBody(
     const { isEmpty, body: stateBody } = presentCurrentState(content);
     return isEmpty ? (
       <p className="text-[14px] leading-6 text-muted-foreground/60 italic">
-        还没有运行状态。开始写作后，每写完一章这里会自动记录最新的故事进展。
+        {tr("还没有运行状态。开始写作后，每写完一章这里会自动记录最新的故事进展。", "No runtime state yet. It will be updated after each chapter.", "아직 진행 상태가 없습니다. 집필을 시작하면 매 화가 끝날 때 최신 전개가 기록됩니다.")}
       </p>
     ) : (
       <Streamdown plugins={streamdownPlugins} mode="static">{stateBody}</Streamdown>
@@ -67,7 +68,7 @@ function renderTruthBody(
   if (file === "emotional_arcs.md" && !hasTableRows(content)) {
     return (
       <p className="text-[14px] leading-6 text-muted-foreground/60 italic">
-        还没有情感弧线记录。开始写作后，这里会记录角色在各章的情绪变化。
+        {tr("还没有情感弧线记录。开始写作后，这里会记录角色在各章的情绪变化。", "No emotional arc entries yet. Character changes will appear here after writing begins.", "아직 감정선 기록이 없습니다. 집필을 시작하면 각 화의 인물 감정 변화가 기록됩니다.")}
       </p>
     );
   }
@@ -95,7 +96,7 @@ function ArtifactView({ bookId }: { readonly bookId: string }) {
 
   const isChapter = artifactChapter !== null;
   const label = isChapter
-    ? `第 ${artifactChapter} 章`
+    ? tr(`第 ${artifactChapter} 章`, `Chapter ${artifactChapter}`, `${artifactChapter}화`)
     : artifactFile ? artifactLabel(artifactFile) : "";
 
   useEffect(() => {
@@ -194,7 +195,7 @@ function ArtifactView({ bookId }: { readonly bookId: string }) {
             <Loader2 size={16} className="text-muted-foreground animate-spin" />
           </div>
         ) : content === null ? (
-          <p className="text-[14px] leading-6 text-muted-foreground/50 italic px-4 py-3">文件不存在</p>
+          <p className="text-[14px] leading-6 text-muted-foreground/50 italic px-4 py-3">{tr("文件不存在", "File not found", "파일을 찾을 수 없습니다")}</p>
         ) : editing ? (
           <textarea
             value={editContent}
@@ -212,8 +213,6 @@ function ArtifactView({ bookId }: { readonly bookId: string }) {
 }
 
 function PanelView({ bookId, theme: _theme, t, sse }: BookSidebarProps) {
-  const isZh = t("nav.connected") === "\u5DF2\u8FDE\u63A5";
-
   // Show writing indicator only during pipeline operations (write/audit/revise)
   const [activeOp, setActiveOp] = useState<string | null>(null);
   useEffect(() => {
@@ -235,9 +234,9 @@ function PanelView({ bookId, theme: _theme, t, sse }: BookSidebarProps) {
   }, [sse.messages]);
 
   const OP_LABELS: Record<string, string> = {
-    write: isZh ? "正在写作中..." : "Writing...",
-    audit: isZh ? "正在审计中..." : "Auditing...",
-    revise: isZh ? "正在修订中..." : "Revising...",
+    write: tr("正在写作中...", "Writing...", "집필 중..."),
+    audit: tr("正在审计中...", "Auditing...", "검수 중..."),
+    revise: tr("正在修订中...", "Revising...", "수정 중..."),
   };
 
   return (
@@ -251,7 +250,7 @@ function PanelView({ bookId, theme: _theme, t, sse }: BookSidebarProps) {
         </div>
       )}
       <ProgressSection sse={sse} />
-      <ChaptersSection bookId={bookId} isZh={isZh} />
+      <ChaptersSection bookId={bookId} />
       <CharacterSection bookId={bookId} />
       <FoundationSection bookId={bookId} />
       <SummarySection bookId={bookId} />
@@ -331,7 +330,7 @@ export function BookSidebarToggle({ bookId, theme, t, sse }: BookSidebarProps) {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-3 py-2 border-b border-border/20">
-              <span className="text-[15px] leading-6 font-medium text-muted-foreground">书籍信息</span>
+              <span className="text-[15px] leading-6 font-medium text-muted-foreground">{tr("书籍信息", "Book information", "작품 정보")}</span>
               <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground">
                 <PanelRightClose size={14} />
               </button>

@@ -220,24 +220,24 @@ const AGENT_LABELS: Record<string, BilingualLabel> = {
   exporter: { zh: "导出", en: "Export", ko: "내보내기" },
 };
 const TOOL_LABELS: Record<string, BilingualLabel> = {
-  read: { zh: "读取文件", en: "Read file" },
-  edit: { zh: "编辑文件", en: "Edit file" },
-  grep: { zh: "搜索", en: "Search" },
-  ls: { zh: "列目录", en: "List directory" },
-  propose_action: { zh: "确认动作", en: "Confirm action" },
-  short_fiction_run: { zh: "短篇生产", en: "Short fiction" },
-  script_create: { zh: "剧本创作", en: "Script creation" },
-  storyboard_create: { zh: "分镜创作", en: "Storyboard creation" },
-  interactive_film_create: { zh: "互动影游", en: "Interactive film" },
-  translation_create: { zh: "翻译项目", en: "Translation" },
-  generate_cover: { zh: "生成封面", en: "Cover generation" },
-  play_edit: { zh: "编辑互动世界", en: "Edit interactive world" },
-  play_start: { zh: "启动互动世界", en: "Start interactive world" },
-  play_revise: { zh: "重做互动回合", en: "Redo interactive turn" },
-  play_step: { zh: "推进互动世界", en: "Advance interactive world" },
-  create_narrative_forecast: { zh: "剧情多线推演", en: "Narrative forecast" },
-  get_narrative_forecast: { zh: "核验剧情推演", en: "Recheck forecast" },
-  select_narrative_branch: { zh: "采用候选分支", en: "Select candidate branch" },
+  read: { zh: "读取文件", en: "Read file", ko: "파일 읽기" },
+  edit: { zh: "编辑文件", en: "Edit file", ko: "파일 편집" },
+  grep: { zh: "搜索", en: "Search", ko: "검색" },
+  ls: { zh: "列目录", en: "List directory", ko: "목록 보기" },
+  propose_action: { zh: "确认动作", en: "Confirm action", ko: "작업 확인" },
+  short_fiction_run: { zh: "短篇生产", en: "Short fiction", ko: "단편 제작" },
+  script_create: { zh: "剧本创作", en: "Script creation", ko: "대본 제작" },
+  storyboard_create: { zh: "分镜创作", en: "Storyboard creation", ko: "스토리보드 제작" },
+  interactive_film_create: { zh: "互动影游", en: "Interactive film", ko: "인터랙티브 영상" },
+  translation_create: { zh: "翻译项目", en: "Translation", ko: "번역 프로젝트" },
+  generate_cover: { zh: "生成封面", en: "Cover generation", ko: "표지 생성" },
+  play_edit: { zh: "编辑互动世界", en: "Edit interactive world", ko: "인터랙티브 세계 편집" },
+  play_start: { zh: "启动互动世界", en: "Start interactive world", ko: "인터랙티브 세계 시작" },
+  play_revise: { zh: "重做互动回合", en: "Redo interactive turn", ko: "인터랙티브 턴 다시 만들기" },
+  play_step: { zh: "推进互动世界", en: "Advance interactive world", ko: "인터랙티브 세계 진행" },
+  create_narrative_forecast: { zh: "剧情多线推演", en: "Narrative forecast", ko: "서사 분기 예측" },
+  get_narrative_forecast: { zh: "核验剧情推演", en: "Recheck forecast", ko: "서사 예측 확인" },
+  select_narrative_branch: { zh: "采用候选分支", en: "Select candidate branch", ko: "후보 분기 선택" },
 };
 
 function resolveToolLabel(tool: string, agent?: string, lang: StudioLanguage = "zh"): string {
@@ -253,8 +253,8 @@ function formatTaskElapsed(ms: number, lang: StudioLanguage): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  if (minutes === 0) return pick(lang, `${seconds} 秒`, `${seconds}s`);
-  return pick(lang, `${minutes} 分 ${seconds} 秒`, `${minutes}m ${seconds}s`);
+  if (minutes === 0) return pick(lang, `${seconds} 秒`, `${seconds}s`, `${seconds}초`);
+  return pick(lang, `${minutes} 分 ${seconds} 秒`, `${minutes}m ${seconds}s`, `${minutes}분 ${seconds}초`);
 }
 
 /**
@@ -265,11 +265,11 @@ function buildRunningTaskContextBlock(task: StudioTaskSnapshot, lang: StudioLang
   const exec = task.execution;
   const elapsed = formatTaskElapsed(Date.now() - exec.startedAt, lang);
   const status = exec.status === "processing"
-    ? pick(lang, "处理中", "processing")
-    : pick(lang, "运行中", "running");
+    ? pick(lang, "处理中", "processing", "처리 중")
+    : pick(lang, "运行中", "running", "실행 중");
   const logsTail = (exec.logs ?? []).slice(-3);
   const logsBlock = logsTail.length > 0
-    ? `\n${pick(lang, "- 最近日志：", "- Recent logs:")}\n${logsTail.map((line) => `  - ${line}`).join("\n")}`
+    ? `\n${pick(lang, "- 最近日志：", "- Recent logs:", "- 최근 기록:")}\n${logsTail.map((line) => `  - ${line}`).join("\n")}`
     : "";
   return pick(
     lang,
@@ -288,6 +288,14 @@ function buildRunningTaskContextBlock(task: StudioTaskSnapshot, lang: StudioLang
       `- Status: ${status}`,
       `- Elapsed: ${elapsed}${logsBlock}`,
       "The task runs independently in the background; this chat turn does not interrupt it. When the user asks about its progress, answer truthfully from the information above. Do not start another production task of the same kind, and do not claim that no task is running. Production tools are temporarily unavailable and will be restored when the task finishes.",
+    ].join("\n"),
+    [
+      "## 백그라운드 작업 상태",
+      "이 대화에서 제작 작업 하나가 백그라운드로 실행 중입니다:",
+      `- 작업: ${exec.label} (${exec.tool})`,
+      `- 상태: ${status}`,
+      `- 경과 시간: ${elapsed}${logsBlock}`,
+      "이 작업은 백그라운드에서 독립적으로 실행되므로 현재 대화가 작업을 중단하지 않습니다. 사용자가 진행 상황을 물으면 위 정보를 바탕으로 사실대로 답하세요. 같은 종류의 제작 작업을 다시 시작하거나 실행 중인 작업이 없다고 말하지 마세요. 제작 도구는 작업이 끝날 때까지 일시적으로 사용할 수 없습니다.",
     ].join("\n"),
   );
 }
@@ -1480,7 +1488,7 @@ function formatAgentFailure(
   if (kind === "internal") {
     return {
       code: "AGENT_INTERNAL_ERROR",
-      message: pick(lang, `InkOS 内部流程错误：${message}`, `InkOS internal pipeline error: ${message}`),
+      message: pick(lang, `InkOS 内部流程错误：${message}`, `InkOS internal pipeline error: ${message}`, `InkOS 내부 처리 오류: ${message}`),
       status: 500,
     };
   }
@@ -1600,7 +1608,7 @@ function requirePayloadText(value: string | undefined, message: string): string 
 
 function toolResultText(result: unknown, lang: StudioLanguage = "zh"): string {
   const text = extractToolError(result).trim();
-  return text || pick(lang, "已完成。", "Done.");
+  return text || pick(lang, "已完成。", "Done.", "완료했습니다.");
 }
 
 interface WriteNextChapterToolResult {
@@ -1649,7 +1657,13 @@ function buildWriteNextResponseText(
   const enResponseText = writeNeedsReview
     ? `Wrote ${enChapterRef} for ${bookId}: ${writeResult.wordCount} words, but the review did not pass (status: ${writeResult.status}). Manual review is required before continuing.`
     : `Completed ${enChapterRef} for ${bookId}: ${writeResult.wordCount} words, status ${writeResult.status}.`;
-  return pick(lang, zhResponseText, enResponseText);
+  const koChapterRef = writeResult.title
+    ? `${writeResult.chapterNumber}화 「${writeResult.title}」`
+    : `${writeResult.chapterNumber}화`;
+  const koResponseText = writeNeedsReview
+    ? `${bookId}의 ${koChapterRef} 집필을 마쳤습니다. 분량은 ${writeResult.wordCount}자이며, 검수를 통과하지 못했습니다(상태: ${writeResult.status}). 계속하기 전에 사람이 확인해야 합니다.`
+    : `${bookId}의 ${koChapterRef} 집필을 마쳤습니다. 분량은 ${writeResult.wordCount}자이며, 상태는 ${writeResult.status}입니다.`;
+  return pick(lang, zhResponseText, enResponseText, koResponseText);
 }
 
 // 写下一章的确认式任务工具：走 pipeline.runWithAbortSignal，让任务控制器的
@@ -1733,7 +1747,7 @@ function createWriteNextChapterTool(
       onUpdate?.({
         content: [{
           type: "text",
-          text: pick(lang, `正在为 ${bookId} 写下一章…`, `Writing the next chapter for ${bookId}...`),
+          text: pick(lang, `正在为 ${bookId} 写下一章…`, `Writing the next chapter for ${bookId}...`, `${bookId}의 다음 화를 집필하고 있습니다…`),
         }],
       });
       const writeResult = await pipeline.runWithAbortSignal(signal, () => pipeline.writeNextChapter(bookId));
@@ -1811,7 +1825,7 @@ async function executeConfirmedProductionAction(args: {
   } else if (args.requestedIntent === "short_run") {
     const payload = actionPayload?.shortRun;
     const direction = payload?.direction?.trim() || args.instruction.trim();
-    if (!direction) throw new ApiError(400, "CONFIRMED_ACTION_PAYLOAD_INCOMPLETE", pick(lang, "确认短篇缺少方向，请重新生成确认卡。", "The short fiction confirmation is missing a direction. Regenerate the confirmation card."));
+    if (!direction) throw new ApiError(400, "CONFIRMED_ACTION_PAYLOAD_INCOMPLETE", pick(lang, "确认短篇缺少方向，请重新生成确认卡。", "The short fiction confirmation is missing a direction. Regenerate the confirmation card.", "단편 작업 확인에 방향이 없습니다. 확인 카드를 다시 만들어 주세요."));
     tool = createShortFictionRunTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       direction,
@@ -1823,7 +1837,7 @@ async function executeConfirmedProductionAction(args: {
     };
   } else if (args.requestedIntent === "write_next") {
     if (!args.bookId) {
-      throw new ApiError(400, "BOOK_ID_REQUIRED", pick(lang, "写下一章需要先打开一本书。", "Writing the next chapter requires an active book."));
+      throw new ApiError(400, "BOOK_ID_REQUIRED", pick(lang, "写下一章需要先打开一本书。", "Writing the next chapter requires an active book.", "다음 화를 쓰려면 먼저 작품을 열어 주세요."));
     }
     const chapterCount = actionPayload?.writeNext?.chapterCount ?? 1;
     tool = createWriteNextChapterTool(args.pipeline, args.bookId, lang, chapterCount);
@@ -1831,7 +1845,7 @@ async function executeConfirmedProductionAction(args: {
     params = { agent: "writer", bookId: args.bookId };
   } else if (args.requestedIntent === "generate_cover") {
     const payload = actionPayload?.generateCover;
-    const title = requirePayloadText(payload?.title, pick(lang, "确认生成封面缺少标题，请重新生成确认卡。", "The cover generation confirmation is missing a title. Regenerate the confirmation card."));
+    const title = requirePayloadText(payload?.title, pick(lang, "确认生成封面缺少标题，请重新生成确认卡。", "The cover generation confirmation is missing a title. Regenerate the confirmation card.", "표지 생성 작업 확인에 제목이 없습니다. 확인 카드를 다시 만들어 주세요."));
     tool = createGenerateCoverTool(args.root, { actionPayload });
     params = {
       title,
@@ -1842,7 +1856,7 @@ async function executeConfirmedProductionAction(args: {
     };
   } else if (args.requestedIntent === "script_create") {
     const payload = actionPayload?.scriptCreate;
-    const title = requirePayloadText(payload?.title, pick(lang, "确认创建剧本缺少标题，请重新生成确认卡。", "The script creation confirmation is missing a title. Regenerate the confirmation card."));
+    const title = requirePayloadText(payload?.title, pick(lang, "确认创建剧本缺少标题，请重新生成确认卡。", "The script creation confirmation is missing a title. Regenerate the confirmation card.", "대본 제작 작업 확인에 제목이 없습니다. 확인 카드를 다시 만들어 주세요."));
     tool = createScriptCreationTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       title,
@@ -1859,7 +1873,7 @@ async function executeConfirmedProductionAction(args: {
     };
   } else if (args.requestedIntent === "storyboard_create") {
     const payload = actionPayload?.storyboardCreate;
-    const title = requirePayloadText(payload?.title, pick(lang, "确认创建分镜缺少标题，请重新生成确认卡。", "The storyboard creation confirmation is missing a title. Regenerate the confirmation card."));
+    const title = requirePayloadText(payload?.title, pick(lang, "确认创建分镜缺少标题，请重新生成确认卡。", "The storyboard creation confirmation is missing a title. Regenerate the confirmation card.", "스토리보드 제작 작업 확인에 제목이 없습니다. 확인 카드를 다시 만들어 주세요."));
     tool = createStoryboardCreationTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       title,
@@ -1877,7 +1891,7 @@ async function executeConfirmedProductionAction(args: {
     };
   } else if (args.requestedIntent === "interactive_film_create") {
     const payload = actionPayload?.interactiveFilmCreate;
-    const title = requirePayloadText(payload?.title, pick(lang, "确认创建互动影游缺少标题，请重新生成确认卡。", "The interactive film confirmation is missing a title. Regenerate the confirmation card."));
+    const title = requirePayloadText(payload?.title, pick(lang, "确认创建互动影游缺少标题，请重新生成确认卡。", "The interactive film confirmation is missing a title. Regenerate the confirmation card.", "인터랙티브 영상 제작 작업 확인에 제목이 없습니다. 확인 카드를 다시 만들어 주세요."));
     tool = createInteractiveFilmCreationTool(args.pipeline, args.root, { actionPayload, language: coreLanguage(lang) });
     params = {
       title,
@@ -1896,9 +1910,9 @@ async function executeConfirmedProductionAction(args: {
     };
   } else if (args.requestedIntent === "translation_create") {
     const payload = actionPayload?.translationCreate;
-    const filePath = requirePayloadText(payload?.filePath, pick(lang, "确认创建翻译项目缺少文件路径，请重新生成确认卡。", "The translation confirmation is missing a file path. Regenerate the confirmation card."));
-    const sourceLanguage = requirePayloadText(payload?.sourceLanguage, pick(lang, "确认创建翻译项目缺少源语言，请重新生成确认卡。", "The translation confirmation is missing a source language. Regenerate the confirmation card."));
-    const targetLanguage = requirePayloadText(payload?.targetLanguage, pick(lang, "确认创建翻译项目缺少目标语言，请重新生成确认卡。", "The translation confirmation is missing a target language. Regenerate the confirmation card."));
+    const filePath = requirePayloadText(payload?.filePath, pick(lang, "确认创建翻译项目缺少文件路径，请重新生成确认卡。", "The translation confirmation is missing a file path. Regenerate the confirmation card.", "번역 작업 확인에 파일 경로가 없습니다. 확인 카드를 다시 만들어 주세요."));
+    const sourceLanguage = requirePayloadText(payload?.sourceLanguage, pick(lang, "确认创建翻译项目缺少源语言，请重新生成确认卡。", "The translation confirmation is missing a source language. Regenerate the confirmation card.", "번역 작업 확인에 원문 언어가 없습니다. 확인 카드를 다시 만들어 주세요."));
+    const targetLanguage = requirePayloadText(payload?.targetLanguage, pick(lang, "确认创建翻译项目缺少目标语言，请重新生成确认卡。", "The translation confirmation is missing a target language. Regenerate the confirmation card.", "번역 작업 확인에 번역 언어가 없습니다. 확인 카드를 다시 만들어 주세요."));
     tool = createTranslationCreateTool(args.root, { actionPayload });
     params = {
       filePath,
@@ -1909,7 +1923,7 @@ async function executeConfirmedProductionAction(args: {
     };
   } else if (args.requestedIntent === "play_start") {
     const payload = actionPayload?.playStart;
-    const title = requirePayloadText(payload?.title, pick(lang, "确认启动互动世界缺少标题，请重新生成确认卡。", "The interactive world start confirmation is missing a title. Regenerate the confirmation card."));
+    const title = requirePayloadText(payload?.title, pick(lang, "确认启动互动世界缺少标题，请重新生成确认卡。", "The interactive world start confirmation is missing a title. Regenerate the confirmation card.", "인터랙티브 세계 시작 작업 확인에 제목이 없습니다. 확인 카드를 다시 만들어 주세요."));
     const fallbackScene = [payload?.premise, args.instruction].filter((part): part is string => typeof part === "string" && part.trim().length > 0).join("\n\n");
     const initialScene = isUsablePlayInitialScene(payload?.initialScene)
       ? payload?.initialScene?.trim()
@@ -7228,7 +7242,9 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         const targets = new Map(translated.segments.map((segment) => [segment.index, segment]));
         return {
           number: chapter.number,
-          title: chapter.title,
+          title: translated.translatedTitle?.trim() || chapter.translatedTitle?.trim() || chapter.title,
+          sourceTitle: chapter.title,
+          translatedTitle: translated.translatedTitle?.trim() || chapter.translatedTitle?.trim() || "",
           status: chapter.status,
           segments: source.segments.map((segment) => ({
             index: segment.index,
@@ -7252,7 +7268,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     if (!isSafeBookId(id)) {
       return c.json({ error: { code: "INVALID_ID", message: `invalid translation id: ${id}` } }, 400);
     }
-    const body: { batchSize?: number; maxTokens?: number } = await c.req.json().catch(() => ({}));
+    const body: { batchSize?: number; maxTokens?: number; maxReviewRetries?: number } = await c.req.json().catch(() => ({}));
     try {
       const currentConfig = await loadCurrentProjectConfig();
       const model = createLLMTranslationModel({
@@ -7263,6 +7279,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       const result = await runTranslationProject(root, id, {
         model,
         batchSize: body.batchSize,
+        maxReviewRetries: body.maxReviewRetries,
       });
       return c.json(result);
     } catch (error) {
@@ -7283,11 +7300,19 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       return c.json({ error: { code: "INVALID_ID", message: `invalid translation id: ${id}` } }, 400);
     }
     const body: { format?: "txt" | "md" | "epub"; outputPath?: string } = await c.req.json().catch(() => ({}));
-    const result = await writeTranslationExport(root, id, {
-      format: body.format ?? "md",
-      outputPath: body.outputPath,
-    });
-    return c.json(result);
+    try {
+      const result = await writeTranslationExport(root, id, {
+        format: body.format ?? "md",
+        outputPath: body.outputPath,
+      });
+      return c.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/^Translation export blocked:/i.test(message)) {
+        throw new ApiError(409, "TRANSLATION_REVIEW_REQUIRED", message);
+      }
+      throw error;
+    }
   });
 
   app.post("/api/v1/projects/:id/story-graph/delta", async (c) => {

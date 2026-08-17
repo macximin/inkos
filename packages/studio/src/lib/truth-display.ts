@@ -21,11 +21,11 @@ export interface DisplayCard {
   readonly values: ReadonlyArray<string>;
 }
 
-const FANFIC_LABELS: Record<string, { readonly zh: string; readonly en: string }> = {
-  canon: { zh: "原著向", en: "Canon-compliant" },
-  au: { zh: "架空改编", en: "Alternate Universe" },
-  ooc: { zh: "OOC", en: "OOC" },
-  cp: { zh: "CP 向", en: "Pairing (CP)" },
+const FANFIC_LABELS: Record<string, { readonly zh: string; readonly ko: string; readonly en: string }> = {
+  canon: { zh: "原著向", ko: "원작 준수", en: "Canon-compliant" },
+  au: { zh: "架空改编", ko: "대체 세계관", en: "Alternate Universe" },
+  ooc: { zh: "OOC", ko: "OOC", en: "OOC" },
+  cp: { zh: "CP 向", ko: "커플링(CP)", en: "Pairing (CP)" },
 };
 
 // Turn the structured frontmatter of story_frame.md into a few reader-friendly
@@ -36,23 +36,23 @@ export function frontmatterToCards(fm: TruthFrontmatter | null | undefined): Rea
   if (!fm) return [];
   const cards: DisplayCard[] = [];
   const name = fm.protagonist?.name?.trim();
-  if (name) cards.push({ label: tr("主角", "Protagonist"), values: [name] });
+  if (name) cards.push({ label: tr("主角", "Protagonist", "주인공"), values: [name] });
   const genre = fm.genreLock?.primary?.trim();
-  if (genre) cards.push({ label: tr("题材", "Genre"), values: [genre] });
+  if (genre) cards.push({ label: tr("题材", "Genre", "장르"), values: [genre] });
   const era = fm.eraConstraints;
   if (era?.enabled) {
     const eraValues = [era.period, era.region]
       .map((v) => v?.trim())
       .filter((v): v is string => Boolean(v));
-    if (eraValues.length > 0) cards.push({ label: tr("时代背景", "Era"), values: eraValues });
+    if (eraValues.length > 0) cards.push({ label: tr("时代背景", "Era", "시대 배경"), values: eraValues });
   }
   const prohibitions = (fm.prohibitions ?? []).map((p) => p.trim()).filter(Boolean);
-  if (prohibitions.length > 0) cards.push({ label: tr("红线", "Hard Lines"), values: prohibitions });
+  if (prohibitions.length > 0) cards.push({ label: tr("红线", "Hard Lines", "금지선"), values: prohibitions });
   if (fm.fanficMode) {
     const fanficLabel = FANFIC_LABELS[fm.fanficMode];
     cards.push({
-      label: tr("同人模式", "Fanfic Mode"),
-      values: [fanficLabel ? tr(fanficLabel.zh, fanficLabel.en) : fm.fanficMode],
+      label: tr("同人模式", "Fanfic Mode", "팬픽 모드"),
+      values: [fanficLabel ? tr(fanficLabel.zh, fanficLabel.en, fanficLabel.ko) : fm.fanficMode],
     });
   }
   return cards;
@@ -152,13 +152,27 @@ const FOUNDATION_FILE_LABELS_EN: Record<string, string> = {
   "book_rules.md": "Narrative Rules",
 };
 
+const FOUNDATION_FILE_LABELS_KO: Record<string, string> = {
+  "outline/story_frame.md": "이야기 기반",
+  "outline/volume_map.md": "권 구성",
+  "current_state.md": "현재 상태",
+  "pending_hooks.md": "복선 목록",
+  "emotional_arcs.md": "감정선",
+  "subplot_board.md": "서브플롯 현황",
+  "story_bible.md": "세계관 설정",
+  "volume_outline.md": "권 구성",
+  "book_rules.md": "서사 규칙",
+};
+
 // Language-aware display label for a foundation truth file. Returns undefined
 // for files that are not part of the foundation list (same qualification as
 // FOUNDATION_FILE_LABELS).
 export function foundationFileLabel(name: string): string | undefined {
   const zh = FOUNDATION_FILE_LABELS[name];
   if (zh === undefined) return undefined;
-  return getAppLanguage() === "en" ? FOUNDATION_FILE_LABELS_EN[name] ?? zh : zh;
+  const language = getAppLanguage();
+  if (language === "ko") return FOUNDATION_FILE_LABELS_KO[name] ?? zh;
+  return language === "en" ? FOUNDATION_FILE_LABELS_EN[name] ?? zh : zh;
 }
 
 // --- current_state.md ---------------------------------------------------

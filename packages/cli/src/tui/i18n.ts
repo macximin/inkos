@@ -229,7 +229,7 @@ const KO: TuiCopy = {
     status: (stage, mode) => `현재 상태: ${stage} (${mode}).`,
     config: "Ink 대시보드에서는 대화형 /config를 아직 지원하지 않습니다. inkos config set-global을 사용하세요.",
     depthSet: (depthLabel) => `사고 깊이를 ${depthLabel}(으)로 설정했습니다.`,
-    newBookGuide: "새 책을 구상합니다. 장르·세계관·주인공·핵심 갈등 등 아이디어를 설명하세요. 정보가 충분해지면 AI가 책 생성 기능을 호출합니다.",
+    newBookGuide: "새 작품을 구상합니다. 장르·세계관·주인공·핵심 갈등 등 아이디어를 설명하세요. 정보가 충분해지면 AI가 작품 생성 기능을 호출합니다.",
     noLlmConfig: "LLM 설정을 찾지 못했습니다.",
     setupProvider: "먼저 API 제공자를 설정해 주세요.",
   },

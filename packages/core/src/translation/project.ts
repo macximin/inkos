@@ -71,13 +71,19 @@ export async function createTranslationProjectFromFile(
   const manifestPathAbs = join(projectDirAbs, "manifest.json");
   await writeFile(manifestPathAbs, JSON.stringify(manifest, null, 2), "utf-8");
   await writeFile(join(projectDirAbs, "glossary.json"), JSON.stringify({ terms: [] }, null, 2), "utf-8");
-  await writeFile(join(projectDirAbs, "review-report.md"), "# Translation Review\n\nPending.\n", "utf-8");
+  await writeFile(join(projectDirAbs, "review-report.md"), initialReviewReport(input.targetLanguage), "utf-8");
 
   return {
     projectDir: toPosixPath(relative(projectRoot, projectDirAbs)),
     manifestPath: toPosixPath(relative(projectRoot, manifestPathAbs)),
     manifest,
   };
+}
+
+function initialReviewReport(targetLanguage: string): string {
+  if (/한국어|korean|\bko\b/iu.test(targetLanguage)) return "# 번역 검수\n\n대기 중입니다.\n";
+  if (/中文|汉语|漢語|chinese|\bzh\b/iu.test(targetLanguage)) return "# 翻译审校\n\n待处理。\n";
+  return "# Translation Review\n\nPending.\n";
 }
 
 function slug(value: string): string {

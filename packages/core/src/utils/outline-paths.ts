@@ -204,6 +204,13 @@ export async function readCharacterContext(
 ): Promise<string> {
   const cards = await readRoleCards(bookDir);
   if (cards.length > 0) {
+    let language: "zh" | "ko" | "en" = "zh";
+    try {
+      const parsed = JSON.parse(await readOr(join(bookDir, "book.json"), "")) as { language?: unknown };
+      if (parsed.language === "ko" || parsed.language === "en") language = parsed.language;
+    } catch {
+      // Legacy or damaged book config: retain the historical Chinese headings.
+    }
     const groups: Record<"major" | "minor", RoleCard[]> = { major: [], minor: [] };
     for (const card of cards) groups[card.tier].push(card);
 
@@ -214,8 +221,8 @@ export async function readCharacterContext(
     };
 
     const blocks = [
-      render(groups.major, "主要角色 / Major characters"),
-      render(groups.minor, "次要角色 / Minor characters"),
+      render(groups.major, language === "ko" ? "주요 인물" : language === "en" ? "Major characters" : "主要角色 / Major characters"),
+      render(groups.minor, language === "ko" ? "보조 인물" : language === "en" ? "Minor characters" : "次要角色 / Minor characters"),
     ].filter(Boolean);
 
     return blocks.join("\n\n");

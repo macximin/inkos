@@ -89,17 +89,19 @@ export function buildNarrativeIntentBrief(
   language: "zh" | "ko" | "en" = "zh",
 ): string {
   const sections = [
-    { heading: "## Goal", label: language === "ko" ? "목표" : language === "en" ? "Goal" : "目标" },
-    { heading: "## Outline Node", label: language === "ko" ? "현재 개요 노드" : language === "en" ? "Outline Node" : "当前节点" },
-    { heading: "## Must Keep", label: language === "ko" ? "유지" : language === "en" ? "Keep" : "保留" },
-    { heading: "## Must Avoid", label: language === "ko" ? "회피" : language === "en" ? "Avoid" : "避免" },
-    { heading: "## Style Emphasis", label: language === "ko" ? "문체 강조점" : language === "en" ? "Style" : "风格" },
-    { heading: "## Structured Directives", label: language === "ko" ? "구조화 지시" : language === "en" ? "Directives" : "指令" },
+    { headings: ["## Goal", "## 목표"], label: language === "ko" ? "목표" : language === "en" ? "Goal" : "目标" },
+    { headings: ["## Outline Node", "## 개요 노드"], label: language === "ko" ? "현재 개요 노드" : language === "en" ? "Outline Node" : "当前节点" },
+    { headings: ["## Must Keep", "## 반드시 유지"], label: language === "ko" ? "유지" : language === "en" ? "Keep" : "保留" },
+    { headings: ["## Must Avoid", "## 반드시 회피"], label: language === "ko" ? "회피" : language === "en" ? "Avoid" : "避免" },
+    { headings: ["## Style Emphasis", "## 문체 강조점"], label: language === "ko" ? "문체 강조점" : language === "en" ? "Style" : "风格" },
+    { headings: ["## Structured Directives", "## 구조화 지시"], label: language === "ko" ? "구조화 지시" : language === "en" ? "Directives" : "指令" },
   ] as const;
 
   const rendered = sections
-    .map(({ heading, label }) => {
-      const section = extractMarkdownSection(chapterIntent, heading);
+    .map(({ headings, label }) => {
+      const section = headings
+        .map((heading) => extractMarkdownSection(chapterIntent, heading))
+        .find(Boolean);
       if (!section) return null;
 
       const lines = section

@@ -9,25 +9,26 @@ import { SidebarCard } from "./SidebarCard";
 // 展示时按当前语言取 zh/en，匹配时 zh、en 都认，后台消息以后双语化也不用改这里。
 interface ProgressStep {
   readonly zh: string;
+  readonly ko: string;
   readonly en: string;
 }
 
 const INIT_BOOK_STEPS: ReadonlyArray<ProgressStep> = [
-  { zh: "生成基础设定", en: "Generate foundation" },
-  { zh: "保存书籍配置", en: "Save book config" },
-  { zh: "写入基础设定文件", en: "Write foundation files" },
-  { zh: "初始化控制文档", en: "Initialize control docs" },
-  { zh: "创建初始快照", en: "Create initial snapshot" },
+  { zh: "生成基础设定", ko: "기본 설정 생성", en: "Generate foundation" },
+  { zh: "保存书籍配置", ko: "작품 설정 저장", en: "Save book config" },
+  { zh: "写入基础设定文件", ko: "기본 설정 파일 작성", en: "Write foundation files" },
+  { zh: "初始化控制文档", ko: "관리 문서 초기화", en: "Initialize control docs" },
+  { zh: "创建初始快照", ko: "초기 스냅샷 생성", en: "Create initial snapshot" },
 ];
 
 const WRITE_CHAPTER_STEPS: ReadonlyArray<ProgressStep> = [
-  { zh: "准备章节输入", en: "Prepare chapter input" },
-  { zh: "撰写章节草稿", en: "Draft the chapter" },
-  { zh: "落盘最终章节", en: "Save final chapter" },
-  { zh: "生成最终真相文件", en: "Generate final truth files" },
-  { zh: "校验真相文件变更", en: "Validate truth file changes" },
-  { zh: "同步记忆索引", en: "Sync memory index" },
-  { zh: "更新章节索引与快照", en: "Update chapter index and snapshot" },
+  { zh: "准备章节输入", ko: "회차 입력 준비", en: "Prepare chapter input" },
+  { zh: "撰写章节草稿", ko: "회차 초고 집필", en: "Draft the chapter" },
+  { zh: "落盘最终章节", ko: "최종 원고 저장", en: "Save final chapter" },
+  { zh: "生成最终真相文件", ko: "최종 설정 파일 생성", en: "Generate final truth files" },
+  { zh: "校验真相文件变更", ko: "설정 파일 변경 검증", en: "Validate truth file changes" },
+  { zh: "同步记忆索引", ko: "메모리 색인 동기화", en: "Sync memory index" },
+  { zh: "更新章节索引与快照", ko: "회차 색인과 스냅샷 갱신", en: "Update chapter index and snapshot" },
 ];
 
 type StepStatus = "pending" | "active" | "done";
@@ -84,12 +85,12 @@ export function ProgressSection({ sse }: ProgressSectionProps) {
   if (!steps) return null;
 
   return (
-    <SidebarCard title={tr("执行", "Progress")}>
+    <SidebarCard title={tr("执行", "Progress", "진행 상황")}>
       <ul className="space-y-2">
         {steps.map((step, i) => {
           const status: StepStatus =
-            completedSteps.has(step.zh) || completedSteps.has(step.en) ? "done"
-            : activeStep === step.zh || activeStep === step.en ? "active"
+            completedSteps.has(step.zh) || completedSteps.has(step.ko) || completedSteps.has(step.en) ? "done"
+            : activeStep === step.zh || activeStep === step.ko || activeStep === step.en ? "active"
             : "pending";
           return (
             <li key={step.zh} className="flex items-center gap-2.5">
@@ -100,7 +101,7 @@ export function ProgressSection({ sse }: ProgressSectionProps) {
                 status === "active" && "text-foreground font-medium",
                 status === "pending" && "text-muted-foreground/50",
               )}>
-                {tr(step.zh, step.en)}
+                {tr(step.zh, step.en, step.ko)}
               </span>
             </li>
           );

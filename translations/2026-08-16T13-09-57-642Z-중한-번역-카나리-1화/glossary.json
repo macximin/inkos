@@ -1,0 +1,20 @@
+{
+  "terms": [
+    {
+      "source": "林夏",
+      "target": "린샤"
+    },
+    {
+      "source": "老邱",
+      "target": "라오추"
+    },
+    {
+      "source": "顾闻舟",
+      "target": "구원저우"
+    },
+    {
+      "source": "B-17送货单",
+      "target": "B-17 배송 전표"
+    }
+  ]
+}

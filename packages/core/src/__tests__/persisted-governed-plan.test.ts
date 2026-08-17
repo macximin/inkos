@@ -113,9 +113,16 @@ describe("persisted-governed-plan round trip", () => {
     await savePersistedPlan(dir, koreanPlan);
 
     const persisted = await readFile(join(dir, "story", "runtime", "chapter-0001.plan.md"), "utf-8");
+    expect(persisted).toContain("# 1화 기획");
+    expect(persisted).toContain("## 메타데이터");
+    expect(persisted).toContain("골든 오프닝: 예");
     expect(persisted).toContain("# 1화 메모");
     expect(persisted).toContain("## 회차 목표");
     expect(persisted).toContain("## 연결 복선");
+    expect(persisted).toContain("## 집필 의도");
+    expect(persisted).toContain("## 기획 입력");
+    expect(persisted).not.toContain("# Chapter 1 Plan");
+    expect(persisted).not.toContain("## Metadata");
     expect(persisted).not.toContain("## 本章目标");
     expect((await loadPersistedPlan(dir, 1))?.memo).toEqual(koreanPlan.memo);
   });

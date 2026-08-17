@@ -165,7 +165,11 @@ export class ConsolidatorAgent extends BaseAgent {
     const hooks = parsePendingHooksMarkdown(raw);
     if (hooks.length === 0) return 0;
 
-    const language: "zh" | "ko" | "en" = /[\u4e00-\u9fff]/.test(raw) ? "zh" : "en";
+    const language: "zh" | "ko" | "en" = /[\uac00-\ud7a3]/.test(raw)
+      ? "ko"
+      : /[\u4e00-\u9fff]/.test(raw)
+        ? "zh"
+        : "en";
     const summariesRaw = await readFile(join(storyDir, "chapter_summaries.md"), "utf-8").catch(() => "");
 
     const { rerunPromotionPass } = await import("../utils/hook-promotion.js");
@@ -179,8 +183,8 @@ export class ConsolidatorAgent extends BaseAgent {
   private parseVolumeBoundaries(outline: string): Array<{ name: string; startCh: number; endCh: number }> {
     const volumes: Array<{ name: string; startCh: number; endCh: number }> = [];
     const lines = outline.split("\n");
-    const volumeHeader = /^(第[一二三四五六七八九十百千万零〇\d]+卷|Volume\s+\d+)/i;
-    const rangePattern = /[（(]\s*(?:第|[Cc]hapters?\s+)?(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章)?\s*[）)]|(?:第|[Cc]hapters?\s+)(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章)?/i;
+    const volumeHeader = /^(第[一二三四五六七八九十百千万零〇\d]+卷|제\s*\d+\s*권|Volume\s+\d+)/i;
+    const rangePattern = /[（(]\s*(?:第|제\s*|[Cc]hapters?\s+)?(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章|화)?\s*[）)]|(?:第|제\s*|[Cc]hapters?\s+)(\d+)\s*[-–~～—]\s*(\d+)\s*(?:章|화)?/i;
 
     for (const rawLine of lines) {
       const line = rawLine.replace(/^#+\s*/, "").trim();
@@ -204,8 +208,8 @@ export class ConsolidatorAgent extends BaseAgent {
 
   private parseSummaryTable(raw: string): { header: string; rows: Array<{ chapter: number; raw: string }> } {
     const lines = raw.split("\n");
-    const headerLines = lines.filter((l) => l.startsWith("|") && (l.includes("章节") || l.includes("Chapter") || l.includes("---")));
-    const dataLines = lines.filter((l) => l.startsWith("|") && !l.includes("章节") && !l.includes("Chapter") && !l.includes("---"));
+    const headerLines = lines.filter((l) => l.startsWith("|") && (l.includes("章节") || l.includes("회차") || l.includes("Chapter") || l.includes("---")));
+    const dataLines = lines.filter((l) => l.startsWith("|") && !l.includes("章节") && !l.includes("회차") && !l.includes("Chapter") && !l.includes("---"));
 
     const header = headerLines.join("\n");
     const rows = dataLines.map((line) => {

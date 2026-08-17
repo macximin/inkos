@@ -7718,7 +7718,7 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(initImitationBookMock.mock.calls[0]?.[2]).toBe("一个原创故事");
   });
 
-  it("uploads a translation source, creates a translation project, lists it, and exports markdown", async () => {
+  it("uploads a translation source, creates and lists it, then blocks export before review passes", async () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
     const source = "# 第一章 雨夜\n\n雨水落在旧码头。\n";
@@ -7759,10 +7759,13 @@ describe("createStudioServer daemon lifecycle", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ format: "md" }),
     });
-    expect(exported.status).toBe(200);
-    const exportedBody = await exported.json() as { outputPath: string; chaptersExported: number };
-    expect(exportedBody.chaptersExported).toBe(1);
-    await expect(access(exportedBody.outputPath)).resolves.toBeUndefined();
+    expect(exported.status).toBe(409);
+    await expect(exported.json()).resolves.toMatchObject({
+      error: {
+        code: "TRANSLATION_REVIEW_REQUIRED",
+        message: expect.stringContaining("have not passed review"),
+      },
+    });
   });
 
   it("surfaces translation model failures without masking upstream provider errors", async () => {

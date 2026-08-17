@@ -276,3 +276,22 @@ describe("English UI (app language = en)", () => {
     expect(foundationFileLabel("outline/story_frame.md")).toBe("故事基石");
   });
 });
+
+describe("Korean UI (app language = ko)", () => {
+  afterEach(() => {
+    setAppLanguage("zh");
+  });
+
+  it("uses Korean foundation and frontmatter labels without changing the underlying file registry", () => {
+    setAppLanguage("ko");
+    expect(foundationFileLabel("outline/story_frame.md")).toBe("이야기 기반");
+    expect(foundationFileLabel("outline/volume_map.md")).toBe("권 구성");
+    expect(foundationFileLabel("current_state.md")).toBe("현재 상태");
+    expect(foundationFileLabel("pending_hooks.md")).toBe("복선 목록");
+    expect(foundationFileLabel("emotional_arcs.md")).toBe("감정선");
+    expect(frontmatterToCards({ protagonist: { name: "윤태겸" } })).toEqual([
+      { label: "주인공", values: ["윤태겸"] },
+    ]);
+    expect(FOUNDATION_FILE_LABELS["outline/story_frame.md"]).toBe("故事基石");
+  });
+});

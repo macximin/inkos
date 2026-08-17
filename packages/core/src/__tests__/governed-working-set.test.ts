@@ -2,9 +2,59 @@ import { describe, expect, it } from "vitest";
 import {
   buildGovernedCharacterMatrixWorkingSet,
   buildGovernedHookWorkingSet,
+  mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 
 describe("governed-working-set", () => {
+  it("preserves the authoritative hook table when a model returns malformed bullets", () => {
+    const original = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 메모 |",
+      "| --- | --- | --- | --- | --- |",
+      "| H001 | 0 | 미래문장 | open | 선아의 주문 취소 |",
+    ].join("\n");
+    const malformed = "- 미래문장 | 해결 | 선아가 취소를 철회했다.";
+
+    expect(mergeTableMarkdownByKey(original, malformed, [0])).toBe(original);
+  });
+
+  it("does not let hook status move backward during a model merge", () => {
+    const original = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 메모 |",
+      "| --- | --- | --- | --- | --- |",
+      "| H001 | 0 | 미래문장 | resolved | 이미 회수됨 |",
+      "| H002 | 0 | 계약증거 | progressing | 단말 시각 확인 |",
+    ].join("\n");
+    const regressed = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 메모 |",
+      "| --- | --- | --- | --- | --- |",
+      "| H001 | 0 | 미래문장 | open | 다시 열림 |",
+      "| H002 | 0 | 계약증거 | open | 처음 상태 |",
+    ].join("\n");
+
+    const merged = mergeTableMarkdownByKey(original, regressed, [0]);
+    expect(merged).toContain("| H001 | 0 | 미래문장 | resolved | 다시 열림 |");
+    expect(merged).toContain("| H002 | 0 | 계약증거 | progressing | 처음 상태 |");
+  });
+
+  it("allows a deliberate defer transition instead of treating it as regression", () => {
+    const original = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 메모 |",
+      "| --- | --- | --- | --- | --- |",
+      "| H001 | 0 | 미래문장 | open | 다음 화에서 다룸 |",
+      "| H002 | 0 | 계약증거 | progressing | 증거 일부 확인 |",
+    ].join("\n");
+    const deferred = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 메모 |",
+      "| --- | --- | --- | --- | --- |",
+      "| H001 | 0 | 미래문장 | deferred | 의도적으로 뒤로 미룸 |",
+      "| H002 | 0 | 계약증거 | deferred | 외부 확인까지 보류 |",
+    ].join("\n");
+
+    const merged = mergeTableMarkdownByKey(original, deferred, [0]);
+    expect(merged).toContain("| H001 | 0 | 미래문장 | deferred | 의도적으로 뒤로 미룸 |");
+    expect(merged).toContain("| H002 | 0 | 계약증거 | deferred | 외부 확인까지 보류 |");
+  });
+
   it("filters out far-future hooks from the governed hook working set", () => {
     const hooks = [
       "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 备注 |",

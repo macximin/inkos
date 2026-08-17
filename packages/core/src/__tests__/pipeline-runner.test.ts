@@ -1973,6 +1973,61 @@ describe("PipelineRunner", () => {
     }
   });
 
+  it("writes Korean audit drift guidance without English or Chinese wrapper text", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const koreanBook = {
+      ...(await state.loadBookConfig(bookId)),
+      genre: "other",
+      language: "ko" as const,
+      chapterWordCount: 220,
+    };
+
+    await state.saveBookConfig(bookId, koreanBook);
+    await Promise.all([
+      writeFile(join(state.bookDir(bookId), "story", "current_focus.md"), "# 현재 초점\n\n항구의 빚을 압박한다.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "current_state.md"), "# 현재 상태\n\n항구 문 앞에서 사라진 스승을 추적한다.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "story_bible.md"), "# 스토리 바이블\n\n항구 인장은 위조할 수 없다.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "pending_hooks.md"), "# 미회수 복선\n\n사라진 스승의 빚이 남아 있다.\n", "utf-8"),
+    ]);
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        chapterNumber: 1,
+        title: "봉인된 선착장",
+        content: "한서진은 동이 트기 전에 봉인된 선착장에 도착했다.",
+        wordCount: 30,
+        updatedState: "# 현재 상태\n\n한서진은 봉인된 선착장에 있다.\n",
+        updatedHooks: "# 미회수 복선\n\n사라진 스승의 빚이 남아 있다.\n",
+      }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [{
+          severity: "warning",
+          category: "연속성",
+          description: "다음 화에서도 새벽 시각을 정확히 유지하세요.",
+          suggestion: "시간 전환을 건너뛰지 마세요.",
+        }],
+        summary: "경고만 있음",
+      }),
+    );
+
+    try {
+      await runner.writeNextChapter(bookId, 220);
+
+      const driftFile = await readFile(join(state.bookDir(bookId), "story", "audit_drift.md"), "utf-8");
+      const currentState = await readFile(join(state.bookDir(bookId), "story", "current_state.md"), "utf-8");
+      expect(driftFile).toContain("## 검수 이탈 보정 (자동 생성, 다음 화 집필 전 참고)");
+      expect(driftFile).toContain("> 1화 검수에서 다음 화 집필 시 피해야 할 문제가 발견되었습니다:");
+      expect(driftFile).not.toContain("Audit Drift");
+      expect(driftFile).not.toMatch(/[\u3400-\u9fff]/u);
+      expect(currentState).not.toContain("검수 이탈 보정");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes reduced control inputs into auditor and reviser in v2 mode", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "v2",

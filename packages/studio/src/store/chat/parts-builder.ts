@@ -86,23 +86,23 @@ function summarizeToolResult(result: unknown): string {
 
 function compressionLabel(category: ContextCompressionCategory): string {
   return category === "session_context"
-    ? tr("整理会话记忆", "Organize session memory")
-    : tr("压缩故事上下文", "Compress story context");
+    ? tr("整理会话记忆", "Organize session memory", "대화 기억 정리")
+    : tr("压缩故事上下文", "Compress story context", "작품 맥락 압축");
 }
 
 function compressionSourceSummary(sources: readonly string[] | undefined): string {
   if (!sources || sources.length === 0) return "";
   const preview = sources.slice(0, 3).join(", ");
   const suffix = sources.length > 3 ? ` +${sources.length - 3}` : "";
-  return `${tr("来源", "sources")} ${sources.length}: ${preview}${suffix}`;
+  return `${tr("来源", "sources", "출처")} ${sources.length}: ${preview}${suffix}`;
 }
 
 function compressionProgress(event: ContextCompressionStreamEvent): PipelineStage["progress"] | undefined {
   if (event.phase !== "start") return undefined;
   const parts = [
-    event.protectedTokens !== undefined ? `${tr("保护", "protected")} ${event.protectedTokens}` : "",
-    event.compressibleTokens !== undefined ? `${tr("可压缩", "compressible")} ${event.compressibleTokens}` : "",
-    event.budgetTokens !== undefined ? `${tr("预算", "budget")} ${event.budgetTokens}` : "",
+    event.protectedTokens !== undefined ? `${tr("保护", "protected", "보호")} ${event.protectedTokens}` : "",
+    event.compressibleTokens !== undefined ? `${tr("可压缩", "compressible", "압축 가능")} ${event.compressibleTokens}` : "",
+    event.budgetTokens !== undefined ? `${tr("预算", "budget", "예산")} ${event.budgetTokens}` : "",
     compressionSourceSummary(event.sources),
   ].filter(Boolean);
   return {
@@ -136,7 +136,7 @@ function applyContextCompressionEvent(parts: MessagePart[], event: ContextCompre
     runningTool.stages = upsertCompressionStage(runningTool.stages, event);
     if (event.phase === "error") {
       runningTool.status = "error";
-      runningTool.error = event.message ?? `${compressionLabel(event.category)}${tr("失败", " failed")}`;
+      runningTool.error = event.message ?? `${compressionLabel(event.category)}${tr("失败", " failed", " 실패")}`;
     }
     return;
   }
@@ -158,7 +158,7 @@ function applyContextCompressionEvent(parts: MessagePart[], event: ContextCompre
   execution.label = compressionLabel(event.category);
   execution.stages = upsertCompressionStage(execution.stages, event);
   if (event.phase !== "start") execution.completedAt = Date.now();
-  if (event.phase === "error") execution.error = event.message ?? `${compressionLabel(event.category)}${tr("失败", " failed")}`;
+  if (event.phase === "error") execution.error = event.message ?? `${compressionLabel(event.category)}${tr("失败", " failed", " 실패")}`;
   if (!existing) parts.push({ type: "tool", execution });
 }
 
@@ -276,7 +276,7 @@ export function buildPartsFromEvents(events: StreamEvent[]): MessagePart[] {
             exec.status = event.isError ? "error" : "completed";
             exec.completedAt = Date.now();
             if (event.isError) exec.error = localizeKnownRuntimeMessage(summarizeToolResult(event.result));
-            else exec.result = summarizeToolResult(event.result);
+            else exec.result = localizeKnownRuntimeMessage(summarizeToolResult(event.result));
             if (event.details !== undefined) exec.details = event.details;
             if (!event.isError && (exec.tool === "play_start" || exec.tool === "play_step" || exec.tool === "play_revise")) {
               suppressTextAfterPlayTool = true;

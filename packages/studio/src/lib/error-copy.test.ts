@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { localizeKnownRuntimeMessage } from "./error-copy";
+import { setAppLanguage } from "./app-language";
+
+afterEach(() => setAppLanguage("zh"));
 
 describe("localizeKnownRuntimeMessage", () => {
   it("localizes the state-degraded continuation blocker", () => {
@@ -30,5 +33,22 @@ describe("localizeKnownRuntimeMessage", () => {
     );
     expect(cliMessage).toContain("INKOS_LLM_API_KEY 未设置");
     expect(cliMessage).not.toMatch(/kkaiapi/i);
+  });
+
+  it("localizes restored write results and state errors in Korean mode", () => {
+    setAppLanguage("ko");
+    expect(localizeKnownRuntimeMessage(
+      "Wrote chapter 1 \"다섯 시의 흰 종이\" for 한국어화-카나리: 900 words, but the review did not pass (status: state-degraded). Manual review is required before continuing.",
+    )).toBe(
+      "한국어화-카나리의 1화 집필을 마쳤습니다. 분량은 900자이며, 검수를 통과하지 못했습니다(상태: state-degraded). 계속하기 전에 사람이 확인해야 합니다.",
+    );
+    expect(localizeKnownRuntimeMessage(
+      "Latest chapter 1 is state-degraded. Repair state or rewrite that chapter before continuing.",
+    )).toBe(
+      "최신 1화가 상태 저하(state-degraded)입니다. 다음 화를 쓰기 전에 상태를 복구하거나 해당 회차를 다시 써 주세요.",
+    );
+    expect(localizeKnownRuntimeMessage(
+      "Translation export blocked: 2 chapter(s) have not passed review.",
+    )).toBe("번역 내보내기가 차단되었습니다. 검수를 통과하지 못한 회차가 2개 있습니다.");
   });
 });

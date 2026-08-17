@@ -1,0 +1,25 @@
+{
+  "id": "2026-08-16T13-09-57-642Z-중한-번역-카나리-1화",
+  "title": "중한 번역 카나리 1화",
+  "sourceLanguage": "중국어(간체)",
+  "targetLanguage": "한국어",
+  "createdAt": "2026-08-16T13:09:57.642Z",
+  "updatedAt": "2026-08-16T13:27:47.369Z",
+  "source": {
+    "kind": "markdown",
+    "path": ".inkos/uploads/translation/1786885797635-zh-ko-canary-chapter-1.md",
+    "charCount": 681
+  },
+  "chapters": [
+    {
+      "number": 1,
+      "title": "雨夜交割",
+      "sourcePath": "translations/2026-08-16T13-09-57-642Z-중한-번역-카나리-1화/source/chapter-0001.json",
+      "translatedPath": "translations/2026-08-16T13-09-57-642Z-중한-번역-카나리-1화/translated/chapter-0001.json",
+      "segmentCount": 11,
+      "charCount": 669,
+      "status": "reviewed",
+      "translatedTitle": "비 내리는 밤의 거래"
+    }
+  ]
+}

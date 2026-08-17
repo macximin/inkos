@@ -191,7 +191,11 @@ export class ReviserAgent extends BaseAgent {
           : "\n8. 保持章节字数在目标区间内；只有在修复关键问题确实需要时才允许轻微偏离")
       : "";
     const langPrefix = resolvedLanguage === "ko"
-      ? `【언어 우선 규칙】FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS의 자연어를 모두 한국어로 작성하세요. 영어 지침은 작업 규칙일 뿐이며 결과에 영어 또는 중국어 문장을 복사하지 마세요.\n\n`
+      ? `【언어 우선 규칙】FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS의 자연어를 모두 한국어로 작성하세요. 영어 지침은 작업 규칙일 뿐이며 결과에 영어 또는 중국어 문장을 복사하지 마세요.
+UPDATED_STATE는 반드시 '# 현재 상태' 제목으로 시작하세요.
+UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기존 hook_id를 그대로 유지한 완전한 표여야 합니다. 글머리표 목록으로 바꾸거나 hook_id를 삭제하지 마세요. 새 복선이 꼭 필요하면 기존 표에 새 H 번호 행을 추가하세요.
+
+`
       : usesEnglishControl
       ? `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS) MUST be in English.\n\n`
       : "";

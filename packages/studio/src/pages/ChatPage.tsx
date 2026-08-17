@@ -259,7 +259,7 @@ const AssistantMessageParts = memo(function AssistantMessageParts({
 });
 
 function SkillPickerPanel({
-  isZh,
+  uiLanguage,
   skills,
   diagnostics,
   selectedSkillIds,
@@ -270,7 +270,7 @@ function SkillPickerPanel({
   onToggleSkill,
   onImport,
 }: {
-  readonly isZh: boolean;
+  readonly uiLanguage: UiLanguage;
   readonly skills: ReadonlyArray<StudioSkill>;
   readonly diagnostics?: ReadonlyArray<{ readonly path?: string; readonly message?: string }>;
   readonly selectedSkillIds: ReadonlyArray<string>;
@@ -283,17 +283,20 @@ function SkillPickerPanel({
 }) {
   const selected = new Set(selectedSkillIds);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const copy = (ko: string, zh: string, en: string) => uiLanguage === "ko" ? ko : uiLanguage === "zh" ? zh : en;
 
   return (
     <div className="absolute bottom-[calc(100%+10px)] left-0 z-40 w-full overflow-hidden rounded-2xl border border-border/60 bg-card/95 shadow-2xl backdrop-blur">
       <div className="border-b border-border/40 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-bold">{isZh ? "选择 Agent Skill" : "Select Agent Skills"}</div>
+            <div className="text-sm font-bold">{copy("Agent Skill 선택", "选择 Agent Skill", "Select Agent Skills")}</div>
             <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              {isZh
-                ? "Agent 会按当前意图自主调用；点选 Skill 可强制它随下一条消息启用。"
-                : "The agent can choose a skill from your intent; selecting one forces it for the next message."}
+              {copy(
+                "Agent가 요청에 맞는 Skill을 고릅니다. 직접 선택하면 다음 메시지에 반드시 사용합니다.",
+                "Agent 会按当前意图自主调用；点选 Skill 可强制它随下一条消息启用。",
+                "The agent can choose a skill from your intent; selecting one forces it for the next message.",
+              )}
             </p>
           </div>
           <div className="flex shrink-0 items-center">
@@ -304,7 +307,7 @@ function SkillPickerPanel({
               className="flex items-center gap-1.5 rounded-lg border border-border/50 px-3 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-40"
             >
               <FolderUp size={13} />
-              {isZh ? "导入" : "Import"}
+              {copy("가져오기", "导入", "Import")}
             </button>
             <input
               ref={folderInputRef}
@@ -324,20 +327,20 @@ function SkillPickerPanel({
         {createError ? <div className="mb-3 rounded-xl bg-destructive/10 px-3 py-2 text-xs text-destructive">{createError}</div> : null}
         {diagnostics?.length ? (
           <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            <div className="font-semibold">{isZh ? "部分外部 Skill 未加载" : "Some external skills were not loaded"}</div>
+            <div className="font-semibold">{copy("일부 외부 Skill을 불러오지 못했습니다", "部分外部 Skill 未加载", "Some external skills were not loaded")}</div>
             {diagnostics.slice(0, 4).map((item, index) => (
               <div key={`${item.path ?? "skill"}-${index}`} className="mt-1 break-all">
-                {item.path ? `${item.path}: ` : ""}{item.message ?? (isZh ? "格式无效" : "Invalid format")}
+                {item.path ? `${item.path}: ` : ""}{item.message ?? copy("형식이 올바르지 않습니다", "格式无效", "Invalid format")}
               </div>
             ))}
           </div>
         ) : null}
         {loading ? (
-          <div className="px-2 py-6 text-center text-sm text-muted-foreground">{isZh ? "加载 Skill..." : "Loading skills..."}</div>
+          <div className="px-2 py-6 text-center text-sm text-muted-foreground">{copy("Skill을 불러오는 중...", "加载 Skill...", "Loading skills...")}</div>
         ) : error ? (
           <div className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>
         ) : skills.length === 0 ? (
-          <div className="px-2 py-6 text-center text-sm text-muted-foreground">{isZh ? "还没有可用 Skill。" : "No skills available yet."}</div>
+          <div className="px-2 py-6 text-center text-sm text-muted-foreground">{copy("사용할 수 있는 Skill이 아직 없습니다.", "还没有可用 Skill。", "No skills available yet.")}</div>
         ) : (
           <div className="grid gap-2 md:grid-cols-2">
             {skills.map((skill) => {
@@ -673,7 +676,11 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
     }
     setAttachedFiles((prev) => [...prev, ...accepted].slice(0, MAX_CHAT_ATTACHMENTS));
     setAttachmentError(rejected.length > 0
-      ? (isZh ? `以下文件过大，未添加：${rejected.join("、")}` : `Some files were too large: ${rejected.join(", ")}`)
+      ? copy(
+          `파일이 너무 커서 추가하지 못했습니다: ${rejected.join(", ")}`,
+          `以下文件过大，未添加：${rejected.join("、")}`,
+          `Some files were too large: ${rejected.join(", ")}`,
+        )
       : null);
   };
 
@@ -865,14 +872,18 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
 
   const emptyGuidance = (() => {
     if (currentSessionKind === "short") {
-      return isZh
-        ? "说一个短篇方向、标题灵感、人物压力或核心冲突，我会走 InkOS Short 生成正文、简介和封面。"
-        : "Describe a short-fiction direction, title hook, pressure, or core conflict to run InkOS Short.";
+      return copy(
+        "단편의 방향, 제목 아이디어, 인물의 압박이나 핵심 갈등을 들려주세요. InkOS Short가 본문·소개·표지를 만듭니다.",
+        "说一个短篇方向、标题灵感、人物压力或核心冲突，我会走 InkOS Short 生成正文、简介和封面。",
+        "Describe a short-fiction direction, title hook, pressure, or core conflict to run InkOS Short.",
+      );
     }
     if (currentSessionKind === "play") {
-      return isZh
-        ? "说一个可玩的世界、角色处境或开场动作，我会启动互动世界；之后你可以自由行动或点建议动作。"
-        : "Describe a playable world, character situation, or opening action to start an interactive world.";
+      return copy(
+        "플레이할 세계, 인물의 처지나 첫 행동을 들려주세요. 인터랙티브 세계를 시작한 뒤 자유롭게 행동하거나 제안된 행동을 고를 수 있습니다.",
+        "说一个可玩的世界、角色处境或开场动作，我会启动互动世界；之后你可以自由行动或点建议动作。",
+        "Describe a playable world, character situation, or opening action to start an interactive world.",
+      );
     }
     return copy(
       "쓰고 싶은 이야기를 들려주세요 — 장르, 세계관, 주인공, 핵심 갈등",
@@ -902,7 +913,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
               <Gamepad2 size={24} className="text-muted-foreground" />
             </div>
             <p className="text-sm text-muted-foreground/70 max-w-md leading-7">
-              {isZh ? "选个玩法，进去再聊你想玩的世界。" : "Pick a playstyle, then describe the world you want in chat."}
+              {copy("플레이 방식을 고른 뒤 원하는 세계를 이야기해 주세요.", "选个玩法，进去再聊你想玩的世界。", "Pick a playstyle, then describe the world you want in chat.")}
             </p>
             <div className="flex gap-3">
               <button
@@ -910,16 +921,16 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                 onClick={() => { if (activeSessionId) setSessionPlayMode(activeSessionId, "guided"); }}
                 className="w-40 rounded-xl border border-border/50 bg-secondary/30 px-4 py-3 text-left transition-all hover:border-primary/40 hover:bg-primary/5"
               >
-                <div className="text-sm font-medium text-foreground">{isZh ? "点着玩" : "Choices"}</div>
-                <div className="mt-1 text-xs leading-5 text-muted-foreground">{isZh ? "GM 给选项，点着推进" : "Pick from offered actions"}</div>
+                <div className="text-sm font-medium text-foreground">{copy("선택형", "点着玩", "Choices")}</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">{copy("GM이 제시한 행동을 골라 진행", "GM 给选项，点着推进", "Pick from offered actions")}</div>
               </button>
               <button
                 type="button"
                 onClick={() => { if (activeSessionId) setSessionPlayMode(activeSessionId, "open"); }}
                 className="w-40 rounded-xl border border-border/50 bg-secondary/30 px-4 py-3 text-left transition-all hover:border-primary/40 hover:bg-primary/5"
               >
-                <div className="text-sm font-medium text-foreground">{isZh ? "自由玩" : "Free"}</div>
-                <div className="mt-1 text-xs leading-5 text-muted-foreground">{isZh ? "自己打字，想干嘛干嘛" : "Type anything you want"}</div>
+                <div className="text-sm font-medium text-foreground">{copy("자유형", "自由玩", "Free")}</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">{copy("원하는 행동을 직접 입력", "自己打字，想干嘛干嘛", "Type anything you want")}</div>
               </button>
             </div>
           </div>
@@ -1023,7 +1034,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
               <Message from="assistant">
                 <MessageContent>
                   <Shimmer className="text-sm" duration={1.5}>
-                    {isZh ? "思考中..." : "Thinking..."}
+                    {copy("생각 중...", "思考中...", "Thinking...")}
                   </Shimmer>
                 </MessageContent>
               </Message>
@@ -1040,7 +1051,6 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
             <QuickActions
               onAction={handleQuickAction}
               disabled={loading || !activeSessionId}
-              isZh={isZh}
             />
           </div>
         </div>
@@ -1078,7 +1088,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
               className="flex items-center gap-1.5 rounded-lg border border-border/50 bg-secondary/30 px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
             >
               <RotateCcw size={14} />
-              {isZh ? "重试上一条消息" : "Retry last message"}
+              {copy("마지막 메시지 다시 시도", "重试上一条消息", "Retry last message")}
             </button>
           </div>
         </div>
@@ -1090,7 +1100,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
             <div className="relative flex-1 rounded-xl bg-secondary/30 transition-all">
               {skillPanelOpen ? (
                 <SkillPickerPanel
-                  isZh={isZh}
+                  uiLanguage={uiLanguage}
                   skills={availableSkills}
                   diagnostics={skillsData?.diagnostics}
                   selectedSkillIds={selectedSkillIds}
@@ -1125,7 +1135,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                         type="button"
                         onClick={() => setSelectedSkillIds((prev) => prev.filter((id) => id !== skill.id))}
                         className="rounded-full p-0.5 hover:bg-primary/20"
-                        aria-label={isZh ? `移除 ${skill.name}` : `Remove ${skill.name}`}
+                        aria-label={copy(`${skill.name} 제거`, `移除 ${skill.name}`, `Remove ${skill.name}`)}
                       >
                         <X size={12} />
                       </button>
@@ -1149,7 +1159,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                             type="button"
                             onClick={() => setAttachedFiles((prev) => prev.filter((item) => item !== file))}
                             className="rounded-full p-0.5 hover:bg-muted"
-                            aria-label={isZh ? `移除 ${file.name}` : `Remove ${file.name}`}
+                            aria-label={copy(`${file.name} 제거`, `移除 ${file.name}`, `Remove ${file.name}`)}
                           >
                             <X size={12} />
                           </button>
@@ -1198,7 +1208,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                   onClick={() => void onSend(input)}
                   disabled={(!input.trim() && attachedFiles.length === 0 && !loading) || !activeSessionId}
                   className="w-8 h-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center shrink-0 hover:scale-105 active:scale-95 transition-all disabled:opacity-20 disabled:scale-100 shadow-sm shadow-primary/20"
-                  title={loading && !input.trim() && attachedFiles.length === 0 ? (isZh ? "停止当前回复" : "Stop") : undefined}
+                  title={loading && !input.trim() && attachedFiles.length === 0 ? copy("현재 응답 중지", "停止当前回复", "Stop") : undefined}
                 >
                   {loading && !input.trim() && attachedFiles.length === 0
                     ? <Square size={13} fill="currentColor" />
@@ -1207,7 +1217,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
               </div>
               <div className="flex items-center gap-2 px-3 pb-2 border-t border-border/20 pt-1.5">
                 {modelPickerStatus === "loading" ? (
-                  <span className="text-[15px] text-muted-foreground/40 animate-pulse">{isZh ? "加载模型..." : "Loading models..."}</span>
+                  <span className="text-[15px] text-muted-foreground/40 animate-pulse">{copy("모델을 불러오는 중...", "加载模型...", "Loading models...")}</span>
                 ) : modelPickerStatus === "ready" ? (
                   <DropdownMenu>
                     <DropdownMenuTrigger className="flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-muted text-[16px] transition-colors cursor-pointer">
@@ -1237,10 +1247,10 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                     type="button"
                     onClick={() => setWorldPanelOpen((v) => !v)}
                     className={`ml-auto flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[16px] font-medium transition-colors ${worldPanelOpen ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted hover:text-primary"}`}
-                    title={isZh ? "查看世界：持有 / 状态 / 关系" : "View world: holdings / state / relations"}
+                    title={copy("세계 보기: 소지품 / 상태 / 관계", "查看世界：持有 / 状态 / 关系", "View world: holdings / state / relations")}
                   >
                     <Gamepad2 size={18} />
-                    {isZh ? "查看世界" : "View World"}
+                    {copy("세계 보기", "查看世界", "View World")}
                   </button>
                 )}
               </div>
@@ -1251,22 +1261,22 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                   type="button"
                   onClick={() => setPlayImageMenuOpen((value) => !value)}
                   disabled={loading || !activeSessionId}
-                  title={isZh ? "自动配图" : "Auto illustration"}
+                  title={copy("자동 삽화", "自动配图", "Auto illustration")}
                   className={`flex h-10 w-10 items-center justify-center rounded-xl border border-border/50 bg-secondary/40 shadow-sm transition-all hover:border-primary/50 hover:bg-primary/10 hover:text-primary active:scale-95 disabled:cursor-not-allowed disabled:opacity-30 ${playImageMenuOpen || playImageSettings.actors || playImageSettings.moments || playImageSettings.inventory ? "text-primary" : "text-muted-foreground"}`}
-                  aria-label={isZh ? "自动配图" : "Auto illustration"}
+                  aria-label={copy("자동 삽화", "自动配图", "Auto illustration")}
                 >
                   <Palette size={17} />
                 </button>
                 {playImageMenuOpen ? (
                   <div className="absolute bottom-12 right-0 z-30 w-44 rounded-xl border border-border/50 bg-card/95 p-2 shadow-xl backdrop-blur">
                     <div className="mb-1.5 px-1 text-[12px] leading-5 font-semibold uppercase tracking-wider text-muted-foreground/60">
-                      {isZh ? "自动配图" : "Auto illustration"}
+                      {copy("자동 삽화", "自动配图", "Auto illustration")}
                     </div>
                     {(["actors", "moments", "inventory"] as const).map((key) => (
                       <label
                         key={key}
                         className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-[14px] leading-6 ${playImageCoverReady ? "cursor-pointer text-foreground hover:bg-secondary/50" : "cursor-not-allowed text-muted-foreground/40"}`}
-                        title={playImageCoverReady ? undefined : (isZh ? "先在「模型配置」里配好生图 API 才能开启" : "Configure an image API in Model Settings first")}
+                        title={playImageCoverReady ? undefined : copy("먼저 모델 설정에서 이미지 생성 API를 연결해 주세요.", "先在「模型配置」里配好生图 API 才能开启", "Configure an image API in Model Settings first")}
                       >
                         <input
                           type="checkbox"
@@ -1276,15 +1286,15 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
                           className="h-4 w-4 accent-primary"
                         />
                         {key === "actors"
-                          ? (isZh ? "为角色配图" : "Characters")
+                          ? copy("인물 삽화", "为角色配图", "Characters")
                           : key === "moments"
-                            ? (isZh ? "为时刻配图" : "Moments")
-                            : (isZh ? "为背包配图" : "Inventory")}
+                            ? copy("장면 삽화", "为时刻配图", "Moments")
+                            : copy("소지품 삽화", "为背包配图", "Inventory")}
                       </label>
                     ))}
                     {!playImageCoverReady ? (
                       <p className="mt-1 px-1 text-[12px] leading-5 text-muted-foreground/50">
-                        {isZh ? "未检测到生图 API。" : "No image API configured."}
+                        {copy("연결된 이미지 생성 API가 없습니다.", "未检测到生图 API。", "No image API configured.")}
                       </p>
                     ) : null}
                   </div>
@@ -1294,7 +1304,7 @@ export function ChatPage({ activeBookId, mode = activeBookId ? "book" : "book-cr
           </div>
           {playImageError ? (
             <p className="mt-2 text-right text-[13px] leading-5 text-destructive/80">
-              {isZh ? `配图失败：${playImageError}` : `Image failed: ${playImageError}`}
+              {copy(`삽화 생성 실패: ${playImageError}`, `配图失败：${playImageError}`, `Image failed: ${playImageError}`)}
             </p>
           ) : null}
         </div>

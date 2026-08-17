@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { buildApiUrl } from "../../hooks/use-api";
 import { tr } from "../../lib/app-language";
+import { localizeKnownRuntimeMessage } from "../../lib/error-copy";
 import { chatSelectors, useChatStore } from "../../store/chat";
 import { usePreferencesStore } from "../../store/preferences";
 import {
@@ -101,16 +102,18 @@ function formatProgress(progress: NonNullable<PipelineStage["progress"]>): strin
   const secs = Math.round(progress.elapsedMs / 1000);
   const statusLabel = progress.status === "thinking" ? tr("思考中", "Thinking", "생각 중") : progress.status ?? "";
   const chars = progress.totalChars > 0
-    ? progress.chineseChars > 0 ? `${progress.totalChars}字` : `${progress.totalChars} chars`
+    ? tr(`${progress.totalChars}字`, `${progress.totalChars} chars`, `${progress.totalChars}자`)
     : "";
-  const parts = [statusLabel, `${secs}s`, chars].filter(Boolean);
+  const parts = [statusLabel, tr(`${secs}秒`, `${secs}s`, `${secs}초`), chars].filter(Boolean);
   return parts.join(" · ");
 }
 
 function formatDuration(startedAt: number, completedAt?: number): string {
   const ms = (completedAt ?? Date.now()) - startedAt;
   const secs = Math.round(ms / 1000);
-  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  return secs < 60
+    ? tr(`${secs}秒`, `${secs}s`, `${secs}초`)
+    : tr(`${Math.floor(secs / 60)}分 ${secs % 60}秒`, `${Math.floor(secs / 60)}m ${secs % 60}s`, `${Math.floor(secs / 60)}분 ${secs % 60}초`);
 }
 
 function encodeProjectPath(path: string): string {
@@ -277,14 +280,14 @@ function ScriptStoryboardResultPreview({ exec, onOpenFilmStudio }: { exec: ToolE
     && details.kind !== "interactive_film_created"
   )) return null;
   const maybeRows: Array<readonly [string, string] | null> = [
-    details.specPath ? [tr("规格", "Spec"), details.specPath] : null,
-    details.storyGraphPath ? [tr("剧情图谱", "Story graph"), details.storyGraphPath] : null,
-    details.storyTreePath ? [tr("剧情树", "Story tree"), details.storyTreePath] : null,
-    details.flagsPath ? [tr("变量旗标", "Flags"), details.flagsPath] : null,
-    details.scriptPath ? [tr("剧本", "Script"), details.scriptPath] : null,
-    details.storyboardPath ? [tr("分镜", "Storyboard"), details.storyboardPath] : null,
-    details.imagePromptsPath ? [tr("图像提示词", "Image prompts"), details.imagePromptsPath] : null,
-    details.assetsManifestPath ? [tr("图片资产", "Image assets"), details.assetsManifestPath] : null,
+    details.specPath ? [tr("规格", "Spec", "기획서"), details.specPath] : null,
+    details.storyGraphPath ? [tr("剧情图谱", "Story graph", "스토리 그래프"), details.storyGraphPath] : null,
+    details.storyTreePath ? [tr("剧情树", "Story tree", "스토리 트리"), details.storyTreePath] : null,
+    details.flagsPath ? [tr("变量旗标", "Flags", "상태 변수"), details.flagsPath] : null,
+    details.scriptPath ? [tr("剧本", "Script", "대본"), details.scriptPath] : null,
+    details.storyboardPath ? [tr("分镜", "Storyboard", "스토리보드"), details.storyboardPath] : null,
+    details.imagePromptsPath ? [tr("图像提示词", "Image prompts", "이미지 프롬프트"), details.imagePromptsPath] : null,
+    details.assetsManifestPath ? [tr("图片资产", "Image assets", "이미지 파일"), details.assetsManifestPath] : null,
   ];
   const rows = maybeRows.filter((row): row is readonly [string, string] => Boolean(row));
   if (rows.length === 0 && !(details.kind === "interactive_film_created" && details.projectId)) return null;
@@ -293,10 +296,10 @@ function ScriptStoryboardResultPreview({ exec, onOpenFilmStudio }: { exec: ToolE
       <div className="flex items-center justify-between gap-3">
         <div className="text-[16px] leading-6 font-semibold text-primary">
           {details.kind === "script_created"
-            ? tr("剧本已生成", "Script generated")
+            ? tr("剧本已生成", "Script generated", "대본 생성 완료")
             : details.kind === "storyboard_created"
-              ? tr("分镜已生成", "Storyboard generated")
-              : tr("互动影游已生成", "Interactive film generated")}
+              ? tr("分镜已生成", "Storyboard generated", "스토리보드 생성 완료")
+              : tr("互动影游已生成", "Interactive film generated", "인터랙티브 영상 생성 완료")}
         </div>
         {details.kind === "interactive_film_created" && details.projectId && onOpenFilmStudio && (
           <button
@@ -305,7 +308,7 @@ function ScriptStoryboardResultPreview({ exec, onOpenFilmStudio }: { exec: ToolE
             onClick={() => onOpenFilmStudio(details.projectId!)}
             className="shrink-0 rounded-lg bg-primary px-3 py-1 text-[13px] font-semibold text-primary-foreground hover:opacity-90 transition-opacity"
           >
-            {tr("打开创作向导 →", "Open creation wizard →")}
+            {tr("打开创作向导 →", "Open creation wizard →", "창작 화면 열기 →")}
           </button>
         )}
       </div>
@@ -319,10 +322,10 @@ function ScriptStoryboardResultPreview({ exec, onOpenFilmStudio }: { exec: ToolE
               className="group flex w-full items-start justify-between gap-3 rounded-lg border border-transparent px-2 py-1.5 text-left transition hover:border-primary/25 hover:bg-background/65"
             >
               <span className="min-w-0 text-[13px] leading-5 text-muted-foreground break-all">
-                <span className="font-medium text-foreground">{label}{tr("：", ": ")}</span>{path}
+                <span className="font-medium text-foreground">{label}{tr("：", ": ", ": ")}</span>{path}
               </span>
               <span className="mt-0.5 shrink-0 rounded-md border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[11px] font-semibold text-primary opacity-80 transition group-hover:opacity-100">
-                {tr("查看", "View")}
+                {tr("查看", "View", "보기")}
               </span>
             </button>
           ))}
@@ -341,14 +344,14 @@ function ShortFictionResultPreview({ exec }: { exec: ToolExecution }) {
     if (!coverError) return null;
     return (
       <div className="mx-3 mb-3 mt-1 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-        {tr("封面未生成：", "Cover not generated: ")}{coverError}
+        {tr("封面未生成：", "Cover not generated: ", "표지 생성 실패: ")}{coverError}
       </div>
     );
   }
 
   const coverUrl = buildApiUrl(`/project/files/${encodeProjectPath(coverPath)}`);
   if (!coverUrl) return null;
-  const title = details?.title ?? details?.storyId ?? tr("短篇封面", "Short fiction cover");
+  const title = details?.title ?? details?.storyId ?? tr("短篇封面", "Short fiction cover", "단편 표지");
 
   return (
     <div className="mx-3 mb-3 mt-1 overflow-hidden rounded-xl border border-border/40 bg-background/70">
@@ -471,13 +474,13 @@ function PlaySceneImagePreview({ details }: { details: PlayToolDetails }) {
     <div className="mt-3 overflow-hidden rounded-xl border border-border/40 bg-background/80">
       <img
         src={readyUrl}
-        alt={tr("本幕配图", "Scene illustration")}
+        alt={tr("本幕配图", "Scene illustration", "현재 장면 이미지")}
         className="block max-h-[420px] w-full object-contain bg-muted/20"
         loading="lazy"
       />
       {details.turn != null && (
         <div className="border-t border-border/40 px-3 py-2.5 text-[14px] leading-6 text-muted-foreground">
-          {tr(`第 ${Math.trunc(details.turn)} 幕配图`, `Scene ${Math.trunc(details.turn)} illustration`)}
+          {tr(`第 ${Math.trunc(details.turn)} 幕配图`, `Scene ${Math.trunc(details.turn)} illustration`, `${Math.trunc(details.turn)}번째 장면 이미지`)}
         </div>
       )}
     </div>
@@ -529,9 +532,9 @@ export function getProposedActionContractRows(details: ProposedActionDetails): R
   if (details.action !== "play_start" || !playStart) return [];
   const rows: Array<{ label: string; value: string }> = [];
   const worldContract = playStart.worldContract?.trim();
-  if (worldContract) rows.push({ label: tr("世界契约", "World contract"), value: worldContract });
+  if (worldContract) rows.push({ label: tr("世界契约", "World contract", "세계관 규칙"), value: worldContract });
   const visualContract = playStart.visualContract?.trim();
-  if (visualContract) rows.push({ label: tr("视觉契约", "Visual contract"), value: visualContract });
+  if (visualContract) rows.push({ label: tr("视觉契约", "Visual contract", "시각 규칙"), value: visualContract });
   return rows;
 }
 
@@ -612,12 +615,12 @@ function PlayResultPreview({ exec }: { exec: ToolExecution }) {
   const details = getPlayToolDetails(exec);
   if (!details?.sceneText) return null;
   const label = details.kind === "play_world_started"
-    ? tr("互动世界已启动", "Interactive world started")
+    ? tr("互动世界已启动", "Interactive world started", "인터랙티브 세계 시작됨")
     : details.kind === "play_turn_revised"
-      ? tr("互动回合已重做", "Play turn redone")
+      ? tr("互动回合已重做", "Play turn redone", "진행 장면 다시 쓰기 완료")
       : details.kind === "play_variant_restored"
-        ? tr("已切换互动回合版本", "Switched play turn variant")
-        : tr("互动世界已推进", "Interactive world advanced");
+        ? tr("已切换互动回合版本", "Switched play turn variant", "진행 장면 버전 전환됨")
+        : tr("互动世界已推进", "Interactive world advanced", "인터랙티브 세계 진행됨");
   return (
     <div className="mx-3 mb-3 mt-1 rounded-xl border border-primary/20 bg-primary/5 px-3 py-3">
       <div className="mb-2 text-[16px] leading-6 font-semibold text-primary">
@@ -634,18 +637,18 @@ function PlayEditPreview({ exec }: { exec: ToolExecution }) {
   const details = getPlayEditDetails(exec);
   if (!details) return null;
   const changes = [
-    details.updatedWorldContract ? tr("世界契约", "World contract") : "",
-    details.updatedVisualContract ? tr("视觉契约", "Visual contract") : "",
-    details.updatedPremise ? tr("世界前提", "World premise") : "",
+    details.updatedWorldContract ? tr("世界契约", "World contract", "세계관 규칙") : "",
+    details.updatedVisualContract ? tr("视觉契约", "Visual contract", "시각 규칙") : "",
+    details.updatedPremise ? tr("世界前提", "World premise", "세계 전제") : "",
     details.updatedEntities && details.updatedEntities > 0
-      ? tr(`${details.updatedEntities} 张卡片`, `${details.updatedEntities} cards`)
+      ? tr(`${details.updatedEntities} 张卡片`, `${details.updatedEntities} cards`, `카드 ${details.updatedEntities}개`)
       : "",
   ].filter(Boolean);
   return (
     <div className="mx-3 mb-3 mt-1 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
-      <div className="text-[16px] leading-6 font-semibold text-primary">{tr("互动世界设定已更新", "Interactive world settings updated")}</div>
+      <div className="text-[16px] leading-6 font-semibold text-primary">{tr("互动世界设定已更新", "Interactive world settings updated", "인터랙티브 세계 설정 갱신됨")}</div>
       <div className="mt-1 text-xs leading-5 text-muted-foreground">
-        {changes.length > 0 ? changes.join(" · ") : tr("已写入当前世界。", "Written to the current world.")}
+        {changes.length > 0 ? changes.join(" · ") : tr("已写入当前世界。", "Written to the current world.", "현재 세계에 반영했습니다.")}
       </div>
     </div>
   );
@@ -695,6 +698,7 @@ function useElapsedTimer(startedAt: number, active: boolean): number {
  * re-applying the new default.
  */
 export function PipelineResultDetails({ result, defaultOpen }: { result: string; defaultOpen: boolean }) {
+  const localizedResult = localizeKnownRuntimeMessage(result);
   return (
     <details
       key={defaultOpen ? "result-default-open" : "result-default-collapsed"}
@@ -705,7 +709,7 @@ export function PipelineResultDetails({ result, defaultOpen }: { result: string;
         {tr("查看操作结果", "View result", "작업 결과 보기")}
       </summary>
       <div className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words leading-5 text-foreground">
-        {result}
+        {localizedResult}
       </div>
     </details>
   );
@@ -867,7 +871,7 @@ export function UtilityExecutionRow({ exec }: { exec: ToolExecution }) {
         <ChevronDown size={10} className="shrink-0 transition-transform group-open:rotate-180" />
       </summary>
       <div className="mt-1 mb-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/40 bg-background/60 px-2 py-1.5 leading-5">
-        {exec.result}
+        {typeof exec.result === "string" ? localizeKnownRuntimeMessage(exec.result) : exec.result}
       </div>
     </details>
   );
@@ -882,7 +886,7 @@ function UtilityToolsGroup({ execs }: { execs: ToolExecution[] }) {
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer text-xs text-muted-foreground">
         <Wrench size={12} />
-        <span>{tr(`${execs.length} 个文件操作`, `${execs.length} file operation${execs.length === 1 ? "" : "s"}`)}</span>
+        <span>{tr(`${execs.length} 个文件操作`, `${execs.length} file operation${execs.length === 1 ? "" : "s"}`, `파일 작업 ${execs.length}건`)}</span>
         {allDone && !hasError && <CheckCircle2 size={10} className="text-green-600 dark:text-green-400" />}
         {hasError && <XCircle size={10} className="text-destructive" />}
         {!allDone && <Loader2 size={10} className="animate-spin text-primary" />}

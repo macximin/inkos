@@ -176,6 +176,7 @@ const ProposeActionParams = Type.Object({
     ], { description: "Confirmed target platform, e.g. tomato for 番茄." })),
     language: Type.Optional(Type.Union([
       Type.Literal("zh"),
+      Type.Literal("ko"),
       Type.Literal("en"),
     ], { description: "Confirmed writing language." })),
     targetChapters: Type.Optional(Type.Number({
@@ -319,50 +320,61 @@ function proposedActionTargetRoute(action: ProposeActionParamsType["action"]): P
   return undefined;
 }
 
-function proposedActionFallbackTitle(action: ProposeActionParamsType["action"], isZh: boolean): string {
+function proposedActionCopy(language: "zh" | "ko" | "en", zh: string, en: string, ko: string): string {
+  return language === "zh" ? zh : language === "ko" ? ko : en;
+}
+
+function proposedActionFallbackTitle(action: ProposeActionParamsType["action"], language: "zh" | "ko" | "en"): string {
+  const copy = (zh: string, en: string, ko: string) => proposedActionCopy(language, zh, en, ko);
   switch (action) {
     case "create_book":
-      return isZh ? "创建长篇书籍" : "Create a long-form book";
+      return copy("创建长篇书籍", "Create a long-form book", "장편 작품 만들기");
     case "short_run":
-      return isZh ? "生成 InkOS Short" : "Generate InkOS Short";
+      return copy("生成 InkOS Short", "Generate InkOS Short", "InkOS Short 만들기");
     case "play_start":
-      return isZh ? "启动 InkOS Play" : "Start InkOS Play";
+      return copy("启动 InkOS Play", "Start InkOS Play", "InkOS Play 시작");
     case "generate_cover":
-      return isZh ? "生成封面" : "Generate cover";
+      return copy("生成封面", "Generate cover", "표지 만들기");
     case "fanfic_init":
-      return isZh ? "打开同人创作" : "Open fanfiction workflow";
+      return copy("打开同人创作", "Open fanfiction workflow", "팬픽 창작 열기");
     case "continuation_import":
-      return isZh ? "打开续写导入" : "Open continuation import";
+      return copy("打开续写导入", "Open continuation import", "이어쓰기 가져오기 열기");
     case "spinoff_create":
-      return isZh ? "打开番外创作" : "Open side-story workflow";
+      return copy("打开番外创作", "Open side-story workflow", "외전 창작 열기");
     case "style_imitation":
-      return isZh ? "打开仿写/文风分析" : "Open style imitation";
+      return copy("打开仿写/文风分析", "Open style imitation", "문체 분석 열기");
     case "script_create":
-      return isZh ? "创建剧本" : "Create script";
+      return copy("创建剧本", "Create script", "대본 만들기");
     case "storyboard_create":
-      return isZh ? "创建分镜" : "Create storyboard";
+      return copy("创建分镜", "Create storyboard", "스토리보드 만들기");
     case "interactive_film_create":
-      return isZh ? "创建互动影游" : "Create interactive film";
+      return copy("创建互动影游", "Create interactive film", "인터랙티브 영상 만들기");
     case "translation_create":
-      return isZh ? "创建翻译项目" : "Create translation project";
+      return copy("创建翻译项目", "Create translation project", "번역 프로젝트 만들기");
     case "draft_structure":
-      return isZh ? "生成故事结构" : "Draft story structure";
+      return copy("生成故事结构", "Draft story structure", "이야기 구조 만들기");
     case "connect_choice":
-      return isZh ? "连接选项" : "Connect choice";
+      return copy("连接选项", "Connect choice", "선택지 연결");
     case "remove_node":
-      return isZh ? "删除节点" : "Remove node";
+      return copy("删除节点", "Remove node", "노드 삭제");
   }
 }
 
-function proposedActionFallbackSummary(action: ProposeActionParamsType["action"], isZh: boolean): string {
+function proposedActionFallbackSummary(action: ProposeActionParamsType["action"], language: "zh" | "ko" | "en"): string {
   if (proposedActionTargetRoute(action)) {
-    return isZh
-      ? "确认后只会打开现有 Studio 工具，不会直接生成成品。"
-      : "After confirmation, InkOS will only open the existing Studio tool; it will not generate finished content directly.";
+    return proposedActionCopy(
+      language,
+      "确认后只会打开现有 Studio 工具，不会直接生成成品。",
+      "After confirmation, InkOS will only open the existing Studio tool; it will not generate finished content directly.",
+      "확인하면 기존 Studio 도구만 열며 완성물을 바로 만들지는 않습니다.",
+    );
   }
-  return isZh
-    ? "确认后会切换到对应入口并执行这条需求。"
-    : "After confirmation, InkOS will switch to the matching surface and run this request.";
+  return proposedActionCopy(
+    language,
+    "确认后会切换到对应入口并执行这条需求。",
+    "After confirmation, InkOS will switch to the matching surface and run this request.",
+    "확인하면 알맞은 화면으로 이동해 이 요청을 실행합니다.",
+  );
 }
 
 function compactObject<T extends Record<string, unknown>>(value: T | undefined): T | undefined {
@@ -513,9 +525,8 @@ export function createProposeActionTool(
     async execute(_toolCallId: string, params: ProposeActionParamsType): Promise<AgentToolResult<unknown>> {
       const targetSessionKind = proposedActionSessionKind(params.action);
       const targetRoute = proposedActionTargetRoute(params.action);
-      const isZh = language === "zh";
-      const title = params.title?.trim() || proposedActionFallbackTitle(params.action, isZh);
-      const summary = params.summary?.trim() || proposedActionFallbackSummary(params.action, isZh);
+      const title = params.title?.trim() || proposedActionFallbackTitle(params.action, language);
+      const summary = params.summary?.trim() || proposedActionFallbackSummary(params.action, language);
       const proposedPayload = validateProposedActionPayload(proposedActionPayload(params, language));
       if (proposedPayload.error) {
         throw new Error(`Invalid proposed action payload: ${proposedPayload.error}`);
@@ -528,7 +539,7 @@ export function createProposeActionTool(
           title,
           summary,
           "",
-          `Instruction: ${params.instruction}`,
+          `${proposedActionCopy(language, "指令", "Instruction", "요청")}: ${params.instruction}`,
         ].join("\n"),
         {
           kind: "proposed_action",

@@ -63,10 +63,10 @@ export function resolveToolLabel(tool: string, agent?: string): string {
 }
 
 export function summarizeResult(result: unknown): string {
-  if (typeof result === "string") return result.slice(0, 2000);
+  if (typeof result === "string") return localizeKnownRuntimeMessage(result).slice(0, 2000);
   if (result && typeof result === "object") {
     const record = result as Record<string, unknown>;
-    if (typeof record.content === "string") return record.content.slice(0, 2000);
+    if (typeof record.content === "string") return localizeKnownRuntimeMessage(record.content).slice(0, 2000);
     if (Array.isArray(record.content)) {
       const text = record.content
         .map((part) => {
@@ -75,10 +75,10 @@ export function summarizeResult(result: unknown): string {
         })
         .filter(Boolean)
         .join("\n");
-      if (text.trim()) return text.slice(0, 2000);
+      if (text.trim()) return localizeKnownRuntimeMessage(text).slice(0, 2000);
     }
   }
-  return String(result).slice(0, 2000);
+  return localizeKnownRuntimeMessage(String(result)).slice(0, 2000);
 }
 
 export function extractToolDetails(result: unknown): unknown {

@@ -65,6 +65,12 @@ Given the chapter text and the CHANGES made to truth files (state card + hooks p
 5. Retroactive edit — truth file change implies something happened in a PREVIOUS chapter, not the current one
 6. Cross-truth key-setting conflict — numbered rules, named laws, ranks, identities, locations, or relationship labels in the new truth files contradict the chapter text or the authority context
 
+Hook dependency semantics:
+- A depends_on / dependsOn entry records a causal prerequisite; it does NOT by itself mean the downstream hook is currently blocked.
+- If every referenced upstream hook is resolved, the dependency is satisfied and the downstream hook may be open or progressing.
+- Treat a downstream hook as blocked only when a referenced upstream hook is missing or still unresolved.
+- Preserve satisfied dependency IDs as causal history; do not demand that they be deleted after resolution.
+
 Output format (simple, NOT JSON):
 - First line: exactly PASS, REPAIR, or FAIL (nothing else on this line)
 - Following lines: one warning per line, optionally prefixed with [category]

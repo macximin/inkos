@@ -416,9 +416,11 @@ export class PlannerAgent extends BaseAgent {
   ): string | undefined {
     if (!outlineNode) return undefined;
     if (volumeOutline === "(文件尚未创建)") return undefined;
-    return this.isChineseLanguage(language)
-      ? `卷纲节点：${outlineNode}`
-      : `Outline node: ${outlineNode}`;
+    return language === "ko"
+      ? `개요 노드: ${outlineNode}`
+      : this.isChineseLanguage(language)
+        ? `卷纲节点：${outlineNode}`
+        : `Outline node: ${outlineNode}`;
   }
 
   private deriveGoal(
@@ -553,14 +555,18 @@ export class PlannerAgent extends BaseAgent {
   private renderHookBudget(activeCount: number, language: "zh" | "ko" | "en"): string {
     const cap = 12;
     if (activeCount < 10) {
-      return language !== "zh"
-        ? `### Hook Budget\n- ${activeCount} active hooks (capacity: ${cap})`
-        : `### 伏笔预算\n- 当前 ${activeCount} 条活跃伏笔（容量：${cap}）`;
+      return language === "ko"
+        ? `### 복선 예산\n- 활성 복선 ${activeCount}개 (한도: ${cap})`
+        : language === "en"
+          ? `### Hook Budget\n- ${activeCount} active hooks (capacity: ${cap})`
+          : `### 伏笔预算\n- 当前 ${activeCount} 条活跃伏笔（容量：${cap}）`;
     }
     const remaining = Math.max(0, cap - activeCount);
-    return language !== "zh"
-      ? `### Hook Budget\n- ${activeCount} active hooks — approaching capacity (${cap}). Only ${remaining} new hook(s) allowed. Prioritize resolving existing debt over opening new threads.`
-      : `### 伏笔预算\n- 当前 ${activeCount} 条活跃伏笔——接近容量上限（${cap}）。仅剩 ${remaining} 个新坑位。优先回收旧债，不要轻易开新线。`;
+    return language === "ko"
+      ? `### 복선 예산\n- 활성 복선 ${activeCount}개로 한도(${cap})에 가깝습니다. 새 복선은 ${remaining}개만 허용됩니다. 새 복선을 열기보다 기존 복선을 먼저 회수하세요.`
+      : language === "en"
+        ? `### Hook Budget\n- ${activeCount} active hooks — approaching capacity (${cap}). Only ${remaining} new hook(s) allowed. Prioritize resolving existing debt over opening new threads.`
+        : `### 伏笔预算\n- 当前 ${activeCount} 条活跃伏笔——接近容量上限（${cap}）。仅剩 ${remaining} 个新坑位。优先回收旧债，不要轻易开新线。`;
   }
 
   private extractSection(content: string, headings: ReadonlyArray<string>): string | undefined {
@@ -846,59 +852,61 @@ export class PlannerAgent extends BaseAgent {
     chapterSummaries: string,
     activeHookCount: number,
   ): string {
+    const label = (zh: string, ko: string, en: string) => language === "ko" ? ko : language === "en" ? en : zh;
+    const empty = language === "ko" ? "없음" : language === "en" ? "none" : "无";
     const mustKeep = intent.mustKeep.length > 0
       ? intent.mustKeep.map((item) => `- ${item}`).join("\n")
-      : "- none";
+      : `- ${empty}`;
 
     const mustAvoid = intent.mustAvoid.length > 0
       ? intent.mustAvoid.map((item) => `- ${item}`).join("\n")
-      : "- none";
+      : `- ${empty}`;
 
     const styleEmphasis = intent.styleEmphasis.length > 0
       ? intent.styleEmphasis.map((item) => `- ${item}`).join("\n")
-      : "- none";
+      : `- ${empty}`;
 
     const memoBody = memo.body.trim();
     const threadRefsLine = memo.threadRefs.length > 0
       ? memo.threadRefs.map((id) => `- ${id}`).join("\n")
-      : "- (none)";
+      : `- (${empty})`;
 
     return [
-      "# Chapter Intent",
+      `# ${label("Chapter Intent", "회차 의도", "Chapter Intent")}`,
       "",
-      "## Goal",
+      `## ${label("Goal", "목표", "Goal")}`,
       intent.goal,
       "",
-      "## Outline Node",
-      intent.outlineNode ?? "(not found)",
+      `## ${label("Outline Node", "개요 노드", "Outline Node")}`,
+      intent.outlineNode ?? `(${label("not found", "찾지 못함", "not found")})`,
       "",
-      "## Arc Context",
-      intent.arcContext ?? "(none)",
+      `## ${label("Arc Context", "이야기 흐름 맥락", "Arc Context")}`,
+      intent.arcContext ?? `(${empty})`,
       "",
-      "## Must Keep",
+      `## ${label("Must Keep", "반드시 유지", "Must Keep")}`,
       mustKeep,
       "",
-      "## Must Avoid",
+      `## ${label("Must Avoid", "반드시 회피", "Must Avoid")}`,
       mustAvoid,
       "",
-      "## Style Emphasis",
+      `## ${label("Style Emphasis", "문체 강조점", "Style Emphasis")}`,
       styleEmphasis,
       "",
-      "## Chapter Memo",
-      `- isGoldenOpening: ${memo.isGoldenOpening ? "true" : "false"}`,
+      `## ${label("Chapter Memo", "회차 메모", "Chapter Memo")}`,
+      `- ${label("isGoldenOpening", "골든 오프닝", "isGoldenOpening")}: ${memo.isGoldenOpening ? "true" : "false"}`,
       "",
-      "### Thread Refs",
+      `### ${label("Thread Refs", "연결 복선", "Thread Refs")}`,
       threadRefsLine,
       "",
-      "### Body",
+      `### ${label("Body", "본문", "Body")}`,
       memoBody,
       "",
       this.renderHookBudget(activeHookCount, language),
       "",
-      "## Pending Hooks Snapshot",
+      `## ${label("Pending Hooks Snapshot", "미회수 복선 스냅샷", "Pending Hooks Snapshot")}`,
       pendingHooks,
       "",
-      "## Chapter Summaries Snapshot",
+      `## ${label("Chapter Summaries Snapshot", "회차 요약 스냅샷", "Chapter Summaries Snapshot")}`,
       chapterSummaries,
       "",
     ].join("\n");

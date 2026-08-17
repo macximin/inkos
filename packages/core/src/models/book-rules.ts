@@ -129,41 +129,48 @@ export function tryParseBookRulesFrontmatter(
 }
 
 function parseMarkdownBookRules(raw: string): BookRules {
-  const protagonistSection = extractMarkdownSection(raw, ["主角", "Protagonist"]);
+  const protagonistSection = extractMarkdownSection(raw, ["主角", "주인공", "Protagonist"]);
   const protagonistName =
-    readLabeledValue(protagonistSection, ["名字", "姓名", "name", "protagonist"])
-    ?? readLabeledValue(raw, ["主角", "protagonist"]);
+    readLabeledValue(protagonistSection, ["名字", "姓名", "이름", "name", "protagonist"])
+    ?? readLabeledValue(raw, ["主角", "주인공", "protagonist"]);
   const personalityLock = readLabeledList(protagonistSection, [
     "性格锁",
     "性格关键词",
+    "성격 고정점",
+    "성격 키워드",
     "personalityLock",
     "personality lock",
     "core tags",
   ]);
   const behavioralConstraints = readLabeledList(protagonistSection, [
     "行为约束",
+    "행동 제약",
+    "행동 제약 조건",
     "behavioralConstraints",
     "behavioral constraints",
   ]);
 
-  const genreSection = extractMarkdownSection(raw, ["题材锁", "Genre Lock", "Genre"]);
-  const primary = readLabeledValue(genreSection, ["主类型", "题材", "primary", "genre"]);
+  const genreSection = extractMarkdownSection(raw, ["题材锁", "장르 고정", "장르", "Genre Lock", "Genre"]);
+  const primary = readLabeledValue(genreSection, ["主类型", "题材", "주 장르", "장르", "primary", "genre"]);
   const forbidden = [
-    ...readLabeledList(genreSection, ["禁止混入", "禁混", "forbidden"]),
-    ...readMarkdownList(extractMarkdownSection(raw, ["禁止混入", "Forbidden Style Intrusions", "Forbidden"])),
+    ...readLabeledList(genreSection, ["禁止混入", "禁混", "금지 요소", "forbidden"]),
+    ...readMarkdownList(extractMarkdownSection(raw, ["禁止混入", "금지 요소", "Forbidden Style Intrusions", "Forbidden"])),
   ];
 
   const prohibitions = readMarkdownList(extractMarkdownSection(raw, [
     "禁止事项",
     "禁忌",
     "本书禁忌",
+    "금지 사항",
+    "작품 금지 사항",
     "Prohibitions",
     "Do Not",
   ]));
-  const fanficSection = extractMarkdownSection(raw, ["同人模式", "Fanfic Mode", "Fanfic"]);
+  const fanficSection = extractMarkdownSection(raw, ["同人模式", "팬픽 모드", "Fanfic Mode", "Fanfic"]);
   const fanficMode = normalizeFanficMode(readLabeledValue(fanficSection, [
     "模式",
     "同人模式",
+    "팬픽 모드",
     "fanficMode",
     "fanfic mode",
     "mode",
@@ -171,6 +178,7 @@ function parseMarkdownBookRules(raw: string): BookRules {
   const allowedDeviations = readLabeledList(fanficSection, [
     "允许偏离",
     "允许的偏离",
+    "허용되는 변경",
     "allowedDeviations",
     "allowed deviations",
   ]);
@@ -179,6 +187,9 @@ function parseMarkdownBookRules(raw: string): BookRules {
     "数值/资源规则",
     "数值规则",
     "资源规则",
+    "수치/자원 규칙",
+    "수치 규칙",
+    "자원 규칙",
     "Numerical / Resource Rules",
     "Numerical Rules",
     "Resource Rules",
@@ -186,15 +197,17 @@ function parseMarkdownBookRules(raw: string): BookRules {
   const resourceTypes = readLabeledList(numericalSection, [
     "核心资源",
     "资源类型",
+    "핵심 자원",
+    "자원 유형",
     "resourceTypes",
     "core resources",
     "resources",
   ]);
-  const hardCap = readLabeledValue(numericalSection, ["硬上限", "hardCap", "hard cap"]);
+  const hardCap = readLabeledValue(numericalSection, ["硬上限", "절대 상한", "hardCap", "hard cap"]);
 
-  const eraSection = extractMarkdownSection(raw, ["年代限制", "时代限制", "Era Constraints"]);
-  const period = readLabeledValue(eraSection, ["时期", "年代", "period", "era"]);
-  const region = readLabeledValue(eraSection, ["地域", "地区", "region"]);
+  const eraSection = extractMarkdownSection(raw, ["年代限制", "时代限制", "시대 제약", "시대 제한", "Era Constraints"]);
+  const period = readLabeledValue(eraSection, ["时期", "年代", "시기", "시대", "period", "era"]);
+  const region = readLabeledValue(eraSection, ["地域", "地区", "지역", "region"]);
 
   return BookRulesSchema.parse({
     protagonist: protagonistName
@@ -281,8 +294,8 @@ function splitList(value: string): string[] {
 }
 
 function detectNarrativePerson(raw: string): "first" | "third" | undefined {
-  if (/第一人称|first[-\s]?person|\bfirst\b/i.test(raw)) return "first";
-  if (/第三人称|third[-\s]?person|\bthird\b/i.test(raw)) return "third";
+  if (/第一人称|1인칭|일인칭|first[-\s]?person|\bfirst\b/i.test(raw)) return "first";
+  if (/第三人称|3인칭|삼인칭|third[-\s]?person|\bthird\b/i.test(raw)) return "third";
   return undefined;
 }
 
@@ -301,7 +314,7 @@ function cleanScalar(value: string): string {
     .trim()
     .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, "")
     .trim();
-  return /^(?:无|none|n\/a|na|\(none\)|（无）|-|—)$/i.test(trimmed) ? "" : trimmed;
+  return /^(?:无|없음|미지정|해당 없음|none|n\/a|na|\(none\)|（无）|-|—)$/i.test(trimmed) ? "" : trimmed;
 }
 
 function normalizeHeading(value: string): string {

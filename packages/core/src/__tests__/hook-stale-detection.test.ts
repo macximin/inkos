@@ -96,6 +96,21 @@ describe("computeHookDiagnostics — Phase 7 stale / blocked detection", () => {
     expect(result.get("H-down")!.missingUpstream).toEqual([]);
   });
 
+  it("treats a Korean-resolved chapter-0 seed as a satisfied dependency", () => {
+    const upstream = hook({ hookId: "H-up", startChapter: 0, status: "해결됨" });
+    const downstream = hook({
+      hookId: "H-down",
+      startChapter: 0,
+      dependsOn: ["H-up"],
+    });
+    const result = computeHookDiagnostics({
+      hooks: [upstream, downstream],
+      currentChapter: 1,
+    });
+    expect(result.get("H-down")!.blocked).toBe(false);
+    expect(result.get("H-down")!.missingUpstream).toEqual([]);
+  });
+
   it("pre-planting seeds (startChapter 0) are not marked stale", () => {
     const h = hook({ startChapter: 0, payoffTiming: "immediate" });
     const diag = computeHookDiagnostics({ hooks: [h], currentChapter: 50 }).get("H01")!;

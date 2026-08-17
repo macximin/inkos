@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import {
 } from "../skills/index.js";
 
 const BUILTIN_SKILL_IDS = [
+  "inkos-commercial-webnovel-pitch",
   "inkos-long-market-research",
   "inkos-long-story-analysis",
   "inkos-long-writing",
@@ -42,6 +43,12 @@ describe("external skill loader", () => {
     expect(loaded.skills.map((skill) => skill.id)).toEqual(BUILTIN_SKILL_IDS);
     expect(loaded.skills).toEqual(expect.arrayContaining([
       expect.objectContaining({
+        id: "inkos-commercial-webnovel-pitch",
+        source: "builtin",
+        body: expect.stringContaining("독창성이나 차별화를 목표로 삼지 말고"),
+        baseDir: expect.stringMatching(/skills[\\/]inkos-commercial-webnovel-pitch$/),
+      }),
+      expect.objectContaining({
         id: "inkos-long-writing",
         source: "builtin",
         body: expect.stringContaining("established facts"),
@@ -53,6 +60,19 @@ describe("external skill loader", () => {
         body: expect.stringContaining("parser or model-format failure"),
       }),
     ]));
+    const pitchSkill = loaded.skills.find((skill) => skill.id === "inkos-commercial-webnovel-pitch");
+    expect(pitchSkill?.description).toContain("주축 골격");
+    expect(pitchSkill?.body).toContain("주축 참고작 하나");
+    expect(pitchSkill?.body).toContain("차별화 점수를 매기지 마라");
+    expect(pitchSkill?.body).not.toContain("복제 없이");
+    const pitchRubric = await readFile(
+      join(pitchSkill!.baseDir!, "references", "pitch-vitality-rubric.md"),
+      "utf-8",
+    );
+    expect(pitchRubric).toContain("같은 업종, 비슷한 사건 순서와 보상 구조는 그 자체로 감점하지 마라");
+    expect(pitchRubric).toContain("인간 질감은 상업 골격을 대체하지 않는다");
+    expect(pitchRubric).not.toContain("최소 세 축");
+    expect(pitchRubric).not.toContain("새 인과");
   });
 
   it("lets a project skill replace a built-in skill with the same id", async () => {

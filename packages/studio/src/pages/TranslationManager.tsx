@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Theme } from "../hooks/use-theme";
-import type { TFunction } from "../hooks/use-i18n";
+import type { TFunction, UiLanguage } from "../hooks/use-i18n";
 import { useColors } from "../hooks/use-colors";
 import { fetchJson, useApi } from "../hooks/use-api";
 import { Download, FileText, Languages, Loader2, Play, Upload } from "lucide-react";
@@ -24,7 +24,12 @@ interface TranslationManifest {
   readonly title: string;
   readonly sourceLanguage: string;
   readonly targetLanguage: string;
-  readonly chapters: ReadonlyArray<{ readonly number: number; readonly title: string; readonly status: string }>;
+  readonly chapters: ReadonlyArray<{
+    readonly number: number;
+    readonly title: string;
+    readonly translatedTitle?: string;
+    readonly status: string;
+  }>;
 }
 
 interface TranslationDetailResponse {
@@ -33,6 +38,8 @@ interface TranslationDetailResponse {
   readonly chapters?: ReadonlyArray<{
     readonly number: number;
     readonly title: string;
+    readonly sourceTitle?: string;
+    readonly translatedTitle?: string;
     readonly status: string;
     readonly segments: ReadonlyArray<{
       readonly index: number;
@@ -57,6 +64,8 @@ interface TranslationCreateResponse {
 interface TranslationRunResponse {
   readonly translatedSegments: number;
   readonly reviewedChapters: number;
+  readonly reviewAttempts: number;
+  readonly revisedChapters: number;
   readonly reportPath: string;
 }
 
@@ -120,10 +129,50 @@ const LANGUAGE_PRESETS_EN = [
   "Turkish",
 ] as const;
 
-export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunction }) {
+const LANGUAGE_PRESETS_KO = [
+  "자동 감지",
+  "한국어",
+  "중국어(간체)",
+  "중국어(번체)",
+  "영어",
+  "일본어",
+  "프랑스어",
+  "독일어",
+  "스페인어",
+  "포르투갈어",
+  "러시아어",
+  "아랍어",
+  "인도네시아어",
+  "베트남어",
+  "태국어",
+  "이탈리아어",
+  "튀르키예어",
+] as const;
+
+export function getTranslationLanguageOptions(uiLanguage: UiLanguage): {
+  readonly presets: ReadonlyArray<string>;
+  readonly autoDetectLabel: string;
+  readonly defaultTargetLanguage: string;
+} {
+  if (uiLanguage === "ko") {
+    return { presets: LANGUAGE_PRESETS_KO, autoDetectLabel: "자동 감지", defaultTargetLanguage: "한국어" };
+  }
+  if (uiLanguage === "zh") {
+    return { presets: LANGUAGE_PRESETS_ZH, autoDetectLabel: "自动识别", defaultTargetLanguage: "中文（简体）" };
+  }
+  return { presets: LANGUAGE_PRESETS_EN, autoDetectLabel: "Auto detect", defaultTargetLanguage: "English" };
+}
+
+export function TranslationManager({ nav, theme, t, uiLanguage }: { nav: Nav; theme: Theme; t: TFunction; uiLanguage: UiLanguage }) {
   const c = useColors(theme);
-  const isZh = t("nav.connected") === "已连接";
-  const languagePresets = isZh ? LANGUAGE_PRESETS_ZH : LANGUAGE_PRESETS_EN;
+  const copy = (ko: string, zh: string, en: string) => uiLanguage === "ko" ? ko : uiLanguage === "zh" ? zh : en;
+  const { presets: languagePresets, autoDetectLabel, defaultTargetLanguage } = getTranslationLanguageOptions(uiLanguage);
+  const statusLabel = (value: string) => {
+    if (value === "pending") return copy("대기 중", "待翻译", "Pending");
+    if (value === "translated") return copy("번역됨 · 검수 미통과", "已翻译 · 审校未通过", "Translated · review not passed");
+    if (value === "reviewed") return copy("검수 완료", "审校完成", "Reviewed");
+    return value;
+  };
   const { data, loading, error, refetch } = useApi<TranslationListResponse>("/translations");
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<TranslationDetailResponse | null>(null);
@@ -133,8 +182,8 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
   const [file, setFile] = useState<File | null>(null);
   const [uploaded, setUploaded] = useState<TranslationUploadResponse | null>(null);
   const [title, setTitle] = useState("");
-  const [sourceLanguage, setSourceLanguage] = useState(isZh ? "自动识别" : "Auto detect");
-  const [targetLanguage, setTargetLanguage] = useState(isZh ? "中文（简体）" : "English");
+  const [sourceLanguage, setSourceLanguage] = useState(autoDetectLabel);
+  const [targetLanguage, setTargetLanguage] = useState(defaultTargetLanguage);
   const [segmentMaxChars, setSegmentMaxChars] = useState(1200);
   const [previewChapterNumber, setPreviewChapterNumber] = useState<number | null>(null);
 
@@ -156,7 +205,7 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
         setDetail(nextDetail);
         setPreviewChapterNumber(nextDetail.chapters?.[0]?.number ?? nextDetail.manifest.chapters[0]?.number ?? null);
       })
-      .catch((err) => setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`))
+      .catch((err) => setStatus(`${copy("오류", "错误", "Error")}: ${err instanceof Error ? err.message : String(err)}`))
       .finally(() => setDetailLoading(false));
   }, [selected?.projectId]);
 
@@ -178,9 +227,9 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
       });
       setUploaded(res);
       if (!title.trim()) setTitle(file.name.replace(/\.[^.]+$/u, ""));
-      setStatus(isZh ? `已上传：${res.storedPath}` : `Uploaded: ${res.storedPath}`);
+      setStatus(copy(`업로드됨: ${res.storedPath}`, `已上传：${res.storedPath}`, `Uploaded: ${res.storedPath}`));
     } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setStatus(`${copy("오류", "错误", "Error")}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy("");
     }
@@ -203,10 +252,10 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
         }),
       });
       setSelectedId(res.projectId);
-      setStatus(isZh ? `已创建翻译项目：${res.title}` : `Created translation project: ${res.title}`);
+      setStatus(copy(`번역 프로젝트 생성됨: ${res.title}`, `已创建翻译项目：${res.title}`, `Created translation project: ${res.title}`));
       await refetch();
     } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setStatus(`${copy("오류", "错误", "Error")}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy("");
     }
@@ -220,17 +269,19 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
       const res = await fetchJson<TranslationRunResponse>(`/translations/${encodeURIComponent(selected.projectId)}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchSize: 8 }),
+        body: JSON.stringify({ batchSize: 8, maxReviewRetries: 2 }),
       });
-      setStatus(isZh
-        ? `翻译 ${res.translatedSegments} 段，审校 ${res.reviewedChapters} 章。报告：${res.reportPath}`
-        : `Translated ${res.translatedSegments} segments, reviewed ${res.reviewedChapters} chapters. Report: ${res.reportPath}`);
+      setStatus(copy(
+        `${res.translatedSegments}개 구간 번역, ${res.reviewedChapters}개 회차 검수, ${res.revisedChapters}개 회차 자동 수정, 총 ${res.reviewAttempts}회 검수. 보고서: ${res.reportPath}`,
+        `翻译 ${res.translatedSegments} 段，审校 ${res.reviewedChapters} 章，自动修订 ${res.revisedChapters} 章，共审校 ${res.reviewAttempts} 次。报告：${res.reportPath}`,
+        `Translated ${res.translatedSegments} segments, reviewed ${res.reviewedChapters} chapters, auto-revised ${res.revisedChapters} chapters across ${res.reviewAttempts} review attempts. Report: ${res.reportPath}`,
+      ));
       await refetch();
       const updated = await fetchJson<TranslationDetailResponse>(`/translations/${encodeURIComponent(selected.projectId)}`);
       setDetail(updated);
       setPreviewChapterNumber(updated.chapters?.[0]?.number ?? updated.manifest.chapters[0]?.number ?? null);
     } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setStatus(`${copy("오류", "错误", "Error")}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy("");
     }
@@ -246,9 +297,9 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ format }),
       });
-      setStatus(isZh ? `已导出 ${format}: ${res.outputPath}` : `Exported ${format}: ${res.outputPath}`);
+      setStatus(copy(`${format} 내보내기 완료: ${res.outputPath}`, `已导出 ${format}: ${res.outputPath}`, `Exported ${format}: ${res.outputPath}`));
     } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setStatus(`${copy("오류", "错误", "Error")}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy("");
     }
@@ -281,17 +332,25 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
             <h2 className="font-semibold">{t("translation.newProject")}</h2>
           </div>
           <div className="space-y-3">
-            <input
-              type="file"
-              accept=".txt,.md,.markdown,.pdf,.epub,text/plain,text/markdown,application/pdf,application/epub+zip"
-              onChange={(event) => {
-                const next = event.currentTarget.files?.[0] ?? null;
-                setFile(next);
-                setUploaded(null);
-                if (next && !title.trim()) setTitle(next.name.replace(/\.[^.]+$/u, ""));
-              }}
-              className="block w-full text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-primary file:px-3 file:py-2 file:text-sm file:font-semibold file:text-primary-foreground"
-            />
+            <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border bg-secondary/30 p-2 text-sm">
+              <span className="shrink-0 rounded-lg bg-primary px-3 py-2 font-semibold text-primary-foreground">
+                {copy("파일 선택", "选择文件", "Choose file")}
+              </span>
+              <span className="min-w-0 truncate text-muted-foreground">
+                {file?.name ?? copy("선택한 파일 없음", "未选择文件", "No file selected")}
+              </span>
+              <input
+                type="file"
+                accept=".txt,.md,.markdown,.pdf,.epub,text/plain,text/markdown,application/pdf,application/epub+zip"
+                onChange={(event) => {
+                  const next = event.currentTarget.files?.[0] ?? null;
+                  setFile(next);
+                  setUploaded(null);
+                  if (next && !title.trim()) setTitle(next.name.replace(/\.[^.]+$/u, ""));
+                }}
+                className="sr-only"
+              />
+            </label>
             {file && (
               <div className="rounded-lg bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
                 {file.name} · {formatFileSize(file.size)}
@@ -332,7 +391,7 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
               {languagePresets.map((language) => <option key={`source-${language}`} value={language} />)}
             </datalist>
             <datalist id="translation-target-language-options">
-              {languagePresets.filter((language) => language !== (isZh ? "自动识别" : "Auto detect")).map((language) => (
+              {languagePresets.filter((language) => language !== autoDetectLabel).map((language) => (
                 <option key={`target-${language}`} value={language} />
               ))}
             </datalist>
@@ -417,8 +476,8 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
                       onClick={() => setPreviewChapterNumber(chapter.number)}
                       className={`rounded-lg px-3 py-2 text-left text-sm transition-colors ${previewChapter?.number === chapter.number ? "bg-primary/10 ring-1 ring-primary/50" : "bg-secondary/30 hover:bg-secondary/50"}`}
                     >
-                      <div className="font-medium">{chapter.title}</div>
-                      <div className="text-xs text-muted-foreground">{chapter.status}</div>
+                      <div className="font-medium">{chapter.translatedTitle?.trim() || chapter.title}</div>
+                      <div className="text-xs text-muted-foreground">{statusLabel(chapter.status)}</div>
                     </button>
                   ))}
                 </div>
@@ -430,7 +489,7 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
                       <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">{t("translation.preview")}</div>
                       <div className="font-semibold">{previewChapter.title}</div>
                     </div>
-                    <div className="text-xs text-muted-foreground">{previewChapter.status}</div>
+                    <div className="text-xs text-muted-foreground">{statusLabel(previewChapter.status)}</div>
                   </div>
                   <div className="max-h-[560px] overflow-auto rounded-xl border border-border bg-background/50">
                     {previewChapter.segments.map((segment) => (
@@ -463,7 +522,7 @@ export function TranslationManager({ nav, theme, t }: { nav: Nav; theme: Theme; 
       </div>
 
       {status && (
-        <div className={`rounded-xl px-4 py-3 text-sm ${status.startsWith("Error:") ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-600"}`}>
+        <div className={`rounded-xl px-4 py-3 text-sm ${/^(?:Error|错误|오류):/u.test(status) ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-600"}`}>
           {status}
         </div>
       )}

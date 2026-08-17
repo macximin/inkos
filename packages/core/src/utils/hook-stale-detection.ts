@@ -18,6 +18,7 @@
 import type { StoredHook } from "../state/memory-db.js";
 import type { HookRecord } from "../models/runtime-state.js";
 import { resolveHalfLifeChapters } from "./hook-promotion.js";
+import { normalizeStoredHookStatus } from "./hook-lifecycle.js";
 
 export interface HookDiagnostics {
   readonly stale: boolean;
@@ -43,17 +44,8 @@ export interface HookDiagnostics {
 
 type HookLike = StoredHook | HookRecord;
 
-const RESOLVED_STATUSES: ReadonlyArray<RegExp> = [
-  /^resolved$/i,
-  /^closed$/i,
-  /^done$/i,
-  /^已回收$/,
-  /^已解决$/,
-];
-
 function isResolved(hook: HookLike): boolean {
-  const status = (hook.status ?? "").trim();
-  return RESOLVED_STATUSES.some((pattern) => pattern.test(status));
+  return normalizeStoredHookStatus(hook.status ?? "") === "resolved";
 }
 
 export function computeHookDiagnostics(params: {
@@ -93,13 +85,13 @@ export function computeHookDiagnostics(params: {
         upstreamReferenceChapters.push(plantedChapter);
         continue;
       }
-      // Upstream is "planted but not delivered" if startChapter is non-zero
-      // AND it's not resolved. An upstream that is still a seed (startChapter
-      // 0) counts as unplanted.
+      // Resolution satisfies the causal prerequisite even when the upstream
+      // began as a chapter-0 architect seed. startChapter tracks planting
+      // history; it must not override an authoritative resolved status.
       const upstreamResolved = isResolved(upstream);
       const upstreamPlanted = upstream.startChapter > 0
         && upstream.startChapter <= currentChapter;
-      if (!upstreamPlanted || !upstreamResolved) {
+      if (!upstreamResolved) {
         // We only block when the upstream genuinely has not cleared its gate.
         // For a pure "must be planted first" relationship, "planted but not
         // resolved" still counts as blocking the downstream from firing.

@@ -267,7 +267,14 @@ function localizePlannerMemoStructureToKorean(prompt: string): string {
     .replaceAll("## Required end-of-chapter change", "## 화말에 반드시 바뀔 것")
     .replaceAll("## Hook ledger for this chapter", "## 이번 화 훅 장부")
     .replaceAll("## Do not", "## 금지")
-    .replaceAll("## Planner warning", "## 기획 경고");
+    .replaceAll("## Planner warning", "## 기획 경고")
+    .replaceAll("- Pay off:", "- 회수:")
+    .replaceAll("- Keep buried:", "- 계속 묻어두기:")
+    .replaceAll("- Protagonist's most important choice this chapter:", "- 주인공의 가장 중요한 선택:")
+    .replaceAll("- Antagonist / supporting cast's most important choice this chapter:", "- 대립 인물 또는 조연의 가장 중요한 선택:")
+    .replaceAll("  - Why this choice?", "  - 왜 이 선택인가?")
+    .replaceAll("  - Does it match current interest?", "  - 현재 이해관계와 맞는가?")
+    .replaceAll("  - Does it match their persona?", "  - 인물상과 맞는가?");
 }
 
 /**
@@ -383,7 +390,13 @@ export function buildPlannerUserMessage(input: PlannerUserMessageInput): string 
 function buildBriefBlock(brief: string, language: "zh" | "ko" | "en"): string {
   const trimmed = brief.trim();
   if (!trimmed) return "";
-  if (language !== "zh") {
+  if (language === "ko") {
+    return `## 창작 브리프 (사용자의 원래 의도 — 최우선)
+${trimmed}
+
+브리프는 사용자의 직접 지시입니다. 주인공 설정, 세계 전제, 도입 장치, 예시 회차 훅을 다른 자료보다 먼저 지키세요. 내용 비율이나 이중 주선의 비중이 지정되어 있으면 숫자만 반복하지 말고 이번 메모의 장면, 대화, 행동, 관계 변화로 풀어내세요. 핵심 설정을 뒤 회차로 미루지 마세요.`;
+  }
+  if (language === "en") {
     return `## Creative brief (user's original intent — authoritative)
 ${trimmed}
 
@@ -398,7 +411,13 @@ brief 是用户的直接指令。本章规划时，必须优先兑现 brief 里�
 function buildChapterContextBlock(chapterContext: string, language: "zh" | "ko" | "en"): string {
   const trimmed = chapterContext.trim();
   if (!trimmed) return "";
-  if (language !== "zh") {
+  if (language === "ko") {
+    return `## 이번 회차 사용자 지시 (이번 화 최우선)
+${trimmed}
+
+현재 회차에 대한 사용자의 직접 지시입니다. 개요보다 먼저 따르세요. 회차 제목이 지정되어 있으면 그대로 보존하고, 권 개요와 충돌할 때는 연속성을 지키면서도 이번 지시를 우선하세요.`;
+  }
+  if (language === "en") {
     return `## Per-chapter user instruction (highest priority for this chapter)
 ${trimmed}
 
@@ -413,7 +432,13 @@ ${trimmed}
 function buildArcContextBlock(arcContext: string, language: "zh" | "ko" | "en"): string {
   const trimmed = arcContext.trim();
   if (!trimmed) return "";
-  if (language !== "zh") {
+  if (language === "ko") {
+    return `## 현재 Arc 제작안 (하위 권위)
+${trimmed}
+
+이 제작안으로 회차 메모를 조직하되 창작 브리프, 작품 정본, 하드 룰, 사용자의 이번 회차 지시를 덮어쓰지 마세요.`;
+  }
+  if (language === "en") {
     return `## Active Arc production plan (subordinate authority)
 ${trimmed}
 
@@ -437,7 +462,14 @@ export function buildGoldenOpeningGuidance(
 ): string {
   if (chapterNumber > 3) return "";
 
-  if (language !== "zh") {
+  if (language === "ko") {
+    return `## 골든 오프닝 지침 — ${chapterNumber}화
+
+독자가 계속 읽을지를 결정하는 도입부 핵심 회차입니다. 1화는 배경 설명보다 핵심 충돌에 곧바로 들어가고, 2화는 주인공의 능력이나 정보 우위를 구체적인 사건으로 증명하며, 3화는 앞으로 3-10화 안에 달성할 단기 목표를 고정합니다. 회차 목표는 해당 역할에 맞는 동사로 쓰고, 화말에는 평평한 마무리 대신 작은 훅이나 감정적 빈틈을 남기세요.
+
+이번 화는 장면과 이름 있는 인물을 각각 세 개 이하로 압축하세요. 외모, 신분, 처지는 행동 속에서 드러내고 세계 규칙은 사건이 촉발할 때 보여 주세요. 설명만 이어지는 문단은 만들지 마세요.`;
+  }
+  if (language === "en") {
     return `## Golden Opening Guidance — Chapter ${chapterNumber}
 
 This is chapter ${chapterNumber} of the opening three — the chapters that decide whether a reader stays. The Golden Three Chapters rule assigns each chapter a load-bearing slot: chapter 1 must throw the reader straight into the core conflict (the protagonist enters already facing the main contradiction — chase, dead-end, dispossession, transmigration-as-crisis), not a paragraph of background, family tree, weather, or dynastic preamble. Chapter 2 must put the protagonist's edge — the system, the power, the rebirth-memory, the information advantage — on the stage through one concrete event (not "he awakened a power" narrated, but "he used it for X and Y happened"). Chapter 3 must lock in a concrete short-term goal achievable within the next 3-10 chapters (build the first stake of capital, take down the small antagonist, save someone), giving the story forward pull.

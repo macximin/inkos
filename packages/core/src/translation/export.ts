@@ -14,6 +14,10 @@ export async function writeTranslationExport(
 ): Promise<TranslationExportResult> {
   const format = options.format ?? "md";
   const manifest = await loadTranslationManifest(projectRoot, projectId);
+  const unreviewed = manifest.chapters.filter((chapter) => chapter.status !== "reviewed");
+  if (unreviewed.length > 0) {
+    throw new Error(`Translation export blocked: ${unreviewed.length} chapter(s) have not passed review.`);
+  }
   const outputPath = options.outputPath ?? join(translationProjectDir(projectRoot, projectId), "exports", `${safeFilename(manifest.title)}.${format}`);
   await mkdir(dirname(outputPath), { recursive: true });
 
@@ -22,7 +26,7 @@ export async function writeTranslationExport(
     for (const chapterInfo of manifest.chapters) {
       const chapter = await loadTranslationChapter(projectRoot, chapterInfo.translatedPath);
       chapters.push({
-        title: chapter.title,
+        title: chapter.translatedTitle?.trim() || chapter.title,
         content: chapter.segments
           .map((segment) => segment.target?.trim())
           .filter(Boolean)
@@ -57,7 +61,8 @@ async function renderTextExport(
   }
   for (const chapterInfo of manifest.chapters) {
     const chapter = await loadTranslationChapter(projectRoot, chapterInfo.translatedPath);
-    lines.push(format === "md" ? `## ${chapter.title}` : chapter.title, "");
+    const chapterTitle = chapter.translatedTitle?.trim() || chapter.title;
+    lines.push(format === "md" ? `## ${chapterTitle}` : chapterTitle, "");
     for (const segment of chapter.segments) {
       const target = segment.target?.trim();
       if (target) lines.push(target, "");

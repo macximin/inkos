@@ -951,8 +951,8 @@ export class PipelineRunner {
 
     const outlineDir = join(storyDir, "outline");
     await mkdir(outlineDir, { recursive: true });
-    await mkdir(join(storyDir, "roles", "主要角色"), { recursive: true });
-    await mkdir(join(storyDir, "roles", "次要角色"), { recursive: true });
+    await mkdir(join(storyDir, "roles", resolvedLanguage === "ko" ? "major" : "主要角色"), { recursive: true });
+    await mkdir(join(storyDir, "roles", resolvedLanguage === "ko" ? "minor" : "次要角色"), { recursive: true });
 
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     await architect.writeFoundationFiles(
@@ -1686,9 +1686,11 @@ export class PipelineRunner {
       }
 
       // Update index
-      const downstreamRevisionNotice = language !== "zh"
-        ? `[warning] Chapter ${targetChapter} changed; re-review this downstream chapter for continuity.`
-        : `[warning] 第${targetChapter}章已重写，请重新检查本章与前文的连续性。`;
+      const downstreamRevisionNotice = language === "ko"
+        ? `[warning] ${targetChapter}화가 변경되었습니다. 이 뒤 회차와의 연속성을 다시 검토하세요.`
+        : language === "en"
+          ? `[warning] Chapter ${targetChapter} changed; re-review this downstream chapter for continuity.`
+          : `[warning] 第${targetChapter}章已重写，请重新检查本章与前文的连续性。`;
       const updatedIndex = index.map((ch) => {
         if (ch.number === targetChapter) {
           return {
@@ -1699,6 +1701,7 @@ export class PipelineRunner {
               auditIssues: effectivePostRevision.auditResult.issues.map((i) => `[${i.severity}] ${i.description}`),
               lengthWarnings,
               lengthTelemetry,
+              reviewNote: undefined,
             };
         }
         if (ch.number > targetChapter) {
@@ -2071,7 +2074,7 @@ export class PipelineRunner {
           const summariesRaw = await readFile(join(promotionStoryDir, "chapter_summaries.md"), "utf-8").catch(() => "");
           const promotionResult = rerunPromotionPass(hooks, summariesRaw);
           if (promotionResult.updated) {
-            const ledgerLang: "zh" | "ko" | "en" = /[\u4e00-\u9fff]/.test(ledgerRaw) ? "zh" : "en";
+            const ledgerLang: "zh" | "ko" | "en" = pipelineLang;
             await writeFile(ledgerPath, renderHookSnapshot([...promotionResult.hooks], ledgerLang), "utf-8");
             this.config.logger?.info(`[promotion] ${promotionResult.flippedCount} hook(s) promoted after chapter ${chapterNumber}`);
           }
@@ -3913,16 +3916,19 @@ ${matrix}`,
     const block = [
       this.localize(params.language, {
         zh: "# 审计纠偏",
+        ko: "# 검수 이탈 보정",
         en: "# Audit Drift",
       }),
       "",
       this.localize(params.language, {
         zh: "## 审计纠偏（自动生成，下一章写作前参照）",
+        ko: "## 검수 이탈 보정 (자동 생성, 다음 화 집필 전 참고)",
         en: "## Audit Drift Correction",
       }),
       "",
       this.localize(params.language, {
         zh: `> 第${params.chapterNumber}章审计发现以下问题，下一章写作时必须避免：`,
+        ko: `> ${params.chapterNumber}화 검수에서 다음 화 집필 시 피해야 할 문제가 발견되었습니다:`,
         en: `> Chapter ${params.chapterNumber} audit found the following issues to avoid in the next chapter:`,
       }),
       ...params.issues.map((issue) => `> - [${issue.severity}] ${issue.category}: ${issue.description}`),
@@ -3935,8 +3941,10 @@ ${matrix}`,
   private stripAuditDriftCorrectionBlock(currentState: string): string {
     const headers = [
       "## 审计纠偏（自动生成，下一章写作前参照）",
+      "## 검수 이탈 보정 (자동 생성, 다음 화 집필 전 참고)",
       "## Audit Drift Correction",
       "# 审计纠偏",
+      "# 검수 이탈 보정",
       "# Audit Drift",
     ];
 

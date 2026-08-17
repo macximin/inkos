@@ -401,6 +401,34 @@ describe("agent deterministic writing tools", () => {
     }
   });
 
+  it("accepts Korean as a confirmed long-form writing language", async () => {
+    const result = await createProposeActionTool("ko").execute("proposal-ko", {
+      action: "create_book",
+      instruction: "한국어 장편소설을 만든다.",
+      createBook: {
+        title: "한국어 카나리",
+        genre: "urban",
+        platform: "other",
+        language: "ko",
+        targetChapters: 12,
+        chapterWordCount: 3000,
+      },
+    });
+
+    expect(result.details).toMatchObject({
+      kind: "proposed_action",
+      action: "create_book",
+      actionPayload: {
+        createBook: {
+          title: "한국어 카나리",
+          language: "ko",
+          targetChapters: 12,
+          chapterWordCount: 3000,
+        },
+      },
+    });
+  });
+
   it("marks in-surface confirmation proposals when requested", async () => {
     const tool = createProposeActionTool("zh", { sameSession: true });
 
