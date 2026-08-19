@@ -22,6 +22,8 @@ import { DoctorView } from "./pages/DoctorView";
 import { StoryPlayer } from "./pages/StoryPlayer";
 import { StoryGraphTree } from "./pages/StoryGraphTree";
 const FlowView = lazy(() => import("./pages/FlowView"));
+const ArcCanvas = lazy(() => import("./pages/ArcCanvas"));
+const ProjectPitch = lazy(() => import("./pages/ProjectPitch"));
 const FilmWizard = lazy(() => import("./pages/FilmWizard"));
 import { LanguageSelector } from "./pages/LanguageSelector";
 import { BookSidebar, BookSidebarToggle } from "./components/chat/BookSidebar";
@@ -74,6 +76,12 @@ export function App() {
     setAppLanguage(currentLang);
   }, [currentLang]);
 
+  // Keep the document language in sync before a browser translation feature
+  // mistakes a Korean Studio screen for an English page and rewrites chat text.
+  useEffect(() => {
+    document.documentElement.lang = currentLang;
+  }, [currentLang]);
+
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
@@ -93,6 +101,8 @@ export function App() {
     toDashboard: () => setRoute({ page: "dashboard" }),
     toChat: () => setRoute({ page: "chat" }),
     toBook: (bookId: string) => setRoute({ page: "book", bookId }),
+    toArcCanvas: (bookId: string) => setRoute({ page: "arc-canvas", bookId }),
+    toProjectPitch: (bookId: string) => setRoute({ page: "project-pitch", bookId }),
     toBookSettings: (bookId: string) => setRoute({ page: "book-settings", bookId }),
     toBookCreate: () => setRoute({ page: "book-create" }),
     toChapter: (bookId: string, chapterNumber: number) =>
@@ -279,6 +289,16 @@ export function App() {
               <BookSidebar bookId={route.bookId} theme={theme} t={t} sse={sse} />
               <BookSidebarToggle bookId={route.bookId} theme={theme} t={t} sse={sse} />
             </div>
+          )}
+          {route.page === "arc-canvas" && (
+            <Suspense fallback={<div className="p-6 text-sm">Arc 지도를 불러오는 중...</div>}>
+              <ArcCanvas bookId={route.bookId} />
+            </Suspense>
+          )}
+          {route.page === "project-pitch" && (
+            <Suspense fallback={<div className="p-6 text-sm">기획서를 불러오는 중...</div>}>
+              <ProjectPitch bookId={route.bookId} />
+            </Suspense>
           )}
           {route.page === "book-settings" && (
             <div className="max-w-4xl mx-auto px-6 py-12 md:px-12 lg:py-16 fade-in">

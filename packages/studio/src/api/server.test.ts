@@ -501,6 +501,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     defaultChapterLength: actual.defaultChapterLength,
     inferLanguage: actual.inferLanguage,
     ingestMaterial: actual.ingestMaterial,
+    listBookReferences: actual.listBookReferences,
     isUsablePlayInitialScene: actual.isUsablePlayInitialScene,
     chatCompletion: chatCompletionMock,
     loadProjectConfig: loadProjectConfigMock,
@@ -1285,6 +1286,75 @@ describe("createStudioServer daemon lifecycle", () => {
       railReflowWarning: expect.stringContaining("Story rail plan cannot be read"),
     });
     expect(saveChapterIndexMock).toHaveBeenCalled();
+  });
+
+  it("returns the official project pitch with recorded reference provenance", async () => {
+    const bookId = "pitch-book";
+    const materialId = "ref-1";
+    await writeCompleteBookFixture(root, bookId, "Pitch Book");
+    const bookDir = join(root, "books", bookId);
+    const materialsDir = join(root, ".inkos", "materials");
+    await mkdir(materialsDir, { recursive: true });
+    await writeFile(join(bookDir, "story", "project_pitch.md"), "# Official Pitch\n", "utf-8");
+    await writeFile(join(materialsDir, `${materialId}.md`), "# Reference Work\n", "utf-8");
+    await writeFile(join(materialsDir, `${materialId}.json`), JSON.stringify({
+      id: materialId,
+      title: "Reference Work",
+      kind: "text",
+      purpose: "reference",
+      source: "operator-provided:reference-work",
+      mimeType: "text/plain",
+      markdownPath: `.inkos/materials/${materialId}.md`,
+      manifestPath: `.inkos/materials/${materialId}.json`,
+      charCount: 17,
+      excerpt: "Reference excerpt",
+    }), "utf-8");
+    await writeFile(join(bookDir, "story", "reference_bindings.json"), JSON.stringify({
+      version: 1,
+      bookId,
+      bindings: [{
+        materialId,
+        uses: ["사건 보상 구조"],
+        note: "문체는 참고하지 않음",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        updatedAt: "2026-08-17T00:00:00.000Z",
+      }],
+    }), "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request(`http://localhost/api/v1/books/${bookId}/project-pitch`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      content: "# Official Pitch\n",
+      path: "story/project_pitch.md",
+      references: [{
+        materialId,
+        title: "Reference Work",
+        uses: ["사건 보상 구조"],
+        note: "문체는 참고하지 않음",
+        available: true,
+        source: "operator-provided:reference-work",
+      }],
+    });
+  });
+
+  it("does not present a reference-folder pitch as the official project pitch", async () => {
+    const bookId = "reference-only-pitch";
+    await writeCompleteBookFixture(root, bookId, "Reference-only Pitch");
+    const importedDir = join(root, "books", bookId, "story", "reference", "imported-work");
+    await mkdir(importedDir, { recursive: true });
+    await writeFile(join(importedDir, "project_pitch.md"), "# Imported Pitch\n", "utf-8");
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request(`http://localhost/api/v1/books/${bookId}/project-pitch`);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "PROJECT_PITCH_NOT_FOUND" },
+    });
   });
 
   it("allows reading and updating fixed control truth files", async () => {

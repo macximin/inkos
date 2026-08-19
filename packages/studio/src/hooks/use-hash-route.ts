@@ -4,6 +4,8 @@ export type HashRoute =
   | { page: "dashboard" }
   | { page: "chat" }
   | { page: "book"; bookId: string }
+  | { page: "arc-canvas"; bookId: string }
+  | { page: "project-pitch"; bookId: string }
   | { page: "book-settings"; bookId: string }
   | { page: "book-create" }
   | { page: "services" }
@@ -48,6 +50,12 @@ function parseHash(hash: string): HashRoute {
   const bookMatch = path.match(/^book\/([^/]+)$/);
   if (bookMatch) return { page: "book", bookId: decodeURIComponent(bookMatch[1]) };
 
+  const arcCanvasMatch = path.match(/^book\/([^/]+)\/arcs$/);
+  if (arcCanvasMatch) return { page: "arc-canvas", bookId: decodeURIComponent(arcCanvasMatch[1]) };
+
+  const projectPitchMatch = path.match(/^book\/([^/]+)\/pitch$/);
+  if (projectPitchMatch) return { page: "project-pitch", bookId: decodeURIComponent(projectPitchMatch[1]) };
+
   const playMatch = path.match(/^play\/([^/]+)$/);
   if (playMatch) return { page: "play", projectId: decodeURIComponent(playMatch[1]) };
 
@@ -71,6 +79,8 @@ function routeToHash(route: HashRoute): string {
     case "dashboard": return "#/";
     case "chat": return "#/chat";
     case "book": return `#/book/${encodeURIComponent(route.bookId)}`;
+    case "arc-canvas": return `#/book/${encodeURIComponent(route.bookId)}/arcs`;
+    case "project-pitch": return `#/book/${encodeURIComponent(route.bookId)}/pitch`;
     case "book-settings": return `#/book/${encodeURIComponent(route.bookId)}/settings`;
     case "book-create": return "#/book/new";
     case "services": return "#/services";

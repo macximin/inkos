@@ -4,7 +4,7 @@ import type { TFunction } from "../../hooks/use-i18n";
 import type { SSEMessage } from "../../hooks/use-sse";
 import { useChatStore } from "../../store/chat";
 import { fetchJson } from "../../hooks/use-api";
-import { PanelRightClose, PanelRightOpen, ArrowLeft, Loader2, Pencil, Save, X } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, ArrowLeft, Loader2, Map, Pencil, Save, X } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { cjk } from "@streamdown/cjk";
 import { ProgressSection } from "../sidebar/ProgressSection";
@@ -241,6 +241,20 @@ function PanelView({ bookId, theme: _theme, t, sse }: BookSidebarProps) {
 
   return (
     <div className="flex flex-col gap-2 p-3">
+      <a
+        href={`#/book/${encodeURIComponent(bookId)}/pitch`}
+        className="flex items-center justify-between rounded-xl border border-border/60 bg-card px-3 py-2.5 text-sm font-medium text-foreground transition-colors hover:border-primary/30 hover:bg-primary/5"
+      >
+        <span className="flex items-center gap-2"><Map size={15} className="text-primary" /> 기획서</span>
+        <span className="text-xs text-muted-foreground">작품의 약속</span>
+      </a>
+      <a
+        href={`#/book/${encodeURIComponent(bookId)}/arcs`}
+        className="flex items-center justify-between rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
+      >
+        <span className="flex items-center gap-2"><Map size={15} /> Arc 지도</span>
+        <span className="text-xs text-primary/70">A/B Rail</span>
+      </a>
       {activeOp && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/10">
           <Loader2 size={12} className="text-primary animate-spin shrink-0" />

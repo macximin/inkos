@@ -73,6 +73,7 @@ import {
   inferLanguage,
   defaultChapterLength,
   ingestMaterial,
+  listBookReferences,
   createSkillRegistry,
   loadAvailableAgentSkills,
   parseAgentSkillDocument,
@@ -3278,6 +3279,84 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
           message: error instanceof Error ? error.message : String(error),
         },
       }, 422);
+    }
+  });
+
+  // Read-only human-facing Arc Canvas data.  The canonical Arc/Rail files stay
+  // authoritative; this endpoint only combines them for visual navigation.
+  app.get("/api/v1/books/:id/arc-canvas", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    const bookDir = state.bookDir(id);
+    const railStore = new StoryRailStore(bookDir);
+    try {
+      const plan = await railStore.load();
+      if (plan && plan.bookId !== id) {
+        return c.json({ error: { code: "STORY_RAIL_BOOK_MISMATCH", message: "Story rail plan belongs to another book." } }, 422);
+      }
+      const arcsDir = join(bookDir, "story", "arcs");
+      const active = JSON.parse(await readFile(join(arcsDir, "active.json"), "utf-8").catch(() => "null")) as { arcId?: string } | null;
+      const entries = await readdir(arcsDir, { withFileTypes: true }).catch(() => []);
+      const arcs = await Promise.all(entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json") && entry.name !== "active.json")
+        .map(async (entry) => JSON.parse(await readFile(join(arcsDir, entry.name), "utf-8"))));
+      return c.json({ plan, activeArcId: active?.arcId ?? null, arcs });
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "INVALID_ARC_CANVAS_DATA",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 422);
+    }
+  });
+
+  // The pitch is a separate, read-only work view.  It is not the raw story
+  // input and does not grant write access to reference materials.
+  app.get("/api/v1/books/:id/project-pitch", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+    const bookDir = state.bookDir(id);
+    const pitchPath = join(bookDir, "story", "project_pitch.md");
+    let content: string;
+    try {
+      content = await readFile(pitchPath, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return c.json({ error: { code: "PROJECT_PITCH_NOT_FOUND", message: "No project_pitch.md found for this book." } }, 404);
+      }
+      throw error;
+    }
+
+    try {
+      const listed = await listBookReferences(root, id);
+      return c.json({
+        content,
+        path: relative(bookDir, pitchPath),
+        references: listed.references.map((reference) => ({
+          materialId: reference.materialId,
+          title: reference.title ?? reference.materialId,
+          uses: reference.uses,
+          ...(reference.note ? { note: reference.note } : {}),
+          available: reference.available,
+          ...(reference.asset?.source ? { source: reference.asset.source } : {}),
+        })),
+      });
+    } catch (error) {
+      return c.json({
+        content,
+        path: relative(bookDir, pitchPath),
+        references: [],
+        referenceError: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 
