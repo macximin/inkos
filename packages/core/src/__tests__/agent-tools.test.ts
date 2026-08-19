@@ -84,6 +84,19 @@ describe("agent deterministic writing tools", () => {
       .resolves.toContain("distrusts the guild");
   });
 
+  it("writes the official project pitch through the deterministic tool path", async () => {
+    const tool = createWriteTruthFileTool({} as never, root, "harbor");
+
+    const result = await tool.execute("tool-project-pitch", {
+      fileName: "project_pitch.md",
+      content: "# Project Pitch\n\nA shipyard heir buys the debt before the harbor closes.\n",
+    });
+
+    expect(result.content[0]?.type).toBe("text");
+    await expect(readFile(join(state.bookDir("harbor"), "story", "project_pitch.md"), "utf-8"))
+      .resolves.toContain("buys the debt");
+  });
+
   it("binds, lists, and unbinds project reference assets for the active book", async () => {
     await writeFile(join(root, "reference.md"), "# 开篇机制\n先让主角失去退路。\n", "utf-8");
     const asset = await ingestMaterial(root, {

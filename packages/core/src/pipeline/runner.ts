@@ -312,7 +312,7 @@ export function buildImportFoundationSource(
 
 /** Human-readable description of each manual-revision gate, surfaced in revisionDiagnostics. */
 const REVISION_GATE_STANDARDS: Record<RevisionGate, string> = {
-  strict: "A revision is applied only when blocking, critical, and AI-tell counts do not worsen, and at least blocking or AI-tell issues improve.",
+  strict: "A revision is applied only when blocking, critical, and AI-tell counts do not worsen, and at least one blocking issue is removed.",
   lenient: "A revision is applied whenever blocking, critical, and AI-tell counts do not worsen; no improvement is required (lenient gate).",
   always: "Manual revisions are always applied; audit counts are recorded for reference only (always gate).",
 };
@@ -1594,7 +1594,6 @@ export class PipelineRunner {
       });
 
       const improvedBlocking = effectivePostRevision.blockingCount < preRevision.blockingCount;
-      const improvedAITells = effectivePostRevision.aiTellCount < preRevision.aiTellCount;
       const blockingDidNotWorsen = effectivePostRevision.blockingCount <= preRevision.blockingCount;
       const criticalDidNotWorsen = effectivePostRevision.criticalCount <= preRevision.criticalCount;
       const aiDidNotWorsen = effectivePostRevision.aiTellCount <= preRevision.aiTellCount;
@@ -1604,7 +1603,7 @@ export class PipelineRunner {
         ? true
         : revisionGate === "lenient"
           ? didNotWorsen
-          : didNotWorsen && (improvedBlocking || improvedAITells);
+          : didNotWorsen && improvedBlocking;
 
       if (!shouldApplyRevision) {
         const remainingIssues = effectivePostRevision.revisionBlockingIssues
@@ -1616,6 +1615,32 @@ export class PipelineRunner {
             description: issue.description,
             ...(issue.suggestion ? { suggestion: issue.suggestion } : {}),
           }));
+        const retainedLengthWarnings = this.buildLengthWarnings(
+          targetChapter,
+          revisionBaseCount,
+          lengthSpec,
+        );
+        const retainedIndex = index.map((chapter) => chapter.number === targetChapter
+          ? {
+              ...chapter,
+              status: (preRevision.auditResult.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+              wordCount: revisionBaseCount,
+              updatedAt: new Date().toISOString(),
+              auditIssues: preRevision.auditResult.issues.map((issue) => `[${issue.severity}] ${issue.description}`),
+              lengthWarnings: retainedLengthWarnings,
+            }
+          : chapter);
+        await this.state.saveChapterIndex(bookId, retainedIndex);
+        if (isLatestChapter) {
+          await this.persistAuditDriftGuidance({
+            bookDir,
+            chapterNumber: targetChapter,
+            issues: preRevision.auditResult.issues.filter(
+              (issue) => issue.severity === "critical" || issue.severity === "warning",
+            ),
+            language,
+          }).catch(() => undefined);
+        }
         return {
           chapterNumber: targetChapter,
           wordCount: revisionBaseCount,
@@ -2029,9 +2054,8 @@ export class PipelineRunner {
         analyzeSensitiveWords: (content) => analyzeSensitiveWords(content, undefined, pipelineLang),
         runPostWriteChecks: (content) => {
           const baseIssues = postWriteValidate(content, gp, parsedBookRules, pipelineLang)
-            .filter((v) => v.severity === "error")
             .map((v) => ({
-              severity: "critical" as const,
+              severity: v.severity === "error" ? "critical" as const : "warning" as const,
               category: v.rule,
               description: v.description,
               suggestion: v.suggestion,
@@ -4041,6 +4065,21 @@ ${matrix}`,
     );
     const aiTells = analyzeAITells(params.chapterContent, params.language);
     const sensitiveResult = analyzeSensitiveWords(params.chapterContent, undefined, params.language);
+    const { profile } = await this.loadGenreProfile(params.book.genre);
+    const { readBookRules } = await import("../agents/rules-reader.js");
+    const { validatePostWrite } = await import("../agents/post-write-validator.js");
+    const parsedBookRules = (await readBookRules(params.bookDir))?.rules ?? null;
+    const postWriteIssues: ReadonlyArray<AuditIssue> = validatePostWrite(
+      params.chapterContent,
+      profile,
+      parsedBookRules,
+      params.language,
+    ).map((violation) => ({
+      severity: violation.severity === "error" ? "critical" as const : "warning" as const,
+      category: violation.rule,
+      description: violation.description,
+      suggestion: violation.suggestion,
+    }));
     const longSpanFatigue = await analyzeLongSpanFatigue({
       bookDir: params.bookDir,
       chapterNumber: params.chapterNumber,
@@ -4052,6 +4091,7 @@ ${matrix}`,
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
+      ...postWriteIssues,
       ...longSpanFatigue.issues,
     ];
     // revisionBlockingIssues excludes long-span-fatigue issues by
@@ -4061,11 +4101,18 @@ ${matrix}`,
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
+      ...postWriteIssues,
     ];
+    const hasDeterministicBlocker = [...aiTells.issues, ...postWriteIssues].some(
+      (issue) => issue.severity === "warning" || issue.severity === "critical",
+    );
+    const hasBlockingIssue = revisionBlockingIssues.some(
+      (issue) => issue.severity === "warning" || issue.severity === "critical",
+    );
 
     return {
       auditResult: {
-        passed: hasBlockedWords ? false : llmAudit.passed,
+        passed: (hasBlockedWords || hasDeterministicBlocker || hasBlockingIssue) ? false : llmAudit.passed,
         issues,
         summary: llmAudit.summary,
         tokenUsage: llmAudit.tokenUsage,

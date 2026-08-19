@@ -188,9 +188,14 @@ export async function runChapterReviewCycle(params: {
     // Length is NOT added to reviser issues — normalize handles it as a dedicated step.
     // lengthInRange is only used in isPassed() as a hard gate.
 
-    const hasPostWriteCritical = postWriteIssues.some((i) => i.severity === "critical");
+    // Deterministic post-write and AI-tell warnings are actionable revision
+    // findings, not advisory reviewer prose. Keep them as warnings in the
+    // report, but do not let a high LLM score hide them from the repair gate.
+    const hasDeterministicStyleBlocker = [...postWriteIssues, ...aiTellsResult.issues].some(
+      (issue) => issue.severity === "critical" || issue.severity === "warning",
+    );
     const auditResult: AuditResult = {
-      passed: (hasBlockedWords || hasPostWriteCritical) ? false : llmAudit.passed,
+      passed: (hasBlockedWords || hasDeterministicStyleBlocker) ? false : llmAudit.passed,
       issues: allIssues,
       summary: llmAudit.summary,
       parseFailed: llmAudit.parseFailed,

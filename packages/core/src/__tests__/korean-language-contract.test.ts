@@ -25,8 +25,22 @@ import { parseCurrentStateFacts } from "../utils/story-markdown.js";
 import { renderHookSnapshot } from "../utils/story-markdown.js";
 import { parseBookRules } from "../models/book-rules.js";
 import { normalizeHookPayoffTiming, normalizeStoredHookStatus } from "../utils/hook-lifecycle.js";
+import { readGenreProfile } from "../agents/rules-reader.js";
 
 describe("native Korean writing contracts", () => {
+  it("routes Korean chaebol labels and unknown Hangul genres to Korean profiles", async () => {
+    const chaebol = await readGenreProfile("/tmp/inkos-no-project-profile", "현대판타지 재벌물");
+    const generic = await readGenreProfile("/tmp/inkos-no-project-profile", "법정 회귀 복수물");
+
+    expect(chaebol.profile.id).toBe("chaebol-modern-fantasy-ko");
+    expect(chaebol.profile.language).toBe("ko");
+    expect(chaebol.profile.name).toBe("현대판타지 재벌물");
+    expect(`${chaebol.profile.pacingRule}\n${chaebol.body}`).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(generic.profile.id).toBe("other-ko");
+    expect(generic.profile.language).toBe("ko");
+    expect(`${generic.profile.pacingRule}\n${generic.body}`).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
   it("accepts ko across project, book, interaction, and runtime schemas", () => {
     const project = ProjectConfigSchema.parse({
       name: "한국어 프로젝트",
@@ -218,7 +232,10 @@ describe("native Korean writing contracts", () => {
 
     expect(prompt).toContain("한국어 원고 출력 규칙");
     expect(prompt).toContain("공백을 포함한 5000자");
-    expect(prompt).toContain("Korean characters including spaces");
+    expect(prompt).toContain("공백 포함 5000자");
+    expect(prompt).toContain("주인공의 행동, 상대의 대응");
+    expect(prompt).not.toContain("Universal Writing Rules");
+    expect(prompt).not.toContain("You are a professional");
     expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
@@ -268,7 +285,8 @@ describe("native Korean writing contracts", () => {
       language: "ko",
     });
 
-    expect(planner).toContain("모든 자연어를 한국어로 작성하세요");
+    expect(planner).toContain("당신은 한국 장르소설의 담당 편집자입니다");
+    expect(planner).toContain("주인공의 행동, 상대의 대응, 독자가 확인할 보상");
     expect(planner).toContain("## 회차 목표");
     expect(planner).toContain("## 현재 작업");
     expect(planner).toContain("## 이번 화 훅 장부");
@@ -276,6 +294,7 @@ describe("native Korean writing contracts", () => {
     expect(planner).toContain("- 계속 묻어두기:");
     expect(planner).not.toContain("- 지급:");
     expect(planner).not.toContain("## 本章目标");
+    expect(planner).not.toContain("You are this novel's editor-in-chief");
     expect(observer).toContain("모든 관찰 결과를 자연스러운 한국어로 작성하세요");
     expect(observer).not.toMatch(/[\u3400-\u9fff]/u);
     expect(settler).toContain("모든 자연어 값은 자연스러운 한국어로 작성하세요");

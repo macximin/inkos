@@ -17,6 +17,21 @@ describe("governed-working-set", () => {
     expect(mergeTableMarkdownByKey(original, malformed, [0])).toBe(original);
   });
 
+  it("preserves the authoritative hook table when a model changes its column schema", () => {
+    const original = [
+      "| hook_id | 시작 회차 | 유형 | 상태 | 최근 진전 | 예상 회수 | 회수 시점 | 선행 복선 | 회수 Arc | 핵심 | 반감기 | 승격 | 메모 |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| H001 | 0 | 배경 | progressing | 1 | 결재선 조작 공개 | 최종부 | 없음 | 5권 | true | 80 | true | 팩스 확보 |",
+    ].join("\n");
+    const wrongSchema = [
+      "| hook_id | 유형 | 상태 | 예상 회수 | 메모 |",
+      "| --- | --- | --- | --- | --- |",
+      "| H001 | 배경 | 진행 | 결재선 조작 공개 | 팩스 확보 |",
+    ].join("\n");
+
+    expect(mergeTableMarkdownByKey(original, wrongSchema, [0])).toBe(original);
+  });
+
   it("does not let hook status move backward during a model merge", () => {
     const original = [
       "| hook_id | 시작 회차 | 유형 | 상태 | 메모 |",

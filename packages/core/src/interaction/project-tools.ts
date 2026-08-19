@@ -19,6 +19,7 @@ import { deriveBookIdFromTitle } from "../utils/book-id.js";
 import { normalizePlatformOrOther } from "../models/book.js";
 
 const SAFE_TRUTH_FLAT_FILE_NAMES = new Set([
+  "project_pitch.md",
   "author_intent.md",
   "current_focus.md",
   "story_bible.md",

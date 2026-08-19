@@ -23,6 +23,24 @@ const EraConstraintsSchema = z.object({
   region: z.string().optional(),
 }).optional();
 
+export const FutureAdvantageResearchPolicySchema = z.enum([
+  "off",
+  "on-demand",
+  "required-for-hard-claims",
+]);
+
+export const FutureAdvantageSchema = z.object({
+  enabled: z.boolean().default(true),
+  originMoment: z.string().optional(),
+  corePromise: z.string().optional(),
+  allowedDomains: z.array(z.string()).default([]),
+  known: z.array(z.string()).default([]),
+  unknown: z.array(z.string()).default([]),
+  forbiddenShortcuts: z.array(z.string()).default([]),
+  memoryPolicy: z.string().optional(),
+  researchPolicy: FutureAdvantageResearchPolicySchema.default("on-demand"),
+}).optional();
+
 export const BookRulesSchema = z.object({
   version: z.string().default("1.0"),
   protagonist: ProtagonistSchema,
@@ -33,6 +51,7 @@ export const BookRulesSchema = z.object({
   narrativePerson: z.enum(["first", "third"]).optional().catch(undefined),
   numericalSystemOverrides: NumericalOverridesSchema,
   eraConstraints: EraConstraintsSchema,
+  futureAdvantage: FutureAdvantageSchema,
   prohibitions: z.array(z.string()).default([]),
   chapterTypesOverride: z.array(z.string()).default([]),
   fatigueWordsOverride: z.array(z.string()).default([]),
@@ -209,6 +228,54 @@ function parseMarkdownBookRules(raw: string): BookRules {
   const period = readLabeledValue(eraSection, ["时期", "年代", "시기", "시대", "period", "era"]);
   const region = readLabeledValue(eraSection, ["地域", "地区", "지역", "region"]);
 
+  const futureAdvantageSection = extractMarkdownSection(raw, [
+    "未来先机",
+    "未来优势",
+    "미래 선점",
+    "Future Advantage",
+  ]);
+  const futureAdvantage = futureAdvantageSection
+    ? {
+        enabled: readLabeledBoolean(futureAdvantageSection, ["启用", "사용", "활성화", "enabled"]) ?? true,
+        originMoment: readLabeledValue(futureAdvantageSection, [
+          "回归基准时点",
+          "回归时点",
+          "회귀 기준 시점",
+          "기준 시점",
+          "origin moment",
+        ]),
+        corePromise: readLabeledValue(futureAdvantageSection, [
+          "核心乐趣",
+          "核心承诺",
+          "핵심 재미",
+          "핵심 약속",
+          "core promise",
+        ]),
+        allowedDomains: readLabeledList(futureAdvantageSection, [
+          "允许领域",
+          "허용 분야",
+          "allowed domains",
+        ]),
+        known: readLabeledList(futureAdvantageSection, ["已知", "알고 있는 것", "known"]),
+        unknown: readLabeledList(futureAdvantageSection, ["未知", "모르는 것", "unknown"]),
+        forbiddenShortcuts: readLabeledList(futureAdvantageSection, [
+          "禁止捷径",
+          "금지된 지름길",
+          "forbidden shortcuts",
+        ]),
+        memoryPolicy: readLabeledValue(futureAdvantageSection, [
+          "记忆规则",
+          "기억 원칙",
+          "memory policy",
+        ]),
+        researchPolicy: normalizeFutureAdvantageResearchPolicy(readLabeledValue(futureAdvantageSection, [
+          "检索策略",
+          "검색 정책",
+          "research policy",
+        ])),
+      }
+    : undefined;
+
   return BookRulesSchema.parse({
     protagonist: protagonistName
       ? {
@@ -237,6 +304,7 @@ function parseMarkdownBookRules(raw: string): BookRules {
           region,
         }
       : undefined,
+    futureAdvantage,
     prohibitions,
     fanficMode,
     allowedDeviations,
@@ -275,6 +343,14 @@ function readLabeledList(raw: string, labels: ReadonlyArray<string>): string[] {
   return value ? splitList(value) : [];
 }
 
+function readLabeledBoolean(raw: string, labels: ReadonlyArray<string>): boolean | undefined {
+  const value = readLabeledValue(raw, labels)?.trim().toLowerCase();
+  if (!value) return undefined;
+  if (["true", "yes", "on", "1", "사용", "활성", "활성화", "启用", "开启", "是"].includes(value)) return true;
+  if (["false", "no", "off", "0", "미사용", "비활성", "비활성화", "关闭", "否"].includes(value)) return false;
+  return undefined;
+}
+
 function readMarkdownList(raw: string): string[] {
   if (!raw.trim()) return [];
   return raw
@@ -307,6 +383,18 @@ function normalizeFanficMode(value: string | undefined): "canon" | "au" | "ooc" 
   if (normalized === "ooc" || /性格偏离/i.test(value)) return "ooc";
   if (normalized === "cp" || /配对|感情线/i.test(value)) return "cp";
   return undefined;
+}
+
+function normalizeFutureAdvantageResearchPolicy(
+  value: string | undefined,
+): z.infer<typeof FutureAdvantageResearchPolicySchema> {
+  if (!value) return "on-demand";
+  const normalized = value.trim().toLowerCase();
+  if (["off", "끄기", "사용 안 함", "미사용", "关闭"].includes(normalized)) return "off";
+  if (["required-for-hard-claims", "핵심 주장 필수", "강한 주장 필수", "硬主张必需"].includes(normalized)) {
+    return "required-for-hard-claims";
+  }
+  return "on-demand";
 }
 
 function cleanScalar(value: string): string {

@@ -475,6 +475,21 @@ describe("buildAgentSystemPrompt", () => {
       expect(prompt).not.toContain("play_start");
       expect(prompt).not.toMatch(/agent="architect"/);
     });
+
+    it("gives Korean book sessions native prose and fun-first pitch rules", () => {
+      const prompt = buildAgentSystemPrompt("korean-novel", "ko", "book");
+      expect(prompt).toContain("## 한국어 창작 기준");
+      expect(prompt).toContain("## 기획서 작업 계약");
+      expect(prompt).toContain("처음부터 한국어로 구상하고 씁니다");
+      expect(prompt).toContain("독자가 다음 화를 누를 이유");
+      expect(prompt).toContain("주인공의 행동, 상대의 대응, 눈에 보이는 보상");
+      expect(prompt).toContain("project_pitch.md를 쓰거나 고칠 때");
+      expect(prompt).toContain("현재 작품에 연결된 레퍼런스 기록만 사용합니다");
+      expect(prompt).toContain("추상 명사가 스스로 움직이게 쓰지 않습니다");
+      expect(prompt).not.toContain("You are the InkOS writing assistant");
+      expect(prompt).not.toContain("## Permission Boundary");
+      expect(prompt).not.toContain("## Available Tools");
+    });
   });
 
   describe("edit mode", () => {

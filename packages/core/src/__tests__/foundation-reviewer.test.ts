@@ -15,6 +15,56 @@ const ZERO_USAGE = {
 } as const;
 
 describe("FoundationReviewerAgent", () => {
+  it("uses a Korean-native fun and prose gate with a 70-point dimension floor", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+
+    const scores = [85, 85, 85, 85, 85, 69, 85, 85];
+    const chatSpy = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        ...scores.flatMap((score, index) => [
+          `=== DIMENSION: ${index + 1} ===`,
+          `점수: ${score}`,
+          "의견: 실제 사건을 근거로 판단함",
+        ]),
+        "=== OVERALL ===",
+        "총점: 83",
+        "통과: 아니요",
+        "총평: 문체를 먼저 고쳐야 한다.",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    const result = await agent.review({
+      language: "ko",
+      mode: "original",
+      targetChapters: 200,
+      foundation: {
+        storyBible: "재벌가 승계전",
+        volumeOutline: "IMF 전후의 인수전",
+        bookRules: "주인공은 직접 거래한다.",
+        currentState: "1997년 7월",
+        pendingHooks: "외환 위기",
+      },
+    });
+
+    const messages = chatSpy.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("한국 장르소설을 오래 다룬 편집자");
+    expect(messages[0]?.content).toContain("대표 재미와 독자 약속");
+    expect(messages[0]?.content).toContain("한국어 기획 문체");
+    expect(messages[0]?.content).not.toContain("You are a senior fiction editor");
+    expect(messages[1]?.content).toContain("## 이야기 기반");
+    expect(result.totalScore).toBe(83);
+    expect(result.passed).toBe(false);
+    expect(result.overallFeedback).toBe("문체를 먼저 고쳐야 한다.");
+  });
+
   it("reviews original foundations against the requested chapter count", async () => {
     const agent = new FoundationReviewerAgent({
       client: TEST_CLIENT,

@@ -9,9 +9,122 @@ const ZERO_USAGE = {
   totalTokens: 0,
 } as const;
 
+const KOREAN_FOUNDATION_OUTPUT = [
+  "=== SECTION: story_frame ===",
+  "## 01_독자가_기대할_재미",
+  "주인공이 첫 거래를 성사시킨다.",
+  "",
+  "=== SECTION: volume_map ===",
+  "## 01_권별_승부와_감정",
+  "제1권 (1-20화)에서 첫 회사를 인수한다.",
+  "",
+  "=== SECTION: roles ===",
+  "---ROLE---",
+  "tier: major",
+  "name: 한도경",
+  "---CONTENT---",
+  "## 첫인상과 버릇",
+  "계약서를 읽을 때 숫자를 손가락으로 짚는다.",
+  "",
+  "=== SECTION: book_rules ===",
+  "## 주인공",
+  "- 이름: 한도경",
+  "",
+  "=== SECTION: pending_hooks ===",
+  "| hook_id | start_chapter | type | status | last_advanced_chapter | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | notes |",
+  "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+  "| H001 | 0 | 인수 | deferred | 0 | 채권 회수 | near-term | none | 1권 중반 | true | 10 | 부도어음 장부 |",
+].join("\n");
+
+function koreanBook(overrides: Partial<BookConfig> = {}): BookConfig {
+  return {
+    id: "korean-book",
+    title: "IMF를 독식한 재벌 3세",
+    platform: "other",
+    genre: "urban",
+    status: "active",
+    targetChapters: 200,
+    chapterWordCount: 5000,
+    language: "ko",
+    createdAt: "2026-08-17T00:00:00.000Z",
+    updatedAt: "2026-08-17T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function koreanArchitect(): ArchitectAgent {
+  return new ArchitectAgent({
+    client: {
+      provider: "openai",
+      apiFormat: "chat",
+      stream: false,
+      defaults: {
+        temperature: 0.7,
+        maxTokens: 4096,
+        thinkingBudget: 0,
+        extra: {},
+      },
+    },
+    model: "test-model",
+    projectRoot: process.cwd(),
+  });
+}
+
 describe("ArchitectAgent", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("uses a Korean-native fun-first prompt for a new Korean work", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFoundation(koreanBook());
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("한국 상업 웹소설을 기획하는 작가");
+    expect(messages[0]?.content).toContain("## 재미적 정합성");
+    expect(messages[0]?.content).toContain("독자가 다음 화를 누르게 할 사건과 보상");
+    expect(messages[0]?.content).toContain("## 01_독자가_기대할_재미");
+    expect(messages[0]?.content).toContain("## 02_주인공의_승부와_적");
+    expect(messages[0]?.content).toContain("추상어가 스스로 움직이게 쓰지 않습니다");
+    expect(messages[0]?.content).not.toContain("전경_배경_이야기");
+    expect(messages[0]?.content).not.toContain("You are the architect of this book");
+    expect(messages[1]?.content).toBe("제목이 \"IMF를 독식한 재벌 3세\"인 urban 장편소설의 전체 작품 기반을 한국어로 생성하세요.");
+  });
+
+  it("keeps imported Korean manuscripts on the Korean-native architect path", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFoundationFromImport(koreanBook(), "# 1화\n\n한도경은 부도어음을 집어 들었다.");
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("한국 상업 웹소설을 기획하는 작가");
+    expect(messages[0]?.content).toContain("## 가져온 원고를 다루는 법");
+    expect(messages[0]?.content).toContain("기존 원고의 재미가 약한 곳도 미화하지 않습니다");
+    expect(messages[1]?.content).toContain("기존 원고 자료입니다");
+    expect(messages[1]?.content).not.toContain("Write everything in English");
+  });
+
+  it("keeps Korean fanfic planning out of the Chinese architect prompt", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFanficFoundation(
+      koreanBook({ id: "korean-fanfic", title: "빈 시기의 승부" }),
+      "# 원작 사실\n- 주인공은 1997년에 서울에 있었다.",
+      "canon",
+    );
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("## 원작 기반 창작 조건");
+    expect(messages[0]?.content).toContain("원작에서 확정된 사건은 바꾸지 않습니다");
+    expect(messages[0]?.content).not.toContain("你是专业同人架构师");
+    expect(messages[1]?.content).toContain("원작 기반 장편의 기획을 한국어로 완성하세요");
   });
 
   it("uses English prompts when generating foundation from imported English chapters", async () => {

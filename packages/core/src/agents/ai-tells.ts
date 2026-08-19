@@ -121,19 +121,23 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
       .join(joiner);
     issues.push({
       severity: "warning",
-      category: isEnglish ? "Formulaic transitions" : "公式化转折",
+      category: isEnglish ? "Formulaic transitions" : isKorean ? "접속어 반복" : "公式化转折",
       description: isEnglish
         ? `Transition words repeat too often: ${detail}. Reusing the same transition pattern 3+ times creates a formulaic AI texture`
-        : `转折词重复使用：${detail}。同一转折模式≥3次暴露AI生成痕迹`,
+        : isKorean
+          ? `같은 접속어가 지나치게 반복됩니다: ${detail}. 같은 전환 방식을 3회 이상 되풀이해 문장 흐름이 공식처럼 들립니다.`
+          : `转折词重复使用：${detail}。同一转折模式≥3次暴露AI生成痕迹`,
       suggestion: isEnglish
         ? "Let scenes pivot through action, timing, or viewpoint shifts instead of repeating the same transitions"
-        : "用情节自然转折替代转折词，或换用不同的过渡手法（动作切入、时间跳跃、视角切换）",
+        : isKorean
+          ? "접속어를 덧붙이기보다 행동, 시간 이동, 시점 전환으로 장면의 방향을 바꾸세요."
+          : "用情节自然转折替代转折词，或换用不同的过渡手法（动作切入、时间跳跃、视角切换）",
     });
   }
 
   // dim 23: List-like structure (consecutive sentences with same prefix pattern)
   const sentences = content
-    .split(isEnglish ? /[.!?\n]/ : /[。！？\n]/)
+    .split(language === "zh" ? /[。！？\n]/ : /[.!?\n]/)
     .map((s) => s.trim())
     .filter((s) => s.length > 2);
 
@@ -157,13 +161,17 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
     if (maxConsecutive >= 3) {
       issues.push({
         severity: "info",
-        category: isEnglish ? "List-like structure" : "列表式结构",
+        category: isEnglish ? "List-like structure" : isKorean ? "나열식 문장 구조" : "列表式结构",
         description: isEnglish
           ? `Detected ${maxConsecutive} consecutive sentences with the same opening pattern, creating a list-like generated cadence`
-          : `检测到${maxConsecutive}句连续以相同开头的句子，呈现列表式AI生成结构`,
+          : isKorean
+            ? `같은 방식으로 시작하는 문장이 ${maxConsecutive}개 연속되어 나열식 박자가 생깁니다.`
+            : `检测到${maxConsecutive}句连续以相同开头的句子，呈现列表式AI生成结构`,
         suggestion: isEnglish
           ? "Vary how sentences open: change subject, timing, or action entry to break the list effect"
-          : "变换句式开头：用不同主语、时间词、动作词开头，打破列表感",
+          : isKorean
+            ? "주어, 시점, 행동의 진입 순서를 바꿔 문장 첫머리의 반복을 끊으세요."
+            : "变换句式开头：用不同主语、时间词、动作词开头，打破列表感",
       });
     }
   }

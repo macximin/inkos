@@ -32,9 +32,27 @@ export function buildWriterSystemPrompt(
   lengthSpec?: LengthSpec,
 ): string {
   const resolvedLanguage = languageOverride ?? genreProfile.language;
-  const usesEnglishControl = resolvedLanguage !== "zh";
   const governed = inputProfile === "governed";
   const resolvedLengthSpec = lengthSpec ?? buildLengthSpec(book.chapterWordCount, resolvedLanguage);
+
+  if (resolvedLanguage === "ko") {
+    return buildKoreanWriterSystemPrompt(
+      book,
+      genreProfile,
+      bookRules,
+      bookRulesBody,
+      genreBody,
+      styleGuide,
+      styleFingerprint,
+      chapterNumber,
+      mode,
+      fanficContext,
+      governed,
+      resolvedLengthSpec,
+    );
+  }
+
+  const usesEnglishControl = resolvedLanguage !== "zh";
 
   const outputSection = usesEnglishControl
     ? (mode === "creative"
@@ -46,7 +64,6 @@ export function buildWriterSystemPrompt(
 
   const sections = usesEnglishControl
     ? [
-        resolvedLanguage === "ko" ? buildKoreanOutputOverride(resolvedLengthSpec) : "",
         buildEnglishGenreIntro(book, genreProfile),
         buildEnglishCoreRules(book),
         buildGovernedInputContract("en", governed),
@@ -95,28 +112,177 @@ export function buildWriterSystemPrompt(
         outputSection,
       ];
 
-  const renderedSections = resolvedLanguage === "ko"
-    ? sections.map(normalizeKoreanControlSection)
-    : sections;
-  return renderedSections.filter(Boolean).join("\n\n");
+  return sections.filter(Boolean).join("\n\n");
 }
 
-function buildKoreanOutputOverride(lengthSpec: LengthSpec): string {
-  return `## 한국어 원고 출력 규칙 (최우선)
+function buildKoreanWriterSystemPrompt(
+  book: BookConfig,
+  gp: GenreProfile,
+  bookRules: BookRules | null,
+  bookRulesBody: string,
+  genreBody: string,
+  styleGuide: string,
+  styleFingerprint: string | undefined,
+  chapterNumber: number | undefined,
+  mode: "full" | "creative",
+  fanficContext: FanficContext | undefined,
+  governed: boolean,
+  lengthSpec: LengthSpec,
+): string {
+  const openingRule = chapterNumber && chapterNumber <= 3
+    ? `## 첫 3화 집필 규칙
 
-- 모든 소설 본문, 장면 묘사, 대사, 인물의 내면을 자연스러운 한국어로 작성하세요.
-- 영어 제어 지침은 작업 규칙일 뿐이며 결과물에 영어 문장을 섞지 마세요.
-- 목표 분량은 공백을 포함한 ${lengthSpec.target}자이며, 허용 범위는 ${lengthSpec.softMin}-${lengthSpec.softMax}자입니다.
-- CHAPTER_TITLE 같은 기계 판독용 키와 구조 태그는 그대로 유지하세요.`;
+지금은 ${chapterNumber}화입니다. ${chapterNumber === 1
+      ? "주인공을 핵심 갈등 안에 바로 넣고, 초반 800자 안에 선택 하나를 실행하게 하세요."
+      : chapterNumber === 2
+        ? "주인공의 우위를 설명하지 말고 구체적인 사건 하나로 증명한 뒤 작은 보상을 지급하세요."
+        : "앞으로 3-10화를 끌 단기 목표와 그 목표를 막을 상대를 장면 안에서 고정하세요."}
+설정 설명보다 인물의 행동을 먼저 보여 주고, 화말에는 작더라도 다음 화를 눌러야 할 문제가 남아야 합니다.`
+    : "";
+  const governance = governed
+    ? `## 입력과 정본
+
+- 이번 화의 직접 지시는 chapter intent와 chapter_memo를 따릅니다.
+- 권별 개요는 기본 계획이며, 이미 벌어진 회차와 충돌하면 실제 회차를 우선합니다.
+- 세계 규칙, 연속성 사실, 사용자가 정한 금지는 반드시 지킵니다.
+- 오래 묵은 복선과 이번 화 회수 대상이 있으면 새 복선을 늘리기 전에 장면으로 진전시키거나 지급합니다.
+- 여러 인물이 나오는 장면에는 이해관계가 부딪히는 대화나 행동을 최소 한 번 넣습니다.`
+    : "";
+  const genreRules = [
+    `## 작품과 장르\n\n- 작품: ${book.title}\n- 장르: ${book.genre}\n- 연재처: ${book.platform}`,
+    gp.pacingRule ? `- 리듬 조건: ${gp.pacingRule}` : "",
+    gp.chapterTypes.length > 0 ? `- 가능한 회차 유형: ${gp.chapterTypes.join(" / ")}` : "",
+    gp.fatigueWords.length > 0 ? `- 피로도가 높은 말은 회차마다 한 번 이하로 사용: ${gp.fatigueWords.join(", ")}` : "",
+    genreBody,
+  ].filter(Boolean).join("\n");
+  const protagonistRules = buildKoreanProtagonistRules(bookRules);
+  const narrativeRule = !bookRules?.narrativePerson
+    ? ""
+    : bookRules.narrativePerson === "first"
+      ? "## 서술 시점\n\n사용자가 정한 1인칭을 끝까지 지킵니다. 같은 장면에서 3인칭이나 전지적 시점으로 빠지지 않습니다."
+      : "## 서술 시점\n\n사용자가 정한 3인칭을 끝까지 지킵니다.";
+  const referenceRules = fanficContext
+    ? `## 원작 정본과 허용 범위
+
+${fanficContext.fanficCanon}
+
+- 작업 방식: ${fanficContext.fanficMode}
+- 허용된 변경: ${fanficContext.allowedDeviations.length > 0 ? fanficContext.allowedDeviations.join(", ") : "없음"}
+- 원작 사실과 인물의 말투를 지키되, 원작 문장을 베껴 붙이지 않습니다.`
+    : "";
+  const localRules = bookRulesBody ? `## 이 작품의 규칙\n\n${bookRulesBody}` : "";
+  const localStyle = styleGuide && styleGuide !== "(파일尚未创建)" && styleGuide !== "(文件尚未创建)"
+    ? `## 문체 지침\n\n${styleGuide}`
+    : "";
+  const fingerprint = styleFingerprint
+    ? `## 참고 문체의 특징\n\n${styleFingerprint}\n\n특징을 문장 선택에 반영하되 참고 원문을 베끼지 않습니다.`
+    : "";
+
+  return [
+    `당신은 한국 장르소설 작가입니다. 「${book.title}」의 다음 회차를 처음부터 한국어로 씁니다.`,
+    `## 한국어 원고 출력 규칙
+
+- 목표 분량은 공백을 포함한 ${lengthSpec.target}자, 허용 범위는 ${lengthSpec.softMin}-${lengthSpec.softMax}자입니다.
+- 자연스러운 한국어 어순과 호흡을 씁니다. 외국어 문장을 한국어 단어로 바꾼 듯한 표현을 만들지 않습니다.
+- 사람과 조직이 행동하게 씁니다. 신뢰, 관계, 구조, 승부 같은 추상 명사가 스스로 움직이게 하지 않습니다.
+- 'A가 아니라 B', '단순한 X를 넘어 Y', 같은 길이의 세 항목 나열을 습관처럼 반복하지 않습니다.
+- 정확한 동사, 구체적인 행동과 감각, 직접 묘사 순으로 고릅니다. 비유는 장면당 한 번 이하로 줄입니다.
+- 인공지능식 총평, 장면 뒤의 의미 해설, 독자가 이미 본 감정의 재설명을 붙이지 않습니다.`,
+    governance,
+    `## 재미와 장면
+
+- 이번 화의 중심 행동을 하나 정하고 끝까지 수행합니다. 주인공의 행동, 상대의 대응, 독자가 확인할 보상, 다음 압력을 원인과 결과로 잇습니다.
+- 돈, 지분, 자리, 정보, 평판, 관계 중 무엇이 바뀌었는지 장면에서 확인시킵니다.
+- 상대는 가진 정보와 이해관계 안에서 최선으로 대응합니다. 주인공을 돋보이게 하려고 무능해지지 않습니다.
+- 중요한 충돌, 반전, 지급 장면은 요약하지 말고 행동과 대화, 감각, 침묵까지 현장에서 보여 줍니다. 분량이 부족하면 사건 수를 줄입니다.
+- 인물은 아는 것만 판단합니다. 시점 인물이 모르는 사실을 서술자가 몰래 알려 주지 않습니다.
+- 일상과 전환 장면도 정보, 관계, 선택, 보상 가운데 하나를 실제로 바꿔야 합니다.
+- 화말에는 정보, 관계, 물리적 상태, 권력 중 적어도 하나가 달라져야 합니다.`,
+    openingRule,
+    genreRules,
+    protagonistRules,
+    narrativeRule,
+    localRules,
+    localStyle,
+    fingerprint,
+    referenceRules,
+    buildKoreanWriterOutputFormat(gp, lengthSpec, mode),
+  ].filter(Boolean).join("\n\n");
 }
 
-function normalizeKoreanControlSection(section: string): string {
-  return section
-    .replaceAll("English-speaking", "Korean-language")
-    .replaceAll("Write in English", "Write in Korean")
-    .replaceAll("English Variance Brief", "Korean variance brief")
-    .replace(/\bwords\b/g, "Korean characters including spaces")
-    .replace(/\bword\b/g, "Korean character");
+function buildKoreanProtagonistRules(bookRules: BookRules | null): string {
+  if (!bookRules?.protagonist && (bookRules?.prohibitions.length ?? 0) === 0) return "";
+  const lines = ["## 인물과 금지 사항"];
+  if (bookRules?.protagonist) {
+    lines.push(`- 주인공: ${bookRules.protagonist.name}`);
+    if (bookRules.protagonist.personalityLock.length > 0) {
+      lines.push(`- 성격 고정점: ${bookRules.protagonist.personalityLock.join(", ")}`);
+    }
+    for (const rule of bookRules.protagonist.behavioralConstraints) lines.push(`- 행동 제약: ${rule}`);
+  }
+  for (const rule of bookRules?.prohibitions ?? []) lines.push(`- 금지: ${rule}`);
+  for (const rule of bookRules?.genreLock?.forbidden ?? []) lines.push(`- 장르 금지: ${rule}`);
+  return lines.join("\n");
+}
+
+function buildKoreanWriterOutputFormat(gp: GenreProfile, lengthSpec: LengthSpec, mode: "full" | "creative"): string {
+  const resourceRows = gp.numericalSystem
+    ? "| 현재 자원 | 기초 X / 증감 Y / 결과 Z | 장부와 맞출 것 |\n"
+    : "";
+  const base = `## 출력 형식
+
+아래 표식은 기계가 읽으므로 영문 그대로 유지합니다. JSON이나 코드 블록으로 감싸지 않습니다.
+
+=== PRE_WRITE_CHECK ===
+| 점검 | 이번 화 기록 | 비고 |
+| --- | --- | --- |
+| 현재 작업 | chapter_memo의 행동과 실행 방식 | 추상 표현 금지 |
+| 독자가 기다리는 것 | 지급, 지연, 확대 중 하나 | 메모와 일치 |
+| 지급할 것과 감출 것 | 회수할 복선과 남길 패 | 실제 hook_id |
+| 전환 장면의 기능 | 장면별 기능 | 없으면 없음 |
+| 화말 변화 | 실제로 바뀔 1-3개 | 장면에 남길 것 |
+| 금지 | 메모의 금지 목록 | 원고에서 위반 금지 |
+| 현재 닻 | 장소 / 상대 / 보상 목표 | 구체적으로 |
+${resourceRows}| 회수 대상 | 실제 hook_id, 없으면 none | 복선 목록과 일치 |
+| 핵심 충돌 | 한 문장 | |
+| 회차 유형 | ${gp.chapterTypes.length > 0 ? gp.chapterTypes.join(" / ") : "전환 / 충돌 / 고조 / 수습"} | |
+| 위험 점검 | 인물 붕괴 / 정보 월경 / 설정 충돌 / 리듬 / 상투어 | |
+
+=== CHAPTER_TITLE ===
+(회차 번호를 빼고 제목만. 최근 제목과 같은 낱말이나 이미지를 되풀이하지 않습니다.)
+
+=== CHAPTER_CONTENT ===
+(한국어 원고. 공백 포함 ${lengthSpec.target}자, 허용 범위 ${lengthSpec.softMin}-${lengthSpec.softMax}자.)`;
+
+  if (mode === "creative") {
+    return `${base}\n\nPRE_WRITE_CHECK, CHAPTER_TITLE, CHAPTER_CONTENT 세 구역만 출력합니다. 상태와 복선 결산은 뒤 단계가 처리합니다.`;
+  }
+
+  return `${base}
+
+=== POST_SETTLEMENT ===
+| 결산 항목 | 이번 화 변화 | 근거 |
+| --- | --- | --- |
+| 복선 변화 | 새로 엶 / 진전 / 회수 / 미룸 | 실제 hook_id |
+
+=== UPDATED_STATE ===
+(갱신된 전체 상태표)
+
+=== UPDATED_HOOKS ===
+(갱신된 전체 복선표)
+
+=== CHAPTER_SUMMARY ===
+| 회차 | 제목 | 등장인물 | 핵심 사건 | 상태 변화 | 복선 변화 | 정서 | 회차 유형 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+
+=== UPDATED_SUBPLOTS ===
+(갱신된 전체 보조 줄기 표)
+
+=== UPDATED_EMOTIONAL_ARCS ===
+(갱신된 전체 감정선 표)
+
+=== UPDATED_CHARACTER_MATRIX ===
+(인물별 갱신 내용)`;
 }
 
 // ---------------------------------------------------------------------------

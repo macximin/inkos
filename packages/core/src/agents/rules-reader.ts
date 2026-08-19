@@ -7,6 +7,31 @@ import { BookConfigSchema } from "../models/book.js";
 
 const BUILTIN_GENRES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../genres");
 
+const KOREAN_GENRE_ALIASES: Readonly<Record<string, string>> = {
+  "재벌물": "chaebol-modern-fantasy-ko",
+  "한국 재벌물": "chaebol-modern-fantasy-ko",
+  "현대판타지 재벌물": "chaebol-modern-fantasy-ko",
+  "현대 판타지 재벌물": "chaebol-modern-fantasy-ko",
+  "현대판타지 기업물": "chaebol-modern-fantasy-ko",
+  "현대 판타지 기업물": "chaebol-modern-fantasy-ko",
+};
+
+function hasHangul(value: string): boolean {
+  return /[\u3131-\u318e\uac00-\ud7a3]/.test(value);
+}
+
+function resolveGenreProfileIds(genreId: string): ReadonlyArray<string> {
+  const requested = genreId.trim();
+  const alias = KOREAN_GENRE_ALIASES[requested];
+  const candidates = [requested];
+  if (alias && alias !== requested) candidates.push(alias);
+  if ((alias || hasHangul(requested)) && !candidates.includes("other-ko")) {
+    candidates.push("other-ko");
+  }
+  if (!candidates.includes("other")) candidates.push("other");
+  return candidates;
+}
+
 async function tryReadFile(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf-8");
@@ -17,22 +42,21 @@ async function tryReadFile(path: string): Promise<string | null> {
 
 /**
  * Load genre profile. Lookup order:
- * 1. Project-level: {projectRoot}/genres/{genreId}.md
- * 2. Built-in:     packages/core/genres/{genreId}.md
- * 3. Fallback:     built-in other.md
+ * 1. Exact project/built-in profile
+ * 2. Known Korean genre alias
+ * 3. Korean generic fallback for an unknown Hangul genre
+ * 4. Built-in other.md
  */
 export async function readGenreProfile(
   projectRoot: string,
   genreId: string,
 ): Promise<ParsedGenreProfile> {
-  const projectPath = join(projectRoot, "genres", `${genreId}.md`);
-  const builtinPath = join(BUILTIN_GENRES_DIR, `${genreId}.md`);
-  const fallbackPath = join(BUILTIN_GENRES_DIR, "other.md");
-
-  const raw =
-    (await tryReadFile(projectPath)) ??
-    (await tryReadFile(builtinPath)) ??
-    (await tryReadFile(fallbackPath));
+  let raw: string | null = null;
+  for (const candidateId of resolveGenreProfileIds(genreId)) {
+    raw = (await tryReadFile(join(projectRoot, "genres", `${candidateId}.md`)))
+      ?? (await tryReadFile(join(BUILTIN_GENRES_DIR, `${candidateId}.md`)));
+    if (raw) break;
+  }
 
   if (!raw) {
     throw new Error(`Genre profile not found for "${genreId}" and fallback "other.md" is missing`);

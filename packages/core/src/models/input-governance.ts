@@ -18,6 +18,9 @@ export const ChapterIntentSchema = z.object({
   mustKeep: z.array(z.string()).default([]),
   mustAvoid: z.array(z.string()).default([]),
   styleEmphasis: z.array(z.string()).default([]),
+  futureAdvantageMoveIds: z.array(z.string().min(1)).optional(),
+  researchClaimIds: z.array(z.string().min(1)).optional(),
+  authorizedDivergences: z.array(z.string().min(1)).optional(),
 });
 
 export type ChapterIntent = z.infer<typeof ChapterIntentSchema>;

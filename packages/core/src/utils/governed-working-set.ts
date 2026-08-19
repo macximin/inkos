@@ -114,9 +114,20 @@ export function mergeTableMarkdownByKey(
     return updated;
   }
 
-  const mergedRows = [...originalTable.dataRows];
   const originalHeader = originalTable.leadingLines
     .find((line) => line.trim().startsWith("|"));
+  const updatedHeader = updatedTable.leadingLines
+    .find((line) => line.trim().startsWith("|"));
+  const originalColumnCount = originalHeader ? parseRow(originalHeader).length : 0;
+  const updatedColumnCount = updatedHeader ? parseRow(updatedHeader).length : 0;
+  const updatedRowsMatchOriginalSchema = originalColumnCount > 0
+    && updatedColumnCount === originalColumnCount
+    && updatedTable.dataRows.every((row) => row.length === originalColumnCount);
+  if (!updatedRowsMatchOriginalSchema) {
+    return original;
+  }
+
+  const mergedRows = [...originalTable.dataRows];
   const isHookTable = originalHeader
     ? (parseRow(originalHeader)[0] ?? "").trim().toLowerCase() === "hook_id"
     : false;

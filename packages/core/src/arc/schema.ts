@@ -15,6 +15,31 @@ export const ArcEpisodeBeatSchema = z.object({
 });
 export type ArcEpisodeBeat = z.infer<typeof ArcEpisodeBeatSchema>;
 
+export const FutureAdvantageMoveModeSchema = z.enum([
+  "introduce",
+  "adopt",
+  "position",
+  "acquire",
+  "recruit",
+  "shape",
+]);
+export type FutureAdvantageMoveMode = z.infer<typeof FutureAdvantageMoveModeSchema>;
+
+export const FutureAdvantageMoveSchema = z.object({
+  moveId: z.string().min(1),
+  mode: FutureAdvantageMoveModeSchema,
+  domain: z.string().min(1),
+  target: z.string().min(1),
+  rememberedOutcome: z.string().min(1),
+  baselineQuestions: z.array(z.string().min(1)).default([]),
+  bridgeSteps: z.array(z.string().min(1)).default([]),
+  resistance: z.array(z.string().min(1)).default([]),
+  proof: z.string(),
+  reward: z.string(),
+  downstreamConsequences: z.array(z.string().min(1)).default([]),
+});
+export type FutureAdvantageMove = z.infer<typeof FutureAdvantageMoveSchema>;
+
 export const ArcPacketSchema = z.object({
   version: z.literal(1),
   id: ArcIdSchema,
@@ -40,6 +65,7 @@ export const ArcPacketSchema = z.object({
   mustKeep: z.array(z.string()),
   mustAvoid: z.array(z.string()),
   styleEmphasis: z.array(z.string()),
+  futureAdvantageMove: FutureAdvantageMoveSchema.optional(),
   sourceForecast: z.object({
     forecastId: z.string().min(1),
     branchId: z.string().min(1),
@@ -62,6 +88,29 @@ export const ArcPacketSchema = z.object({
   const beatChapters = arc.episodeBeats.map((beat) => beat.chapterNumber);
   if (beatChapters.some((chapter, index) => chapter !== arc.chapterNumbers[index])) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["episodeBeats"], message: "episodeBeats must align with chapterNumbers in order" });
+  }
+  if (arc.status === "ready" && arc.futureAdvantageMove) {
+    if (arc.futureAdvantageMove.bridgeSteps.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["futureAdvantageMove", "bridgeSteps"],
+        message: "A ready future-advantage move must include at least one bridge step",
+      });
+    }
+    if (!arc.futureAdvantageMove.proof.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["futureAdvantageMove", "proof"],
+        message: "A ready future-advantage move must define visible proof",
+      });
+    }
+    if (!arc.futureAdvantageMove.reward.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["futureAdvantageMove", "reward"],
+        message: "A ready future-advantage move must define a reader reward",
+      });
+    }
   }
 });
 export type ArcPacket = z.infer<typeof ArcPacketSchema>;

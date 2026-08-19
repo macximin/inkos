@@ -457,9 +457,11 @@ export class ContinuityAuditor extends BaseAgent {
       : "";
 
     const searchNote = gp.eraResearch
-      ? isEnglish
-        ? "\n\nYou have web-search capability (search_web / fetch_url). For real-world eras, people, events, geography, or policies, you must verify with search_web instead of relying on memory. Cross-check at least 2 sources."
-        : "\n\n你有联网搜索能力（search_web / fetch_url）。对于涉及真实年代、人物、事件、地理、政策的内容，你必须用search_web核实，不可凭记忆判断。至少对比2个来源交叉验证。"
+      ? resolvedLanguage === "ko"
+        ? "\n\n회차 심사 중에는 실시간 웹 검색을 수행하지 마세요. 제공된 리서치 근거만 사용하세요. 현실의 사실 주장을 근거에서 확인할 수 없다면 info 수준의 추가 조사 항목으로 기록하세요. 명시적으로 허용된 가상 분기는 실제 역사에 없었다는 이유만으로 오류로 판정하지 마세요."
+        : isEnglish
+          ? "\n\nDo not perform live web search during chapter audit. Use supplied research evidence only. If a real-world claim cannot be verified from that evidence, record an info-level research need. Never reject an explicitly authorized fictional divergence merely because it did not exist in real history."
+          : "\n\n章节审稿期间不要实时联网检索，只使用已提供的研究证据。真实世界主张若无法由证据核实，应记录为 info 级待研究项。已明确授权的虚构分歧，不能仅因真实历史中不存在就判为错误。"
       : "";
 
     const systemPromptBase = isEnglish
@@ -662,10 +664,9 @@ ${chapterContent}`;
     ];
     const chatOptions = { temperature: options?.temperature ?? 0.3 };
 
-    // Use web search for fact verification when eraResearch is enabled
-    const response = gp.eraResearch
-      ? await this.chatWithSearch(chatMessages, chatOptions)
-      : await this.chat(chatMessages, chatOptions);
+    // Auditing is deterministic over supplied evidence. Explicit research is
+    // collected separately through research_web and then attached as context.
+    const response = await this.chat(chatMessages, chatOptions);
 
     const result = this.parseAuditResult(response.content, resolvedLanguage);
     return { ...result, tokenUsage: response.usage };

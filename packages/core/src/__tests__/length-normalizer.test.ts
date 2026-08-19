@@ -35,6 +35,59 @@ describe("LengthNormalizerAgent", () => {
     vi.restoreAllMocks();
   });
 
+  it("uses a Korean-native prompt for Korean character-length normalization", async () => {
+    const agent = createAgent();
+    const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: "윤태겸은 계약서를 덮었다. 김 전무가 먼저 고개를 숙였다.",
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 120,
+      softMin: 90,
+      softMax: 150,
+      hardMin: 60,
+      hardMax: 180,
+      countingMode: "ko_chars",
+      normalizeMode: "expand",
+    });
+
+    await agent.normalizeChapter({
+      chapterContent: "윤태겸은 계약서를 덮었다.",
+      lengthSpec,
+      chapterIntent: "상대가 협상에서 물러난다.",
+    });
+
+    const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+    const prompt = messages.map((message) => message.content).join("\n");
+    expect(prompt).toContain("한국 장르소설의 분량");
+    expect(prompt).toContain("공백 포함 120자");
+    expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("recognizes a cut-off Korean normalizer response and keeps the original", async () => {
+    const agent = createAgent();
+    vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({
+      content: "윤태겸은 계약서를 집어 들고 회의실 밖으로 걸어",
+      usage: ZERO_USAGE,
+    });
+    const lengthSpec = LengthSpecSchema.parse({
+      target: 200,
+      softMin: 170,
+      softMax: 230,
+      hardMin: 150,
+      hardMax: 260,
+      countingMode: "ko_chars",
+      normalizeMode: "expand",
+    });
+    const draft = "윤태겸은 계약서를 덮었다. 상대는 조건을 받아들였다.";
+
+    const result = await agent.normalizeChapter({ chapterContent: draft, lengthSpec });
+
+    expect(result.normalizedContent).toBe(draft);
+    expect(result.applied).toBe(false);
+    expect(result.warning).toContain("중간에 끊긴");
+  });
+
   it("compresses a long draft while preserving required markers", async () => {
     const agent = createAgent();
     const chatSpy = vi.spyOn(BaseAgent.prototype as never, "chat").mockResolvedValue({

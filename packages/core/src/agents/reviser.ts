@@ -51,7 +51,7 @@ type AutoOutputMode = "patch-only" | "rewrite-only" | "allow-full";
 
 function buildTieredIssueList(
   issues: ReadonlyArray<AuditIssue>,
-  isEnglish: boolean,
+  language: "zh" | "ko" | "en",
 ): string {
   const critical: string[] = [];
   const high: string[] = [];
@@ -70,19 +70,25 @@ function buildTieredIssueList(
 
   const parts: string[] = [];
   if (critical.length > 0) {
-    parts.push(isEnglish
-      ? `## Critical — Must Fix\n${critical.join("\n")}`
-      : `## Critical（必须解决）\n${critical.join("\n")}`);
+    parts.push(language === "ko"
+      ? `## 치명적 문제: 반드시 수정\n${critical.join("\n")}`
+      : language === "en"
+        ? `## Critical — Must Fix\n${critical.join("\n")}`
+        : `## Critical（必须解决）\n${critical.join("\n")}`);
   }
   if (high.length > 0) {
-    parts.push(isEnglish
-      ? `## High — Should Improve\n${high.join("\n")}`
-      : `## High（应当改善）\n${high.join("\n")}`);
+    parts.push(language === "ko"
+      ? `## 주요 문제: 수정 권장\n${high.join("\n")}`
+      : language === "en"
+        ? `## High — Should Improve\n${high.join("\n")}`
+        : `## High（应当改善）\n${high.join("\n")}`);
   }
   if (medium.length > 0) {
-    parts.push(isEnglish
-      ? `## Medium — Reference\n${medium.join("\n")}`
-      : `## Medium（参考建议）\n${medium.join("\n")}`);
+    parts.push(language === "ko"
+      ? `## 참고 사항\n${medium.join("\n")}`
+      : language === "en"
+        ? `## Medium — Reference\n${medium.join("\n")}`
+        : `## Medium（参考建议）\n${medium.join("\n")}`);
   }
 
   return parts.join("\n\n");
@@ -106,6 +112,21 @@ const MODE_DESCRIPTIONS: Record<ReviseMode, string> = {
 8. 段落长度差异化：不再等长段落，有的段只有一句话，有的段七八行
 9. 消灭"不禁""仿佛""宛如"等AI标记词：换成具体感官描写`,
   "spot-fix": "定点修复：只修改审稿意见指出的具体句子或段落，其余所有内容必须原封不动保留。修改范围限定在问题句子及其前后各一句。禁止改动无关段落",
+};
+
+const KOREAN_MODE_DESCRIPTIONS: Record<ReviseMode, string> = {
+  auto: "",
+  polish: "윤문: 사실과 사건의 결론은 건드리지 않고 어휘, 문장 호흡, 문단 리듬만 다듬습니다. 새 장면과 새 대사를 만들지 않습니다.",
+  rewrite: "부분 재작성: 문제가 있는 문단과 바로 이어지는 문맥을 고칩니다. 문제가 회차 전체에 걸치지 않았다면 원고 전체를 새로 쓰지 않습니다.",
+  rework: "전면 재구성: 장면 순서와 충돌의 진행을 다시 짤 수 있지만, 정본 설정과 핵심 사건의 결과는 바꾸지 않습니다.",
+  "anti-detect": `기계적인 문장 제거: 사건은 유지하면서 반복되는 문장 틀과 해설투를 걷어냅니다.
+
+- 같은 길이의 문장과 문단이 이어지지 않게 호흡을 바꿉니다.
+- 'A가 아니라 B', '단순한 X를 넘어 Y' 같은 대조문을 직설문으로 고칩니다.
+- 추상 명사가 행동하는 문장을 인물의 행동과 대사로 바꿉니다.
+- 이미 보여 준 감정과 장면의 의미를 다시 설명하지 않습니다.
+- 집단의 과장된 반응을 한두 사람의 구체적인 반응으로 바꿉니다.`,
+  "spot-fix": "정해진 부분만 수정: 지적된 문장이나 문단과 필요한 최소 문맥만 고칩니다. 나머지 원고는 그대로 둡니다.",
 };
 
 export class ReviserAgent extends BaseAgent {
@@ -159,39 +180,44 @@ export class ReviserAgent extends BaseAgent {
     // book_rules.md sources — story_frame.md frontmatter yields an empty
     // body, and an empty string is NOT a usable style guide. Treat
     // missing/empty body as "no fallback available".
+    const resolvedLanguage = bookLanguage ?? gp.language;
+    const usesEnglishControl = resolvedLanguage !== "zh";
     const legacyRulesBody = parsedRules?.body?.trim();
     const styleGuide = styleGuideRaw !== "(文件不存在)"
       ? styleGuideRaw
-      : (legacyRulesBody || "(无文风指南)");
-
-    const resolvedLanguage = bookLanguage ?? gp.language;
-    const usesEnglishControl = resolvedLanguage !== "zh";
+      : (legacyRulesBody || (resolvedLanguage === "ko" ? "(문체 지침 없음)" : "(无文风指南)"));
 
     const issueList = mode === "auto"
-      ? buildTieredIssueList(issues, usesEnglishControl)
+      ? buildTieredIssueList(issues, resolvedLanguage)
       : issues
-          .map((i) => `- [${i.severity}] ${i.category}: ${i.description}\n  ${usesEnglishControl ? "Suggestion" : "建议"}: ${i.suggestion}`)
+          .map((i) => `- [${i.severity}] ${i.category}: ${i.description}\n  ${resolvedLanguage === "ko" ? "수정 제안" : usesEnglishControl ? "Suggestion" : "建议"}: ${i.suggestion}`)
           .join("\n");
 
     const numericalRule = gp.numericalSystem
-      ? (usesEnglishControl
-          ? "\n3. Numerical errors must be fixed precisely — cross-check before and after"
-          : "\n3. 数值错误必须精确修正，前后对账")
+      ? (resolvedLanguage === "ko"
+          ? "\n3. 돈, 지분, 수량, 날짜는 수정 전후 장부와 정확히 맞춥니다."
+          : usesEnglishControl
+            ? "\n3. Numerical errors must be fixed precisely — cross-check before and after"
+            : "\n3. 数值错误必须精确修正，前后对账")
       : "";
     const protagonistBlock = bookRules?.protagonist
-      ? (usesEnglishControl
-          ? `\n\nProtagonist lock: ${bookRules.protagonist.name} — ${bookRules.protagonist.personalityLock.join(", ")}. Revisions must not violate the protagonist profile.`
-          : `\n\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}。修改不得违反人设。`)
+      ? (resolvedLanguage === "ko"
+          ? `\n\n주인공 고정점: ${bookRules.protagonist.name}. ${bookRules.protagonist.personalityLock.join(", ")}. 수정하면서 성격과 행동 원칙을 바꾸지 않습니다.`
+          : usesEnglishControl
+            ? `\n\nProtagonist lock: ${bookRules.protagonist.name} — ${bookRules.protagonist.personalityLock.join(", ")}. Revisions must not violate the protagonist profile.`
+            : `\n\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}。修改不得违反人设。`)
       : "";
     // Length guardrail only used by legacy modes (manual CLI revise).
     // Auto mode delegates length to normalize, not reviser.
     const lengthGuardrail = mode !== "auto" && options?.lengthSpec
-      ? (usesEnglishControl
-          ? "\n8. Keep the chapter word count within the target range; only allow minor deviation when fixing critical issues truly requires it"
-          : "\n8. 保持章节字数在目标区间内；只有在修复关键问题确实需要时才允许轻微偏离")
+      ? (resolvedLanguage === "ko"
+          ? "\n8. 수정한 원고도 목표 분량 범위 안에 둡니다. 치명적 문제를 고치는 데 꼭 필요할 때만 조금 벗어날 수 있습니다."
+          : usesEnglishControl
+            ? "\n8. Keep the chapter word count within the target range; only allow minor deviation when fixing critical issues truly requires it"
+            : "\n8. 保持章节字数在目标区间内；只有在修复关键问题确实需要时才允许轻微偏离")
       : "";
     const langPrefix = resolvedLanguage === "ko"
-      ? `【언어 우선 규칙】FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS의 자연어를 모두 한국어로 작성하세요. 영어 지침은 작업 규칙일 뿐이며 결과에 영어 또는 중국어 문장을 복사하지 마세요.
+      ? `【언어 우선 규칙】FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS의 자연어를 모두 한국어로 작성하세요. 원고와 제어 입력을 다른 언어로 번역해 처리하지 마세요.
 UPDATED_STATE는 반드시 '# 현재 상태' 제목으로 시작하세요.
 UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기존 hook_id를 그대로 유지한 완전한 표여야 합니다. 글머리표 목록으로 바꾸거나 hook_id를 삭제하지 마세요. 새 복선이 꼭 필요하면 기존 표에 새 H 번호 행을 추가하세요.
 
@@ -226,27 +252,29 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
       : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
     const systemPrompt = await this.withPromptPackGuidance(systemPromptBase, "longform.reviser");
 
+    const ledgerForPrompt = resolvedLanguage === "ko" && ledger === "(文件不存在)" ? "(장부 없음)" : ledger;
+    const hooksForPrompt = resolvedLanguage === "ko" && hooksWorkingSet === "(文件不存在)" ? "(복선 없음)" : hooksWorkingSet;
     const ledgerBlock = gp.numericalSystem
-      ? `\n## 资源账本\n${ledger}`
+      ? `\n## ${resolvedLanguage === "ko" ? "자원 장부" : "资源账本"}\n${ledgerForPrompt}`
       : "";
     const governedMemoryBlocks = options?.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(options.contextPackage, resolvedLanguage)
       : undefined;
     const hookDebtBlock = governedMemoryBlocks?.hookDebtBlock ?? "";
     const hooksBlock = governedMemoryBlocks?.hooksBlock
-      ?? `\n## 伏笔池\n${hooksWorkingSet}\n`;
+      ?? `\n## ${resolvedLanguage === "ko" ? "복선 목록" : "伏笔池"}\n${hooksForPrompt}\n`;
     const outlineBlock = volumeOutline !== "(文件不存在)"
-      ? `\n## 卷纲\n${volumeOutline}\n`
+      ? `\n## ${resolvedLanguage === "ko" ? "권별 개요" : "卷纲"}\n${volumeOutline}\n`
       : "";
     const bibleBlock = !governedMode && storyBible !== "(文件不存在)"
-      ? `\n## 世界观设定\n${storyBible}\n`
+      ? `\n## ${resolvedLanguage === "ko" ? "세계와 작품 규칙" : "世界观设定"}\n${storyBible}\n`
       : "";
     const matrixBlock = characterMatrixWorkingSet !== "(文件不存在)"
-      ? `\n## 角色交互矩阵\n${characterMatrixWorkingSet}\n`
+      ? `\n## ${resolvedLanguage === "ko" ? "인물 관계와 상호작용" : "角色交互矩阵"}\n${characterMatrixWorkingSet}\n`
       : "";
     const summariesBlock = governedMemoryBlocks?.summariesBlock
       ?? (chapterSummariesWorkingSet !== "(文件不存在)"
-        ? `\n## 章节摘要\n${chapterSummariesWorkingSet}\n`
+        ? `\n## ${resolvedLanguage === "ko" ? "최근 회차 요약" : "章节摘要"}\n${chapterSummariesWorkingSet}\n`
         : "");
     const volumeSummariesBlock = governedMemoryBlocks?.volumeSummariesBlock ?? "";
 
@@ -254,27 +282,44 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
     const hasFanficCanon = fanficCanon !== "(文件不存在)";
 
     const canonBlock = hasParentCanon
-      ? `\n## 正传正典参照（修稿专用）\n本书为番外作品。修改时参照正典约束，不可改变正典事实。\n${parentCanon}\n`
+      ? resolvedLanguage === "ko"
+        ? `\n## 본편 정본\n이 작품은 외전입니다. 본편에서 확정된 사실을 바꾸지 않습니다.\n${parentCanon}\n`
+        : `\n## 正传正典参照（修稿专用）\n本书为番外作品。修改时参照正典约束，不可改变正典事实。\n${parentCanon}\n`
       : "";
 
     const fanficCanonBlock = hasFanficCanon
-      ? `\n## 同人正典参照（修稿专用）\n本书为同人作品。修改时参照正典角色档案和世界规则，不可违反正典事实。角色对话必须保留原作语癖。\n${fanficCanon}\n`
+      ? resolvedLanguage === "ko"
+        ? `\n## 원작 정본\n원작의 인물과 세계 규칙, 이미 확정된 사실을 지킵니다. 인물의 말투도 유지합니다.\n${fanficCanon}\n`
+        : `\n## 同人正典参照（修稿专用）\n本书为同人作品。修改时参照正典角色档案和世界规则，不可违反正典事实。角色对话必须保留原作语癖。\n${fanficCanon}\n`
       : "";
     const reducedControlBlock = options?.contextPackage && options.ruleStack
-      ? this.buildReducedControlBlock(options.chapterMemo, options.chapterIntentData, options.chapterIntent, options.contextPackage, options.ruleStack)
+      ? this.buildReducedControlBlock(options.chapterMemo, options.chapterIntentData, options.chapterIntent, options.contextPackage, options.ruleStack, resolvedLanguage)
       : "";
     // Length guardrail only in legacy modes — auto mode delegates length to normalize.
     const lengthGuidanceBlock = mode !== "auto" && options?.lengthSpec
-      ? `\n## 字数护栏\n目标字数：${options.lengthSpec.target}\n允许区间：${options.lengthSpec.softMin}-${options.lengthSpec.softMax}\n极限区间：${options.lengthSpec.hardMin}-${options.lengthSpec.hardMax}\n如果修正后超出允许区间，请优先压缩冗余解释、重复动作和弱信息句，不得新增支线或删掉核心事实。\n`
+      ? resolvedLanguage === "ko"
+        ? `\n## 분량 조건\n목표: 공백 포함 ${options.lengthSpec.target}자\n허용 범위: ${options.lengthSpec.softMin}-${options.lengthSpec.softMax}자\n절대 범위: ${options.lengthSpec.hardMin}-${options.lengthSpec.hardMax}자\n범위를 맞출 때 중복 설명과 이미 보여 준 감정의 재설명을 먼저 덜어냅니다. 새 사건을 만들거나 핵심 사실을 삭제하지 않습니다.\n`
+        : `\n## 字数护栏\n目标字数：${options.lengthSpec.target}\n允许区间：${options.lengthSpec.softMin}-${options.lengthSpec.softMax}\n极限区间：${options.lengthSpec.hardMin}-${options.lengthSpec.hardMax}\n如果修正后超出允许区间，请优先压缩冗余解释、重复动作和弱信息句，不得新增支线或删掉核心事实。\n`
       : "";
     const styleGuideBlock = reducedControlBlock.length === 0
-      ? `\n## 文风指南\n${styleGuide}`
+      ? `\n## ${resolvedLanguage === "ko" ? "문체 지침" : "文风指南"}\n${styleGuide}`
       : "";
     const arcProvenanceBlock = options?.arcProvenanceContext?.trim()
       ? `\n${options.arcProvenanceContext.trim()}\n`
       : "";
 
-    const userPrompt = `请修正第${chapterNumber}章。
+    const userPrompt = resolvedLanguage === "ko" ? `제${chapterNumber}화를 수정하세요.
+
+## 감리 결과
+${issueList}
+
+## 현재 상태
+${currentState === "(文件不存在)" ? "(현재 상태 없음)" : currentState}
+${ledgerBlock}
+${sanitizeNarrativeEvidenceBlock(hookDebtBlock, resolvedLanguage) ?? ""}${sanitizeNarrativeEvidenceBlock(hooksBlock, resolvedLanguage) ?? ""}${sanitizeNarrativeEvidenceBlock(volumeSummariesBlock, resolvedLanguage) ?? ""}${reducedControlBlock || outlineBlock}${arcProvenanceBlock}${bibleBlock}${matrixBlock}${sanitizeNarrativeEvidenceBlock(summariesBlock, resolvedLanguage) ?? ""}${canonBlock}${fanficCanonBlock}${styleGuideBlock}${lengthGuidanceBlock}
+
+## 수정할 원고
+${chapterContent}` : `请修正第${chapterNumber}章。
 
 ## 审稿问题
 ${issueList}
@@ -415,6 +460,58 @@ ${chapterContent}`;
   }): string {
     const { langPrefix, gp, protagonistBlock, numericalRule, resolvedLanguage, lengthSpec, autoOutputMode } = params;
     // lengthGuardrail intentionally not used in auto mode — length constraint is embedded in REVISED_CONTENT description
+    if (resolvedLanguage === "ko") {
+      const route = autoOutputMode === "rewrite-only"
+        ? "\n\n분기 규칙: 인물 붕괴, 주선 이탈, 보상 누락, 시간선 오류, 복선 미회수처럼 구조적인 문제입니다. PATCHES를 쓰지 말고 REVISED_CONTENT에 수정한 전체 원고를 출력합니다. 안전하게 재작성할 수 없으면 FIXED_ISSUES에 이유를 적고 REVISED_CONTENT를 비웁니다."
+        : autoOutputMode === "patch-only"
+          ? "\n\n분기 규칙: 표현, 문단 모양, 피로 표현, 정보 월경처럼 국소적인 문제입니다. 전체를 다시 쓰지 말고 PATCHES만 출력합니다. 안전한 패치를 만들 수 없으면 PATCHES를 비웁니다."
+          : "";
+      const lengthConstraint = lengthSpec
+        ? `\nREVISED_CONTENT를 출력할 때는 공백 포함 ${lengthSpec.softMin}-${lengthSpec.softMax}자 안에 맞춥니다. 목표는 ${lengthSpec.target}자입니다.`
+        : "";
+      const ledgerSection = gp.numericalSystem
+        ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부)"
+        : "";
+
+      return `${langPrefix}당신은 한국 장르소설 수정 편집자입니다. 「${gp.name}」 장르의 원고를 감리 결과에 맞춰 고칩니다.${protagonistBlock}${route}
+
+PATCHES는 특정 문장과 문단만 고칠 때 사용합니다. TARGET_TEXT에는 원문에서 한 번만 나오는 정확한 문장을 넣고, REPLACEMENT_TEXT에는 바꿀 한국어 문장만 넣습니다. 손대지 않은 원고는 그대로 둡니다.
+
+REVISED_CONTENT는 구조, 인과, 분량, 사건 배열처럼 회차 전체를 손봐야 할 때만 사용합니다.${lengthConstraint}
+
+수정 원칙:
+1. 지적된 문제의 원인을 고칩니다.${numericalRule}
+2. 사건의 방향, 정본 사실, 인물의 욕망과 말투를 보존합니다.
+3. 복선 상태와 실제 원고를 맞춥니다.
+4. 원문의 한국어 호흡을 보존합니다. 외국어 문장을 번역한 듯한 어순으로 바꾸지 않습니다.
+5. 추상 명사가 행동하는 문장, 반복되는 대조문, 장면 뒤의 의미 해설을 걷어냅니다.
+6. 인물의 감정과 달라진 관계는 행동, 대사, 선택으로 보여 줍니다.
+7. 수정 과정에서 새 사건이나 새 설정을 발명하지 않습니다.
+
+출력 형식:
+
+=== FIXED_ISSUES ===
+(고친 문제를 한 줄씩 기록합니다.)
+
+=== PATCHES ===
+(국소 수정일 때만 출력합니다. REVISED_CONTENT를 사용하면 이 구역은 생략합니다.)
+--- PATCH 1 ---
+TARGET_TEXT:
+(원문에서 정확히 복사한 수정 대상)
+REPLACEMENT_TEXT:
+(교체할 한국어 문장)
+--- END PATCH ---
+
+=== REVISED_CONTENT ===
+(전체 재작성이 필요할 때만 수정한 전체 한국어 원고를 출력합니다.)
+
+=== UPDATED_STATE ===
+(수정한 전체 상태표)
+${ledgerSection}
+=== UPDATED_HOOKS ===
+(수정한 전체 복선표)`;
+    }
+
     const en = resolvedLanguage !== "zh";
     const ledgerSection = gp.numericalSystem
       ? (en ? "\n=== UPDATED_LEDGER ===\n(Full updated resource ledger)" : "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)")
@@ -544,7 +641,57 @@ ${ledgerSection}
     mode: ReviseMode;
     resolvedLanguage: "zh" | "ko" | "en";
   }): string {
-    const { langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode } = params;
+    const { langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage } = params;
+    if (resolvedLanguage === "ko") {
+      const modeDescription = KOREAN_MODE_DESCRIPTIONS[mode];
+      const outputFormat = mode === "spot-fix"
+        ? `=== FIXED_ISSUES ===
+(수정한 문제를 한 줄씩 적습니다. 안전하게 고칠 수 없으면 그 이유를 적습니다.)
+
+=== PATCHES ===
+--- PATCH 1 ---
+TARGET_TEXT:
+(원문에서 정확히 복사하고 한 번만 나오는 문장이나 문단)
+REPLACEMENT_TEXT:
+(교체할 한국어 문장이나 문단)
+--- END PATCH ---
+
+=== UPDATED_STATE ===
+(수정한 전체 상태표)
+${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부)" : ""}
+=== UPDATED_HOOKS ===
+(수정한 전체 복선표)`
+        : `=== FIXED_ISSUES ===
+(수정한 문제를 한 줄씩 적습니다.)
+
+=== REVISED_CONTENT ===
+(수정한 전체 한국어 원고)
+
+=== UPDATED_STATE ===
+(수정한 전체 상태표)
+${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부)" : ""}
+=== UPDATED_HOOKS ===
+(수정한 전체 복선표)`;
+
+      return `${langPrefix}당신은 한국 장르소설 수정 편집자입니다. 「${gp.name}」 원고를 한국어로 직접 읽고 고칩니다.${protagonistBlock}
+
+수정 방식: ${modeDescription}
+
+수정 원칙:
+1. 선택된 방식의 수정 범위를 넘지 않습니다.
+2. 표면적인 말만 바꾸지 말고 지적된 원인을 고칩니다.${numericalRule}
+4. 복선표와 원고의 사실을 맞춥니다.
+5. 사건의 방향과 핵심 충돌을 바꾸지 않습니다.
+6. 원문의 말투와 문장 호흡을 보존합니다.
+7. 상태표${gp.numericalSystem ? ", 자원 장부" : ""}, 복선표도 원고와 맞게 갱신합니다.
+${lengthGuardrail}
+${mode === "spot-fix" ? "\n9. PATCHES만 출력하며 원고 전체를 다시 쓰지 않습니다. TARGET_TEXT는 원문에서 한 번만 나오는 정확한 인용이어야 합니다.\n10. 넓은 범위의 재작성이 필요하면 안전하게 고칠 수 없다고 기록하고 PATCHES를 비웁니다." : ""}
+
+출력 형식:
+
+${outputFormat}`;
+    }
+
     const modeDesc = MODE_DESCRIPTIONS[mode];
     const outputFormat = mode === "spot-fix"
       ? `=== FIXED_ISSUES ===
@@ -608,20 +755,37 @@ ${outputFormat}`;
     chapterIntent: string | undefined,
     contextPackage: ContextPackage,
     ruleStack: RuleStack,
+    language: "zh" | "ko" | "en",
   ): string {
-    const selectedContext = renderNarrativeSelectedContext(contextPackage.selectedContext, "zh")
+    const selectedContext = renderNarrativeSelectedContext(contextPackage.selectedContext, language)
       .replace(/^### /gm, "- ");
     const overrides = ruleStack.activeOverrides.length > 0
       ? ruleStack.activeOverrides
         .map((override) => `- ${override.from} -> ${override.to}: ${override.reason} (${override.target})`)
         .join("\n")
-      : "- none";
+      : language === "ko" ? "- 없음" : "- none";
     // Prefer memo-based narrative block; fall back to legacy intent markdown
     const narrativeBlock = memo
-      ? renderMemoAsNarrativeBlock(memo, intent, "zh")
+      ? renderMemoAsNarrativeBlock(memo, intent, language)
       : chapterIntent
-        ? buildNarrativeIntentBrief(chapterIntent, "zh")
-        : "(无)";
+        ? buildNarrativeIntentBrief(chapterIntent, language)
+        : language === "ko" ? "(없음)" : "(无)";
+
+    if (language === "ko") {
+      return `\n## 이번 화 제어 입력
+${narrativeBlock}
+
+### 선택한 근거
+${selectedContext || "- 없음"}
+
+### 적용 규칙
+- 반드시 지킬 것: ${ruleStack.sections.hard.join(", ") || "(없음)"}
+- 가급적 지킬 것: ${ruleStack.sections.soft.join(", ") || "(없음)"}
+- 진단 기준: ${ruleStack.sections.diagnostic.join(", ") || "(없음)"}
+
+### 현재 덮어쓰기
+${overrides}\n`;
+    }
 
     return `\n## 本章控制输入（由 Planner/Composer 编译）
 ${narrativeBlock}
@@ -644,8 +808,8 @@ ${overrides}\n`;
 const LOCAL_ONLY_PATTERNS: ReadonlyArray<RegExp> = [
   /Paragraph uniformity|段落等长/i,
   /Hedge density|套话密度/i,
-  /Formulaic transitions|公式化转折/i,
-  /List-like structure|列表式结构/i,
+  /Formulaic transitions|접속어 반복|公式化转折/i,
+  /List-like structure|나열식 문장 구조|列表式结构/i,
   /Cross-chapter repetition|跨章重复/i,
   /AI-tell word density/i,
   /Fatigue word|高疲劳词/i,

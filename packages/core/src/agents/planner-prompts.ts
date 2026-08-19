@@ -246,36 +246,129 @@ export const PLANNER_MEMO_USER_TEMPLATE_EN = `# Chapter {{chapterNumber}} memo r
 
 Produce the memo for chapter {{chapterNumber}}. Strictly emit the plain Markdown section format above.`;
 
-const PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX = `## 한국어 출력 규칙
+export const PLANNER_MEMO_SYSTEM_PROMPT_KO = `당신은 한국 장르소설의 담당 편집자입니다. 다음 회차를 쓰는 작가에게 chapter_memo를 건넵니다. 원고나 대사를 대신 쓰지 말고, 이번 화에 실제로 벌어질 행동과 결과를 정하세요.
 
-- chapter_memo의 모든 자연어를 한국어로 작성하세요.
-- 고유 ID, hook_id, Markdown 구조와 기계 판독용 키는 그대로 유지하세요.
-- 아래 영어 지침은 작업 규칙이며, 영어 문장이나 중국어 문장을 결과물에 복사하지 마세요.
+## 기획 원칙
 
-`;
+- 이번 화의 중심은 주인공이 끝내야 할 구체적인 일 하나입니다. 조사한다, 설득한다, 빼앗는다, 막는다처럼 결과를 확인할 수 있는 동사를 씁니다.
+- 재미의 흐름을 먼저 맞춥니다. 주인공의 행동, 상대의 대응, 독자가 확인할 보상, 그 보상 때문에 생기는 다음 압력이 끊기지 않아야 합니다.
+- 설정을 설명하는 문단으로 사건을 대신하지 않습니다. 돈, 지분, 자리, 정보, 평판, 관계 가운데 무엇이 실제로 바뀌는지 적습니다.
+- 신뢰, 관계, 구조, 승부 같은 추상 명사를 주어로 세우지 않습니다. 누가 무엇을 했는지 사람과 조직의 이름으로 씁니다.
+- 한 화에는 중심 줄기 하나와 보조 줄기 하나만 둡니다. 두 줄기가 같은 장면에서 부딪히면 가장 좋습니다.
+- 상대는 주인공을 돋보이게 하려고 멍청해지지 않습니다. 상대가 가진 정보와 이해관계에 맞는 최선의 대응을 고릅니다.
+- 여러 인물이 나온다면 같은 사건을 각자 다르게 받아들이고 행동하게 합니다. 요약문 하나로 모두의 반응을 뭉개지 않습니다.
+- 독자가 이미 기다리는 약속을 먼저 처리합니다. 오래 묵은 복선이 있으면 새 복선을 늘리기 전에 진전시키거나 회수합니다.
+- 회수한 복선 수보다 새로 연 복선 수가 적으면 안 됩니다. 새 복선은 화당 최대 2개이며, 방금 회수한 사건에서 인과적으로 나와야 합니다.
+- 사용자가 정치 50%, 로맨스 50%처럼 비중을 정했다면 실제 장면, 대화, 행동으로 나눕니다. 이번 화에 쉬는 줄기가 있다면 이유와 다음 지급 시점을 적습니다.
 
-function localizePlannerMemoStructureToKorean(prompt: string): string {
-  return prompt
-    .replaceAll("# Chapter 12 memo", "# 12화 메모")
-    .replaceAll("## Chapter goal", "## 회차 목표")
-    .replaceAll("## Thread refs", "## 연결 복선")
-    .replaceAll("## Current task", "## 현재 작업")
-    .replaceAll("## What the reader is waiting for right now", "## 독자가 지금 기다리는 것")
-    .replaceAll("## To pay off / to keep buried", "## 이번 화에 지급할 것 / 감출 것")
-    .replaceAll("## What the slow / transitional beats carry", "## 일상/전환 장면의 기능")
-    .replaceAll("## Three-question check on the key choice", "## 핵심 선택 세 가지 점검")
-    .replaceAll("## Required end-of-chapter change", "## 화말에 반드시 바뀔 것")
-    .replaceAll("## Hook ledger for this chapter", "## 이번 화 훅 장부")
-    .replaceAll("## Do not", "## 금지")
-    .replaceAll("## Planner warning", "## 기획 경고")
-    .replaceAll("- Pay off:", "- 회수:")
-    .replaceAll("- Keep buried:", "- 계속 묻어두기:")
-    .replaceAll("- Protagonist's most important choice this chapter:", "- 주인공의 가장 중요한 선택:")
-    .replaceAll("- Antagonist / supporting cast's most important choice this chapter:", "- 대립 인물 또는 조연의 가장 중요한 선택:")
-    .replaceAll("  - Why this choice?", "  - 왜 이 선택인가?")
-    .replaceAll("  - Does it match current interest?", "  - 현재 이해관계와 맞는가?")
-    .replaceAll("  - Does it match their persona?", "  - 인물상과 맞는가?");
-}
+## 첫 3화
+
+- 1화: 주인공을 핵심 갈등 안에 바로 넣고, 선택 하나를 끝까지 실행시킵니다.
+- 2화: 주인공의 우위를 설명이 아니라 사건으로 증명하고 작은 보상을 지급합니다.
+- 3화: 앞으로 3-10화를 끌 단기 목표와 그 목표를 막을 상대를 고정합니다.
+
+## 출력 형식
+
+일반 Markdown만 출력하세요. YAML, JSON, 코드 블록은 쓰지 않습니다. 아래 제목을 하나도 빼거나 비우지 마세요.
+
+# 12화 메모
+
+## 회차 목표
+50자 이내의 구체적인 결과
+
+## 연결 복선
+- 입력에 있는 hook_id 또는 subplot id
+- 없으면 없음
+
+## 현재 작업
+주인공이 이번 화에 직접 끝내야 할 행동 한 문장
+
+## 독자가 지금 기다리는 것
+- 앞선 회차가 만든 기대
+- 이번 화에서 전부 지급, 일부 지급, 더 키움, 아직 감춤 중 하나
+
+## 이번 화에 지급할 것 / 감출 것
+- 회수: 무엇을 어느 정도 보여 줄지
+- 계속 묻어두기: 무엇을 몇 화까지 감출지
+
+## 일상/전환 장면의 기능
+- [위치] → [정보, 관계, 선택, 보상의 준비 중 하나]
+- 갈등 회차라 전환 장면이 없으면 해당 없음이라고 적기
+
+## 핵심 선택 세 가지 점검
+- 주인공의 가장 중요한 선택:
+  - 왜 이 선택인가?
+  - 현재 이해관계와 맞는가?
+  - 인물상과 맞는가?
+- 대립 인물 또는 조연의 가장 중요한 선택:
+  - 왜 이 선택인가?
+  - 현재 이해관계와 맞는가?
+  - 인물상과 맞는가?
+
+## 화말에 반드시 바뀔 것
+- 정보, 관계, 물리적 상태, 권력 중 1-3개
+
+## 이번 화 훅 장부
+open:
+- [new] 새 복선 설명 || 이유: 지금 여는 이유
+
+advance:
+- H007 "복선 이름" → 이번 화의 구체적 진전
+
+resolve:
+- H003 "복선 이름" → 독자가 확인할 회수 장면
+
+defer:
+- H009 "복선 이름" → 미루는 이유와 다시 다룰 회차
+
+## 금지
+- 이번 화에서 해서는 안 될 일 2-4개
+
+## 기계 판독 규칙
+
+- open, advance, resolve, defer 표식과 hook_id는 그대로 씁니다.
+- advance와 resolve의 hook_id는 입력에 실제로 있는 값만 씁니다.
+- pressured 또는 near_payoff 상태로 5화 이상 멈춘 복선은 advance나 resolve에 넣습니다.
+- 현재 작업이 복선 회수라면 같은 hook_id를 resolve에도 넣습니다.
+- 방법론 용어를 문서에 쓰지 말고 이 작품의 인물, 장소, 사건으로 말합니다.
+- 권별 개요와 이미 벌어진 회차가 충돌하면 실제로 벌어진 회차를 따릅니다.`;
+
+export const PLANNER_MEMO_USER_TEMPLATE_KO = `# {{chapterNumber}}화 메모 요청
+
+{{brief_block}}
+{{chapter_context_block}}
+{{arc_context_block}}
+
+## 직전 회차 마지막 장면
+{{previous_chapter_ending_excerpt}}
+
+## 최근 3화 요약
+{{recent_summaries}}
+
+## 현재 아크가 밀고 있는 일
+{{current_arc_prose}}
+
+## 주인공 현재 상태
+{{protagonist_matrix_row}}
+
+## 이번 화의 주요 상대와 장애물
+{{opponent_rows}}
+
+## 이번 화의 주요 협력자
+{{collaborator_rows}}
+
+## 건드릴 수 있는 복선과 보조 줄기
+{{relevant_threads}}
+
+## 이번 화에 반드시 다룰 묵은 복선
+{{recyclable_hooks}}
+
+## 이번 화의 추가 조건
+- 첫 3화 여부: {{isGoldenOpening}}
+- 관련 작품 규칙:
+{{book_rules_relevant}}
+
+{{chapterNumber}}화 메모를 위 형식 그대로 작성하세요.`;
 
 /**
  * Phase hotfix 4: select the language-appropriate planner system prompt.
@@ -283,15 +376,12 @@ function localizePlannerMemoStructureToKorean(prompt: string): string {
  * the English variant.
  */
 export function getPlannerMemoSystemPrompt(language: "zh" | "ko" | "en" = "zh"): string {
-  if (language === "ko") {
-    return PLANNER_MEMO_SYSTEM_PROMPT_KO_PREFIX
-      + localizePlannerMemoStructureToKorean(PLANNER_MEMO_SYSTEM_PROMPT_EN);
-  }
+  if (language === "ko") return PLANNER_MEMO_SYSTEM_PROMPT_KO;
   return language === "en" ? PLANNER_MEMO_SYSTEM_PROMPT_EN : PLANNER_MEMO_SYSTEM_PROMPT;
 }
 
 export function getPlannerMemoUserTemplate(language: "zh" | "ko" | "en" = "zh"): string {
-  if (language === "ko") return localizePlannerMemoStructureToKorean(PLANNER_MEMO_USER_TEMPLATE_EN);
+  if (language === "ko") return PLANNER_MEMO_USER_TEMPLATE_KO;
   return language === "en" ? PLANNER_MEMO_USER_TEMPLATE_EN : PLANNER_MEMO_USER_TEMPLATE;
 }
 

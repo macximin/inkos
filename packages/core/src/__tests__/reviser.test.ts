@@ -24,6 +24,75 @@ describe("ReviserAgent", () => {
     vi.restoreAllMocks();
   });
 
+  it("builds Korean-native system, user, and control prompts for Korean revision", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-reviser-ko-test-"));
+    const bookDir = join(root, "book");
+    await mkdir(join(bookDir, "story"), { recursive: true });
+    await writeFile(
+      join(bookDir, "book.json"),
+      JSON.stringify({
+        id: "korean-book",
+        title: "IMF를 독식한 재벌 3세",
+        genre: "현대판타지 재벌물",
+        platform: "other",
+        chapterWordCount: 5000,
+        targetChapters: 200,
+        status: "active",
+        language: "ko",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        updatedAt: "2026-08-17T00:00:00.000Z",
+      }, null, 2),
+      "utf-8",
+    );
+
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
+      content: [
+        "=== FIXED_ISSUES ===",
+        "- 대조문을 직설문으로 수정",
+        "=== REVISED_CONTENT ===",
+        "윤태겸은 계약서를 덮었다.",
+        "=== UPDATED_STATE ===",
+        "# 현재 상태",
+        "=== UPDATED_LEDGER ===",
+        "(장부 없음)",
+        "=== UPDATED_HOOKS ===",
+        "(복선 없음)",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      await agent.reviseChapter(
+        bookDir,
+        "윤태겸은 계약서를 덮었다.",
+        1,
+        [{ ...CRITICAL_ISSUE, description: "반복되는 대조문을 고친다" }],
+        "auto",
+        "현대판타지 재벌물",
+        { lengthSpec: buildLengthSpec(5000, "ko") },
+      );
+
+      const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+      const prompt = messages.map((message) => message.content).join("\n");
+      expect(prompt).toContain("한국 장르소설 수정 편집자");
+      expect(prompt).toContain("## 감리 결과");
+      expect(prompt).toContain("공백 포함 4319-5681자");
+      expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("prefers book language override when building revision prompts", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-reviser-lang-test-"));
     const bookDir = join(root, "book");

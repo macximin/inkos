@@ -153,35 +153,36 @@ export class ArchitectAgent extends BaseAgent {
     const numericalBlock = gp.numericalSystem
       ? resolvedLanguage === "zh"
         ? "- 有明确的数值/资源体系可追踪\n- 在 book_rules 中写清核心资源、硬上限和不可突破规则"
-        : "- Track a concrete numerical/resource system.\n- Define core resources, hard caps, and inviolable limits in book_rules."
+        : resolvedLanguage === "ko"
+          ? "- 돈·지분·능력치처럼 독자가 세는 자원은 획득과 지출을 추적할 수 있게 설계합니다.\n- 핵심 자원과 넘을 수 없는 한계는 book_rules에 적습니다."
+          : "- Track a concrete numerical/resource system.\n- Define core resources, hard caps, and inviolable limits in book_rules."
       : resolvedLanguage === "zh"
         ? "- 本题材无数值系统，不需要资源账本"
-        : "- This genre has no numerical system; do not add a resource ledger.";
+        : resolvedLanguage === "ko"
+          ? "- 별도의 수치 체계가 없는 장르입니다. 필요 없는 능력치나 자원 장부를 만들지 않습니다."
+          : "- This genre has no numerical system; do not add a resource ledger.";
     const powerBlock = gp.powerScaling
-      ? resolvedLanguage === "zh" ? "- 有明确的战力等级体系" : "- Define a clear power hierarchy."
+      ? resolvedLanguage === "zh"
+        ? "- 有明确的战力等级体系"
+        : resolvedLanguage === "ko"
+          ? "- 힘의 서열은 독자가 승패를 예상할 수 있을 만큼 분명하게 정합니다."
+          : "- Define a clear power hierarchy."
       : "";
     const eraBlock = gp.eraResearch
       ? resolvedLanguage === "zh"
         ? "- 需要年代考据支撑（在 story_frame 中织入时代锚，在 book_rules 中写清不可违背的年代限制）"
-        : "- Ground the era with research: weave period anchors into story_frame and record inviolable limits in book_rules."
+        : resolvedLanguage === "ko"
+          ? "- 실제 시대를 쓰는 작품입니다. 당시 가격·기술·제도·생활상을 사건에 넣고, 어기면 안 되는 사실은 book_rules에 적습니다."
+          : "- Ground the era with research: weave period anchors into story_frame and record inviolable limits in book_rules."
       : "";
 
-    const systemPrompt = resolvedLanguage !== "zh"
-      ? this.buildEnglishFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
-      : this.buildChineseFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock);
-
-    const langPrefix = resolvedLanguage === "ko"
-      ? `【한국어 출력 강제】story_frame, volume_map, roles, book_rules, pending_hooks의 모든 자연어는 반드시 한국어로 작성하세요. 인물명, 지명, 설명문도 한국어로 쓰되 === SECTION: === 태그와 ---ROLE--- / ---CONTENT---, tier / name 값 형식은 그대로 유지하세요. rhythm_principles나 current_state 섹션을 별도로 만들지 마세요.
-
-사람이 읽는 제목과 항목명에는 아래 한국어 표기를 정확히 사용하세요. 영어 원형을 제목이나 본문에 병기하지 마세요.
-- story_frame: 01_주제와_분위기 / 02_핵심_갈등과_전경_배경_이야기 / 03_세계관_바탕 / 04_결말_방향과_전권_목표. 마지막 목표는 "전권 목표:"로 씁니다.
-- volume_map: 01_권별_주제와_감정_곡선 / 02_권간_복선과_회수_약속 / 03_권별_목표와_핵심_결과 / 04_권말_필수_변화 / 05_리듬_원칙.
-- roles 주요 인물: 핵심 태그 / 반전 디테일 / 과거 / 주인공 변화선 / 현재 상태 / 관계망 / 내적 동력 / 성장선. 보조 인물: 핵심 태그 / 반전 디테일 / 현재 상태 / 주인공과의 관계.
-- book_rules: 주인공(이름 / 성격 고정점 / 행동 제약), 장르 고정(주 장르 / 금지 요소), 서술 시점, 금지 사항. 사용자가 시점을 지정하지 않았으면 서술 시점 값은 "미지정"으로 씁니다.
-- pending_hooks의 SECTION 이름과 입력용 열 순서는 유지하되, 저장본의 표 머리글은 호스트가 한국어로 변환합니다. status와 기계 판정값 외의 자연어 셀은 한국어로 씁니다.
-
-`
+    const systemPrompt = resolvedLanguage === "ko"
+      ? this.buildKoreanFoundationPrompt(book, promptProfile, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
       : resolvedLanguage === "en"
+        ? this.buildEnglishFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
+        : this.buildChineseFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock);
+
+    const langPrefix = resolvedLanguage === "en"
         ? `【LANGUAGE OVERRIDE】ALL output (story_frame, volume_map, roles, book_rules, pending_hooks) MUST be written in English. Character names, place names, and all prose must be in English. The === SECTION: === tags remain unchanged. Do NOT emit rhythm_principles or current_state sections — rhythm principles live inside the last paragraph of volume_map; environment/era anchors (when relevant) are woven into story_frame's world-tonal-ground paragraph.\n\n`
         : "";
     const userMessage = resolvedLanguage === "ko"
@@ -205,9 +206,31 @@ export class ArchitectAgent extends BaseAgent {
     characterMatrix: string;
     userFeedback: string;
   }, language: "zh" | "ko" | "en"): string {
-    if (language !== "zh") {
+    if (language === "ko") {
+      return `\n\n## 기존 기획 다시 쓰기
+아래 자료는 이미 확정된 내용입니다. 인물·사건·세계 규칙·미회수 단서를 버리거나 초기화하지 마세요. 사용자의 수정 요구를 반영해 story_frame, volume_map, roles, book_rules, pending_hooks 다섯 블록으로 다시 정리합니다.
+
+표현만 고치지 말고 재미가 약한 대목의 사건 선택과 보상 순서까지 손봅니다. 기존 사실이 여러 방향을 허용한다면 주인공이 먼저 움직이고, 상대가 맞받아치며, 독자가 결과를 확인할 수 있는 방향을 고릅니다.
+
+[기존 이야기 기반]
+${reviseFrom.storyBible || "(없음)"}
+
+[기존 권 구성]
+${reviseFrom.volumeOutline || "(없음)"}
+
+[기존 작품 규칙]
+${reviseFrom.bookRules || "(없음)"}
+
+[기존 인물]
+${reviseFrom.characterMatrix || "(없음)"}
+
+[사용자 수정 요구]
+${reviseFrom.userFeedback || "(없음)"}
+`;
+    }
+    if (language === "en") {
       return `\n\n## Existing-foundation revision mode
-Reorganize the authoritative material below into the current five SECTION blocks: story_frame, volume_map, roles, book_rules, and pending_hooks. Preserve all established world, character, plot, hook, and tone facts. Keep one card per character, keep unresolved hooks, and never reset chapter runtime facts. ${language === "ko" ? "Write every natural-language field in Korean." : "Write every natural-language field in English."}
+ Reorganize the authoritative material below into the current five SECTION blocks: story_frame, volume_map, roles, book_rules, and pending_hooks. Preserve all established world, character, plot, hook, and tone facts. Keep one card per character, keep unresolved hooks, and never reset chapter runtime facts. Write every natural-language field in English.
 
 [story_bible / story_frame]
 ${reviseFrom.storyBible || "(none)"}
@@ -253,6 +276,179 @@ ${reviseFrom.characterMatrix || "（无）"}
 用户额外要求：
 ${reviseFrom.userFeedback || "（无）"}
 `;
+  }
+
+  // -------------------------------------------------------------------------
+  // 한국 상업 웹소설용 기획 프롬프트
+  // -------------------------------------------------------------------------
+  private buildKoreanFoundationPrompt(
+    book: BookConfig,
+    gp: GenreProfile,
+    contextBlock: string,
+    reviewFeedbackBlock: string,
+    numericalBlock: string,
+    powerBlock: string,
+    eraBlock: string,
+  ): string {
+    return `당신은 한국 상업 웹소설을 기획하는 작가입니다. 설정집을 만드는 사람이 아니라, 독자가 다음 화를 누르게 할 사건과 보상을 고르는 사람입니다. 기계가 읽는 표지는 영어로 남기되 사람이 읽는 문장은 처음부터 자연스러운 한국어로 씁니다.${contextBlock}${reviewFeedbackBlock}
+
+## 작품 정보
+- 제목: ${book.title}
+- 장르: ${gp.name} (${book.genre})
+- 연재처: ${book.platform}
+- 목표 분량: ${book.targetChapters}화
+- 회차당 목표 분량: ${book.chapterWordCount}자
+
+## 판단 순서
+1. 사용자가 정한 제목, 장르, 시대, 주인공, 핵심 욕망을 지킵니다.
+2. 주인공이 직접 선택하고 행동하게 합니다. 우연이나 설명이 주인공의 몫을 빼앗으면 다시 고릅니다.
+3. 사건은 주인공의 행동, 상대의 대응, 눈에 보이는 결과, 더 커진 다음 문제로 이어집니다.
+4. 독자는 주인공이 무엇을 얻었고 상대가 무엇을 잃었는지 알아야 합니다. 돈, 자리, 정보, 평판, 관계처럼 장면으로 확인되는 결과를 줍니다.
+5. 사실관계와 인과관계를 지키면서도 더 보고 싶은 선택지를 고릅니다. 설명을 붙여야만 성립하는 사건보다 장면으로 이해되는 사건을 우선합니다.
+
+## 재미적 정합성
+- 첫 3화 안에 주인공의 결핍, 첫 행동, 첫 성과, 더 큰 위기를 보여 줍니다.
+- 각 권에는 독자가 기다릴 대표 승부와 대표 보상이 있어야 합니다. 같은 종류의 승리만 반복하지 않습니다.
+- 주인공의 실력은 결정과 실행에서 드러나야 합니다. 주변 인물이 감탄하거나 해설하는 것으로 대신하지 않습니다.
+- 적은 주인공의 계획을 망칠 수단과 이유를 가집니다. 적이 무능해서 이기는 전개를 연속으로 쓰지 않습니다.
+- 큰 보상 뒤에는 그 보상 때문에 생긴 새 부담을 붙입니다. 얻은 것이 다음 사건을 부릅니다.
+- 관계 변화는 말보다 행동으로 확인합니다. 편을 들고, 정보를 넘기고, 자리를 내주고, 배신의 대가를 치르는 장면을 정합니다.
+- 고증은 사건의 제약과 기회로 씁니다. 시대 정보를 전시하기 위해 사건을 멈추지 않습니다.
+
+## 한국어 문장 규칙
+- 사람과 조직을 문장의 주어로 둡니다. 신뢰, 관계, 구조, 승부 같은 추상어가 스스로 움직이게 쓰지 않습니다.
+- "책임자로 이동한다", "관계가 전진한다", "구조가 결정을 내린다" 같은 번역형 동사를 쓰지 않습니다. 누가 자리를 차지하고, 누구 편에 서고, 누가 결재했는지 적습니다.
+- "A가 아니라 B", "X를 넘어 Y", "단순한 X가 아닌 Y" 같은 대조 틀은 꼭 필요할 때만 쓰며 한 SECTION에서 한 번을 넘기지 않습니다.
+- 작품 안에서 실제로 부르지 않을 개념명을 만들지 않습니다. "독립 지배축", "구조조정 연합", "가시적 적수" 같은 보고서식 이름 대신 인물·회사·사건의 이름을 씁니다.
+- 의미가 깊어 보이게 만드는 문장보다 작가가 바로 회차를 쓸 수 있는 문장을 씁니다. 고유명사, 금액, 지분, 장소, 행동, 손해를 적습니다.
+- 같은 뜻을 항목마다 되풀이하지 않습니다. 문장 길이와 호흡을 섞고, 짧은 단정문을 연달아 쌓아 강조하지 않습니다.
+- 영어 항목명을 한국어 제목에 병기하지 않습니다. 아래에 지정한 한국어 제목을 그대로 씁니다.
+
+## 장르 조건
+${numericalBlock}
+${powerBlock}
+${eraBlock}
+
+## 출력 계약
+아래 다섯 SECTION을 순서대로 모두 출력합니다. SECTION 표지, ---ROLE---, ---CONTENT---, tier, name과 pending_hooks의 열 이름은 기계 계약이므로 그대로 둡니다. 별도의 rhythm_principles나 current_state SECTION은 만들지 않습니다.
+
+=== SECTION: story_frame ===
+
+표나 글머리표 대신 네 개의 읽히는 문단으로 씁니다. 문단마다 아래 제목을 붙입니다. 주인공의 전체 변화는 roles의 주인공 카드에만 둡니다.
+
+## 01_독자가_기대할_재미
+제목을 보고 들어온 독자가 어떤 장면과 보상을 계속 받는지 적습니다. 첫 3화의 위기, 주인공의 첫 수, 첫 성과, 다음 위기를 구체적으로 잡습니다. 작품의 분위기는 장면의 온도와 속도로 설명합니다.
+
+## 02_주인공의_승부와_적
+주인공이 당장 원하는 것, 그것을 막는 사람, 양쪽이 맞붙는 사건을 적습니다. 주요 적은 이름과 욕망, 가진 수단이 보여야 합니다. 장기 비밀이 필요하다면 매 권의 사건과 어떻게 이어지는지 적되 "전경 이야기"나 "배경 이야기"라는 말을 쓰지 않습니다.
+
+## 03_배경과_사건_규칙
+작가가 사건을 만들 때 지켜야 할 세계의 규칙을 설명합니다. 법, 돈, 기술, 신분, 조직의 권한처럼 실제 선택을 제한하는 조건을 우선합니다. 감각 묘사는 대표 장소 한두 곳에 붙입니다.
+
+## 04_끝까지_갈_목표
+마지막에 주인공이 어디서 무엇을 하고 있는지, 누가 곁에 남는지, 어떤 대가를 치렀는지 적습니다. 끝에는 "전권 목표:"로 시작하는 한 문장을 둡니다. 외부 사람이 달성 여부를 판정할 수 있는 상태여야 합니다.
+
+=== SECTION: volume_map ===
+
+권 단위로 씁니다. 구체적인 회차 번호를 배정하지 않습니다. 각 권의 승부, 독자 보상, 관계 변화, 권말의 새 문제를 이어서 설명합니다.
+
+## 01_권별_승부와_감정
+각 권에서 주인공이 누구와 무엇을 놓고 싸우는지 적습니다. 압박이 커지는 구간과 독자가 숨을 돌리는 구간, 가장 큰 보상이 터지는 지점을 설명합니다.
+
+## 02_심을_것과_거둘_때
+어떤 정보나 약속을 어느 권에 보여 주고 언제 결과로 돌려주는지 적습니다. 단서의 이름과 그것을 발견하는 사건을 씁니다. 장기 단서도 당장의 승부에 쓸모가 있어야 합니다.
+
+## 03_권별_목표와_독자_보상
+각 권마다 달성 여부를 확인할 수 있는 목표 하나와 결과 세 개를 정합니다. 결과에는 주인공이 얻는 것, 상대가 입는 손해, 관계나 지위의 변화를 포함합니다. 독자가 권말에 손에 쥐었다고 느낄 대표 보상을 함께 적습니다.
+
+## 04_권말에_뒤집히는_것
+각 권 마지막에 되돌릴 수 없게 바뀌는 사건을 적습니다. 회사의 주인이 바뀌거나, 가족이 갈라서거나, 비밀이 공개되는 식으로 다음 권의 출발점을 실제로 바꿉니다.
+
+## 05_연재_호흡
+이 작품에 맞는 대형 보상과 소형 보상의 간격, 숨 고르는 회차의 역할, 장기 단서를 진전시키는 주기, 관계 변화의 주기를 정합니다. "완급 조절"처럼 실행할 수 없는 말은 쓰지 않습니다. 첫 30화의 보상 간격은 숫자로 적습니다.
+
+=== SECTION: roles ===
+
+인물마다 한 장씩 씁니다. 주요 인물은 3~5명, 보조 인물은 필요한 만큼만 만듭니다. 성격표보다 이 사람이 실제로 무엇을 하고 어떤 선택에서 흔들리는지가 중요합니다.
+
+---ROLE---
+tier: major
+name: <인물 이름>
+---CONTENT---
+## 첫인상과 버릇
+독자가 첫 등장 장면에서 확인할 태도와 버릇을 적습니다.
+
+## 욕망과 약점
+지금 원하는 것, 그것을 원하는 이유, 원하는 것을 얻기 위해 감수할 손해를 적습니다.
+
+## 과거
+현재의 선택에 영향을 주는 사건만 짧게 적습니다.
+
+## 처음과 끝
+주인공에게 필수입니다. 시작할 때의 처지와 판단 버릇, 마지막에 차지할 자리, 그 과정에서 치를 대가를 적습니다.
+
+## 첫 등장 때 처지
+첫 등장 직전 무슨 일을 겪었고 무엇이 급한지 적습니다.
+
+## 인간관계
+상대의 이름을 쓰고, 현재 무엇을 주고받으며 어떤 사건에서 편이 갈릴지 적습니다.
+
+## 선택의 기준
+이 인물이 포기하지 않는 것과 궁지에서 먼저 버리는 것을 적습니다.
+
+## 변하게 되는 계기
+생각이나 행동이 달라지는 사건을 적습니다. 추상적인 성장 평가로 끝내지 않습니다.
+
+보조 인물은 같은 구분자를 쓰고 "첫인상과 버릇 / 욕망과 약점 / 첫 등장 때 처지 / 주인공과 얽히는 일" 네 항목만 씁니다.
+
+=== SECTION: book_rules ===
+
+일반 Markdown 규칙 카드로 씁니다. YAML, JSON, 코드 블록을 쓰지 않습니다.
+
+## 주인공
+- 이름: <이름>
+- 끝까지 지킬 성격: <구체적인 행동 기준>
+- 하지 않을 행동: <작품이 편해져도 시키지 않을 행동>
+
+## 장르 약속
+- 주 장르: ${book.genre}
+- 반복해서 줄 재미: <이 작품의 대표 사건과 보상>
+- 섞지 않을 요소: <장르를 흐리는 요소>
+
+## 서술 시점
+사용자가 지정했을 때만 1인칭 또는 3인칭을 적고, 지정하지 않았으면 "미지정"이라고 씁니다.
+
+${gp.numericalSystem ? `## 숫자와 자원
+- 독자가 추적할 것: <돈, 지분, 능력치 등>
+- 넘을 수 없는 한계: <편의상 무시하면 안 되는 제한>` : ""}
+
+${gp.eraResearch ? `## 시대 고증
+- <가격, 법, 기술, 사회상에서 사건을 제한하는 사실 2~3개>` : ""}
+
+## 금지 사항
+- <이 작품에서 쓰지 않을 편의적 해결이나 문체 3~5개>
+
+=== SECTION: pending_hooks ===
+
+아래 열을 가진 Markdown 표로 씁니다.
+| hook_id | start_chapter | type | status | last_advanced_chapter | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | notes |
+
+- 생성 시 last_advanced_chapter는 모두 0입니다.
+- status는 일반 단서에 deferred를 쓰고, 작품 전체를 끌고 갈 핵심 단서만 open을 쓸 수 있습니다.
+- payoff_timing은 immediate / near-term / mid-arc / slow-burn / endgame 중 하나를 씁니다.
+- depends_on은 먼저 풀려야 할 hook_id 배열이며 없으면 none입니다.
+- pays_off_in_arc에는 "2권 중반의 채권단 회의"처럼 회수 사건과 위치를 한국어로 적습니다.
+- core_hook은 true 또는 false입니다. 핵심 단서는 3~7개만 둡니다.
+- notes에는 독자가 처음 보게 될 물건, 말, 행동을 적습니다.
+
+## 제출 전 검산
+- 다섯 SECTION이 모두 있는지 확인합니다.
+- 첫 3화에 주인공의 행동과 첫 성과가 있는지 확인합니다.
+- 각 권에 승부 상대와 눈에 보이는 보상이 있는지 확인합니다.
+- 사건이 주인공의 행동에서 시작해 상대의 대응과 다음 문제로 이어지는지 확인합니다.
+- 추상 명사가 사람 대신 행동하거나 보고서식 개념명이 생기지 않았는지 확인합니다.
+- "A가 아니라 B" 구조가 반복되지 않았는지 확인합니다.
+- pending_hooks 표의 열을 빼먹지 않았는지 확인합니다.`;
   }
 
   // -------------------------------------------------------------------------
@@ -679,13 +875,17 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       } catch (repairError) {
         if (repairError instanceof MissingArchitectSectionsError) {
           const missing = repairError.missing.join("、");
-          const message = language !== "zh"
-            ? `The story foundation came back incomplete (missing: ${repairError.missing.join(", ")}). `
+          const message = language === "ko"
+            ? `작품 기획이 완성되지 않았습니다(누락: ${repairError.missing.join(", ")}). `
+              + "입력 문제가 아니라 모델이 한 번에 모든 구역을 쓰지 못한 경우가 많습니다. "
+              + "다시 시도하거나 더 강한 모델로 바꿔 생성해 주세요."
+            : language === "en"
+              ? `The story foundation came back incomplete (missing: ${repairError.missing.join(", ")}). `
               + "This usually means the model didn't write every section in one pass — it's not a problem with your input. "
               + "Try again, or switch to a stronger model (e.g. deepseek-v4-pro / gpt-5.5) and regenerate."
-            : `基础设定没有生成完整(缺少:${missing})。`
-              + "这通常是模型一次没把所有部分写全,不是你的输入有问题。"
-              + "点重试,或换更强的模型(如 deepseek-v4-pro / gpt-5.5)再生成一次,通常就能解决。";
+              : `基础设定没有生成完整(缺少:${missing})。`
+                + "这通常是模型一次没把所有部分写全,不是你的输入有问题。"
+                + "点重试,或换更强的模型(如 deepseek-v4-pro / gpt-5.5)再生成一次,通常就能解决。";
           throw new ArchitectIncompleteFoundationError(
             repairError.missing,
             repairError.content,
@@ -702,8 +902,17 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     language: "zh" | "ko" | "en",
   ): Promise<string> {
     const missingList = error.missing.join(", ");
-    const system = language !== "zh"
+    const system = language === "ko"
       ? [
+          "InkOS 한국어 기획 출력의 형식을 복구합니다.",
+          "앞선 초안에서 쓸 수 있는 인물과 사건은 유지하고, 빠진 SECTION을 채웁니다.",
+          "새 작품으로 바꾸거나 추상적인 설명을 덧붙이지 않습니다.",
+          "story_frame, volume_map, roles, book_rules, pending_hooks 다섯 SECTION을 이 순서로 모두 반환합니다.",
+          "book_rules는 일반 Markdown이고 pending_hooks는 Markdown 표입니다.",
+          "복구 과정은 설명하지 않습니다.",
+        ].join("\n")
+      : language === "en"
+        ? [
           "You repair InkOS architect output formatting.",
           "The previous draft is partially useful but is missing required SECTION blocks.",
           "Do not invent a new book. Preserve usable existing content and add the missing parts.",
@@ -711,7 +920,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "book_rules must be ordinary Markdown, not YAML. pending_hooks must be a Markdown table.",
           "Do not explain the repair.",
         ].join("\n")
-      : [
+        : [
           "你负责修复 InkOS architect 的输出格式。",
           "上一轮草稿有可用内容，但缺少必需的 SECTION 块。",
           "不要重新发明一本书；保留已有可用内容，只补齐缺失部分并整理成完整输出。",
@@ -719,9 +928,11 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "book_rules 必须是普通 Markdown，不要 YAML；pending_hooks 必须是 Markdown 表格。",
           "不要解释修复过程。",
         ].join("\n");
-    const user = language !== "zh"
-      ? `Missing sections: ${missingList}\n\nOriginal partial output:\n\n${error.content}`
-      : `缺失 section：${missingList}\n\n原始不完整输出如下：\n\n${error.content}`;
+    const user = language === "ko"
+      ? `빠진 SECTION: ${missingList}\n\n기존 불완전 출력:\n\n${error.content}`
+      : language === "en"
+        ? `Missing sections: ${missingList}\n\nOriginal partial output:\n\n${error.content}`
+        : `缺失 section：${missingList}\n\n原始不完整输出如下：\n\n${error.content}`;
 
     const response = await this.chat([
       { role: "system", content: system },
@@ -1089,37 +1300,71 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       await readGenreProfile(this.ctx.projectRoot, book.genre);
     const resolvedLanguage = book.language ?? gp.language;
     const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, resolvedLanguage);
+    const promptProfile = resolvedLanguage === "ko"
+      ? { ...gp, name: book.genre.replace(/[_-]+/g, " "), language: "ko" as const }
+      : gp;
 
     const contextBlock = externalContext
-      ? (resolvedLanguage !== "zh"
-          ? `\n\n## External Instructions\n${externalContext}\n`
-          : `\n\n## 外部指令\n${externalContext}\n`)
+      ? (resolvedLanguage === "ko"
+          ? `\n\n## 외부 지시\n다음 지시를 가져온 원고의 사실과 함께 반영하세요.\n\n${externalContext}\n`
+          : resolvedLanguage === "en"
+            ? `\n\n## External Instructions\n${externalContext}\n`
+            : `\n\n## 外部指令\n${externalContext}\n`)
       : "";
 
     const numericalBlock = gp.numericalSystem
-      ? (resolvedLanguage !== "zh"
-          ? "- The story uses a trackable numerical/resource system"
-          : "- 有明确的数值/资源体系可追踪")
-      : (resolvedLanguage !== "zh"
-          ? "- No explicit numerical system"
-          : "- 本题材无数值系统");
+      ? (resolvedLanguage === "ko"
+          ? "- 원고에 나온 돈·지분·능력치 같은 자원의 획득과 지출을 추적합니다."
+          : resolvedLanguage === "en"
+            ? "- The story uses a trackable numerical/resource system"
+            : "- 有明确的数值/资源体系可追踪")
+      : (resolvedLanguage === "ko"
+          ? "- 원고에 없는 수치 체계를 새로 만들지 않습니다."
+          : resolvedLanguage === "en"
+            ? "- No explicit numerical system"
+            : "- 本题材无数值系统");
 
     const isSeries = options?.importMode === "series";
 
-    const continuationDirective = resolvedLanguage !== "zh"
+    const continuationDirective = resolvedLanguage === "ko"
       ? (isSeries
+          ? `## 후속부 방향
+후속부는 새 갈등, 새 장소, 달라진 시간 조건 가운데 둘 이상을 열어야 합니다. 5화 안에 새 승부를 시작하고, 기존 사건의 이름만 바꿔 반복하지 않습니다.`
+          : `## 이어쓰기 방향
+기존 인물의 선택과 미회수 단서에서 다음 사건을 시작합니다. 이미 해결된 승부를 되풀이하지 말고, 주인공이 얻은 것 때문에 생긴 새 문제를 붙입니다.`)
+      : resolvedLanguage === "en"
+        ? (isSeries
           ? `## Continuation Direction Requirements
 The continuation portion must open up new narrative space — new conflict vector, new location, new time horizon. Ignite within 5 chapters; at least 50% fresh scenes.`
           : `## Continuation Direction
 Naturally extend the existing arc. Advance existing conflicts, pay off planted hooks, introduce new complications organically.`)
-      : (isSeries
+        : (isSeries
           ? `## 续写方向要求
 续写必须引入新叙事空间——新冲突、新地点、新时间。5章内引爆，50%以上场景新鲜。`
           : `## 续写方向
 自然延续已有叙事弧线。推进现有冲突、兑现已埋伏笔、引入有机新变数。`);
 
-    const systemPrompt = resolvedLanguage !== "zh"
-      ? `You are a professional novel architect. Reverse-engineer a prose-density foundation from the source chapters and write the continuation path.${contextBlock}${reviewFeedbackBlock}
+    const systemPrompt = resolvedLanguage === "ko"
+      ? `${this.buildKoreanFoundationPrompt(
+          book,
+          promptProfile,
+          contextBlock,
+          reviewFeedbackBlock,
+          numericalBlock,
+          gp.powerScaling ? "- 원고에서 확인되는 힘의 서열과 승패 조건을 유지합니다." : "",
+          gp.eraResearch ? "- 원고의 시대 정보와 실제 연표가 충돌하지 않게 확인합니다." : "",
+        )}
+
+## 가져온 원고를 다루는 법
+- 이미 원고에 나온 인물, 사건, 관계, 숫자는 추측으로 바꾸지 않습니다.
+- 기존 구간은 핵심 승부와 결과를 한 문단으로 정리하고, 후속부는 권 단위로 설계합니다.
+- 원고에 근거가 없는 과거사를 확정하지 않습니다. 새로 만들 필요가 있으면 후속부의 계획이라고 밝힙니다.
+- 원고가 압축 자료라면 목차와 발췌문에서 확인되는 범위까지만 사실로 씁니다.
+- 기존 원고의 재미가 약한 곳도 미화하지 않습니다. 어떤 행동 뒤에 보상이 없었는지 확인하고 후속부에서 갚습니다.
+
+${continuationDirective}`
+      : resolvedLanguage === "en"
+        ? `You are a professional novel architect. Reverse-engineer a prose-density foundation from the source chapters and write the continuation path.${contextBlock}${reviewFeedbackBlock}
 
 ## Book metadata
 - Title: ${book.title}
@@ -1141,7 +1386,7 @@ Follow the consolidated 5-section === SECTION: === layout: story_frame, volume_m
 All prose must be derived from the source package. Do not invent settings. If the package says it is compressed, treat chapter catalog + excerpts as evidence for the foundation; the full chapters will be replayed later for detailed truth files. For volume_map, treat existing chapters as "review" (one paragraph) and continuation as prose chapter-level planning. Hook extraction must be complete for the evidence provided.
 
 All output MUST be written in English.`
-      : `你是专业的网络小说架构师。从已有章节中反向推导散文密度的基础设定，同时设计续写路径。${contextBlock}${reviewFeedbackBlock}
+        : `你是专业的网络小说架构师。从已有章节中反向推导散文密度的基础设定，同时设计续写路径。${contextBlock}${reviewFeedbackBlock}
 
 ## 书籍元信息
 - 标题：${book.title}
@@ -1161,9 +1406,11 @@ ${continuationDirective}
 
 所有 prose 必须从资料包中推导，不得臆造。若资料包声明为压缩包，把章节目录和正文摘录当作基础设定证据；完整章节会在后续回放阶段逐章进入 truth files。volume_map 中，已有章节作为"回顾段"（一段散文），续写部分写到章级 prose。伏笔识别以资料包提供的证据为准，尽量完整。`;
 
-    const userMessage = resolvedLanguage !== "zh"
-      ? `Generate the complete foundation for an imported ${gp.name} novel titled "${book.title}". Write everything in English.\n\n${chaptersText}`
-      : `以下是《${book.title}》的已有正文资料包，请从中反向推导完整基础设定：\n\n${chaptersText}`;
+    const userMessage = resolvedLanguage === "ko"
+      ? `아래는 《${book.title}》의 기존 원고 자료입니다. 확인되는 사실을 지키면서 한국 상업 웹소설 작가가 바로 이어 쓸 수 있는 기획을 완성하세요.\n\n${chaptersText}`
+      : resolvedLanguage === "en"
+        ? `Generate the complete foundation for an imported ${gp.name} novel titled "${book.title}". Write everything in English.\n\n${chaptersText}`
+        : `以下是《${book.title}》的已有正文资料包，请从中反向推导完整基础设定：\n\n${chaptersText}`;
 
     const response = await this.chat([
       { role: "system", content: systemPrompt },
@@ -1181,7 +1428,8 @@ ${continuationDirective}
   ): Promise<ArchitectOutput> {
     const { profile: gp, body: genreBody } =
       await readGenreProfile(this.ctx.projectRoot, book.genre);
-    const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, book.language ?? "zh");
+    const resolvedLanguage = book.language ?? "zh";
+    const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, resolvedLanguage);
 
     const MODE_INSTRUCTIONS: Record<FanficMode, string> = {
       canon: "剧情发生在原作空白期或未详述的角度。不可改变原作已确立的事实。",
@@ -1189,8 +1437,37 @@ ${continuationDirective}
       ooc: "标注角色性格偏离的起点和驱动事件。偏离必须有逻辑驱动。",
       cp: "以配对角色的关系线为主线规划卷纲。每卷必须有关系推进节点。",
     };
+    const KO_MODE_INSTRUCTIONS: Record<FanficMode, string> = {
+      canon: "원작의 빈 시기나 원작이 보여 주지 않은 인물의 시점을 씁니다. 원작에서 확정된 사건은 바꾸지 않습니다.",
+      au: "원작과 갈라지는 사건을 하나 정하고, 그 사건 뒤의 결과를 끝까지 따릅니다. 인물의 핵심 성격은 유지합니다.",
+      ooc: "인물이 원작과 다른 선택을 하게 된 사건과 대가를 먼저 정합니다. 이유 없이 성격을 바꾸지 않습니다.",
+      cp: "두 인물이 함께 행동해야만 풀리는 사건을 중심에 둡니다. 각 권에서 말이 아닌 선택으로 관계가 달라져야 합니다.",
+    };
 
-    const systemPrompt = `你是专业同人架构师。基于原作正典为同人生成散文密度的基础设定。
+    const systemPrompt = resolvedLanguage === "ko"
+      ? `${this.buildKoreanFoundationPrompt(
+          book,
+          { ...gp, name: book.genre.replace(/[_-]+/g, " "), language: "ko" as const },
+          "",
+          reviewFeedbackBlock,
+          gp.numericalSystem
+            ? "- 원작의 수치와 자원 한계를 유지하며 새 수치를 편의상 만들지 않습니다."
+            : "- 원작에 없는 수치 체계를 새로 만들지 않습니다.",
+          gp.powerScaling ? "- 원작의 힘의 서열을 지킵니다. 이를 뒤집을 때는 원작 안의 수단과 대가가 필요합니다." : "",
+          gp.eraResearch ? "- 원작과 실제 시대의 연표를 함께 지킵니다." : "",
+        )}
+
+## 원작 기반 창작 조건
+- 방식: ${fanficMode}
+- ${KO_MODE_INSTRUCTIONS[fanficMode]}
+- 원작에서 확인되는 사실과 인물의 기억을 우선합니다.
+- 원작 사건을 다시 요약하는 데 분량을 쓰지 않습니다. 5화 안에 이 작품만의 승부를 시작합니다.
+- 주요 인물은 원작 인물을 사용합니다. 새 인물을 만들면 이름 옆에 "오리지널 인물"이라고 적습니다.
+- book_rules의 장르 약속 아래에 "원작 기반 방식: ${fanficMode}"를 적습니다.
+
+## 원작 자료
+${fanficCanon}`
+      : `你是专业同人架构师。基于原作正典为同人生成散文密度的基础设定。
 
 ## 同人模式：${fanficMode}
 ${MODE_INSTRUCTIONS[fanficMode]}
@@ -1223,11 +1500,13 @@ ${genreBody}
       { role: "system", content: systemPrompt },
       {
         role: "user",
-        content: `请为标题为"${book.title}"的${fanficMode}模式同人小说生成基础设定。目标${book.targetChapters}章，每章${book.chapterWordCount}字。`,
+        content: resolvedLanguage === "ko"
+          ? `제목이 《${book.title}》인 원작 기반 장편의 기획을 한국어로 완성하세요. 목표는 ${book.targetChapters}화, 회차당 ${book.chapterWordCount}자입니다.`
+          : `请为标题为"${book.title}"的${fanficMode}模式同人小说生成基础设定。目标${book.targetChapters}章，每章${book.chapterWordCount}字。`,
       },
     ], { temperature: 0.7 });
 
-    return this.parseSectionsWithRepair(response.content, book.language ?? "zh");
+    return this.parseSectionsWithRepair(response.content, resolvedLanguage);
   }
 
   // -------------------------------------------------------------------------
@@ -1240,7 +1519,14 @@ ${genreBody}
     const trimmed = reviewFeedback?.trim();
     if (!trimmed) return "";
 
-    if (language !== "zh") {
+    if (language === "ko") {
+      return `\n\n## 이전 감리에서 고칠 점
+이전 기획은 통과하지 못했습니다. 표현만 바꾸지 말고 아래 문제가 생긴 사건 선택, 보상 순서, 인물 행동을 고칩니다.
+
+${trimmed}\n`;
+    }
+
+    if (language === "en") {
       return `\n\n## Previous Review Feedback
 The previous foundation draft was rejected. You must explicitly fix the following issues in this regeneration instead of paraphrasing the same design:
 

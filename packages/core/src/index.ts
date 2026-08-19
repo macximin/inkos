@@ -13,18 +13,30 @@ export {
 export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema } from "./models/project.js";
 export { type CurrentState, type ParticleLedger, type PendingHooks, type PendingHook, type LedgerEntry } from "./models/state.js";
 export { type GenreProfile, type ParsedGenreProfile, GenreProfileSchema, parseGenreProfile } from "./models/genre-profile.js";
-export { type BookRules, type ParsedBookRules, BookRulesSchema, parseBookRules, tryParseBookRulesFrontmatter } from "./models/book-rules.js";
+export {
+  type BookRules,
+  type ParsedBookRules,
+  BookRulesSchema,
+  FutureAdvantageSchema,
+  FutureAdvantageResearchPolicySchema,
+  parseBookRules,
+  tryParseBookRulesFrontmatter,
+} from "./models/book-rules.js";
 export { type DetectionHistoryEntry, type DetectionStats } from "./models/detection.js";
 export { type StyleProfile } from "./models/style-profile.js";
 export {
   type ArcStatus,
   type ArcEpisodeRole,
   type ArcEpisodeBeat,
+  type FutureAdvantageMoveMode,
+  type FutureAdvantageMove,
   type ArcPacket,
   type ActiveArc,
   ArcStatusSchema,
   ArcEpisodeRoleSchema,
   ArcEpisodeBeatSchema,
+  FutureAdvantageMoveModeSchema,
+  FutureAdvantageMoveSchema,
   ArcPacketSchema,
   ActiveArcSchema,
 } from "./arc/schema.js";
@@ -657,6 +669,11 @@ export { countChapterLength, resolveLengthCountingMode, formatLengthCount, build
 export { createLogger, createStderrSink, createJsonLineSink, nullSink, type Logger, type LogSink, type LogLevel, type LogEntry } from "./utils/logger.js";
 export { inferLanguage, type WritingLanguage } from "./utils/language.js";
 export { loadProjectConfig, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH, isApiKeyOptionalForEndpoint } from "./utils/config-loader.js";
+export {
+  readResearchProjectSettings,
+  type ResearchProjectLanguage,
+  type ResearchProjectSettings,
+} from "./utils/research-project-settings.js";
 export { resolveEffectiveLLMConfig, type EffectiveLLMConfigResult, type EffectiveLLMDiagnostics, type LLMConfigCliOverrides, type LLMConfigMode, type LLMConsumer, type LLMValueSource } from "./utils/effective-llm-config.js";
 export { loadLLMEnvLayers, mergeEnvMaps, studioIgnoredEnv, cliOverlayEnv, legacyEnv, type LLMEnvLayers, type LLMEnvMap } from "./utils/llm-env.js";
 export type { ContextCompressionCallback, ContextCompressionCategory, ContextCompressionEvent, ContextCompressionPhase } from "./models/context-compression.js";

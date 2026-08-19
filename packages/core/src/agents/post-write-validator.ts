@@ -21,8 +21,10 @@ export function normalizePostWriteSurface(
   languageOverride?: "zh" | "ko" | "en",
 ): string {
   let normalized = stripPostWriteMetaLines(content);
-  if (languageOverride !== "en") {
+  if (languageOverride === "zh" || languageOverride === undefined) {
     normalized = normalized.replace(/——+/g, "，");
+  } else if (languageOverride === "ko") {
+    normalized = normalized.replace(/——+/g, ",");
   }
   return normalized.trimEnd();
 }
@@ -74,6 +76,27 @@ const SERMON_WORDS = ["显然", "毋庸置疑", "不言而喻", "众所周知", 
 const COLLECTIVE_SHOCK_PATTERNS = [
   /(?:全场|众人|所有人|在场的人)[，,]?(?:都|全|齐齐|纷纷)?(?:震惊|惊呆|倒吸凉气|目瞪口呆|哗然|惊呼)/,
   /(?:全场|一片)[，,]?(?:寂静|哗然|沸腾|震动)/,
+];
+
+const KOREAN_REPORT_TERMS = [
+  "핵심 동력", "내적 동력", "가시적 적수", "전경 이야기", "배경 이야기",
+  "독립 지배축", "구조조정 연합", "책임 분담", "핵심 태그", "반전 디테일",
+];
+
+const KOREAN_ABSTRACT_AGENCY_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:신뢰|관계|구조|승부|협력|책임|감정선|서사)(?:이|가|은|는|을|를)?\s*(?:전진|이동|작동|성장|증명|시험|완성|결정)(?:하|되|됐|했|한|된|된다|됐다|시키|시켰|시킨)/,
+  /(?:신뢰|관계|구조|승부|협력|책임)(?:이|가|은|는)?\s*(?:깊어|넓어|커져|무너져|세워져)(?:갔|간|졌다|진다)/,
+];
+
+const KOREAN_META_EXPLANATION_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:이것|그것|이 장면|그 장면)(?:이|은|는)?[^.!?\n]{0,45}(?:의미|뜻)(?:했|한다|였다|이다)/,
+  /독자(?:는|가)[^.!?\n]{0,45}(?:알게|느끼게|확인하게|보게)(?:된다|됐다)/,
+  /(?:결국|요컨대)[^.!?\n]{0,55}(?:것이었다|셈이었다|뜻이었다)/,
+];
+
+const KOREAN_COLLECTIVE_REACTION_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:모두|전원|사람들|회의실 안의 모두|좌중)(?:가|는|이)?\s*(?:경악|충격|놀라|숨을 삼키|입을 다물지 못)/,
+  /(?:회의실|장내|주변)(?:이|가|은|는)?\s*(?:얼어붙|술렁|정적에 잠기)/,
 ];
 
 // --- Validator ---
@@ -474,6 +497,75 @@ function validatePostWriteKorean(
 ): ReadonlyArray<PostWriteViolation> {
   const violations: PostWriteViolation[] = [...detectParagraphShapeWarnings(content, "ko")];
 
+  const contrastMatches = [
+    ...(content.match(/(?:이|가|은|는)\s*아니라\s*/g) ?? []),
+    ...(content.match(/단순(?:한|히)?[^.!?\n]{0,35}(?:넘어|아닌)/g) ?? []),
+  ];
+  if (contrastMatches.length >= 4) {
+    violations.push({
+      rule: "번역형 대조문 반복",
+      severity: "warning",
+      description: `'A가 아니라 B' 또는 '단순한 X를 넘어 Y' 형태가 ${contrastMatches.length}회 반복됐습니다.`,
+      suggestion: "대조를 해설하지 말고 인물의 행동과 결과를 바로 쓰세요.",
+    });
+  }
+
+  const abstractAgency = KOREAN_ABSTRACT_AGENCY_PATTERNS
+    .map((pattern) => content.match(pattern)?.[0])
+    .filter((match): match is string => Boolean(match));
+  if (abstractAgency.length > 0) {
+    violations.push({
+      rule: "추상 명사의 행동",
+      severity: "warning",
+      description: `사람 대신 추상 개념이 움직이는 표현이 있습니다: ${abstractAgency.map((match) => `"${match}"`).join(", ")}`,
+      suggestion: "누가 무엇을 말하고 선택하고 실행했는지 주어와 동사를 구체적으로 바꾸세요.",
+    });
+  }
+
+  const reportTerms = KOREAN_REPORT_TERMS.filter((term) => content.includes(term));
+  if (reportTerms.length > 0) {
+    violations.push({
+      rule: "기획서 용어의 본문 유입",
+      severity: "error",
+      description: `원고에 기획·분석 용어가 들어갔습니다: ${reportTerms.map((term) => `"${term}"`).join(", ")}`,
+      suggestion: "해당 용어를 삭제하고 인물의 행동, 대사, 상황 변화로 다시 쓰세요.",
+    });
+  }
+
+  const metaExplanation = KOREAN_META_EXPLANATION_PATTERNS
+    .map((pattern) => content.match(pattern)?.[0])
+    .find(Boolean);
+  if (metaExplanation) {
+    violations.push({
+      rule: "장면 의미 재설명",
+      severity: "warning",
+      description: `장면을 보여 준 뒤 의미를 다시 해설하는 표현이 있습니다: "${metaExplanation}"`,
+      suggestion: "해설 문장을 덜어내고 앞선 행동과 대사가 결과를 전달하게 두세요.",
+    });
+  }
+
+  const collectiveReaction = KOREAN_COLLECTIVE_REACTION_PATTERNS
+    .map((pattern) => content.match(pattern)?.[0])
+    .find(Boolean);
+  if (collectiveReaction) {
+    violations.push({
+      rule: "집단 반응 상투어",
+      severity: "warning",
+      description: `여러 사람을 한꺼번에 반응시키는 표현이 있습니다: "${collectiveReaction}"`,
+      suggestion: "이해관계가 다른 인물 한두 명의 표정, 대사, 행동으로 나눠 보여 주세요.",
+    });
+  }
+
+  const chapterRefs = content.match(/제\s*\d+\s*화/g);
+  if (chapterRefs && chapterRefs.length > 0) {
+    violations.push({
+      rule: "회차 번호 언급",
+      severity: "error",
+      description: `원고 안에 회차 번호가 들어갔습니다: ${[...new Set(chapterRefs)].map((ref) => `"${ref}"`).join(", ")}`,
+      suggestion: "등장인물과 서술자가 알 수 있는 날짜나 사건 이름으로 바꾸세요.",
+    });
+  }
+
   for (const prohibition of bookRules?.prohibitions ?? []) {
     if (prohibition.length >= 2 && prohibition.length <= 50 && content.includes(prohibition)) {
       violations.push({
@@ -671,7 +763,7 @@ export function detectParagraphShapeWarnings(
 
 function isDialogueParagraph(paragraph: string): boolean {
   const trimmed = paragraph.trim();
-  return /^[""「『'《]/.test(trimmed) || /^[""]/.test(trimmed) || /^——/.test(trimmed);
+  return /^["“「『'‘《\[]/u.test(trimmed) || /^—{1,2}/u.test(trimmed);
 }
 
 function analyzeParagraphShape(content: string, language: "zh" | "ko" | "en"): ParagraphShape {
@@ -680,13 +772,17 @@ function analyzeParagraphShape(content: string, language: "zh" | "ko" | "en"): P
   const narrativeParagraphs = paragraphs.filter((p) => !isDialogueParagraph(p));
   const shortThreshold = language === "en" ? 120 : language === "ko" ? 55 : 35;
   const shortParagraphs = narrativeParagraphs.filter((paragraph) => paragraph.length < shortThreshold);
-  const averageLength = paragraphs.length > 0
-    ? paragraphs.reduce((sum, paragraph) => sum + paragraph.length, 0) / paragraphs.length
+  const averageLength = narrativeParagraphs.length > 0
+    ? narrativeParagraphs.reduce((sum, paragraph) => sum + paragraph.length, 0) / narrativeParagraphs.length
     : 0;
 
   let maxConsecutiveShort = 0;
   let currentConsecutive = 0;
-  for (const paragraph of narrativeParagraphs) {
+  for (const paragraph of paragraphs) {
+    if (isDialogueParagraph(paragraph)) {
+      currentConsecutive = 0;
+      continue;
+    }
     if (paragraph.length < shortThreshold) {
       currentConsecutive++;
       maxConsecutiveShort = Math.max(maxConsecutiveShort, currentConsecutive);
@@ -696,7 +792,7 @@ function analyzeParagraphShape(content: string, language: "zh" | "ko" | "en"): P
   }
 
   return {
-    paragraphs,
+    paragraphs: narrativeParagraphs,
     shortThreshold,
     shortParagraphs,
     shortRatio: narrativeParagraphs.length > 0 ? shortParagraphs.length / narrativeParagraphs.length : 0,

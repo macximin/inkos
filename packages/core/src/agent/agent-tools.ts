@@ -38,8 +38,8 @@ import {
   shortRunCharsPerChapterRange,
   type ActionPayload,
 } from "../interaction/action-envelope.js";
-import { ResearchSearchConfigSchema } from "../models/project.js";
 import { searchWeb } from "../utils/web-search.js";
+import { readResearchProjectSettings } from "../utils/research-project-settings.js";
 import {
   runAsWorkflowTrajectory,
   runWithAgentTrajectoryRole,
@@ -1162,7 +1162,8 @@ export function createResearchWebTool(projectRoot: string): AgentTool<typeof Res
       onUpdate?: AgentToolUpdateCallback,
     ): Promise<AgentToolResult<unknown>> {
       onUpdate?.(textResult(`Researching: ${params.topic}`));
-      const searchConfig = await readResearchSearchConfig(projectRoot);
+      const researchSettings = await readResearchProjectSettings(projectRoot);
+      const searchConfig = researchSettings.search;
       const searchOptions = searchConfig.enabled
         ? {
             apiKey: searchConfig.apiKey,
@@ -1174,6 +1175,7 @@ export function createResearchWebTool(projectRoot: string): AgentTool<typeof Res
         topic: params.topic,
         purpose: params.purpose,
         depth: params.depth ?? "standard",
+        language: researchSettings.language,
       }, {
         search: (query, maxResults) => searchWeb(query, maxResults, searchOptions),
       });
@@ -1182,12 +1184,25 @@ export function createResearchWebTool(projectRoot: string): AgentTool<typeof Res
       const fileName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${slugResearchTopic(params.topic)}.md`;
       const reportPath = join(reportDir, fileName);
       await writeFile(reportPath, report.markdown, "utf-8");
+      const resultText = researchSettings.language === "ko"
+        ? [
+            `리서치 보고서 저장: ${reportPath}`,
+            `출처: ${report.sources.length}개, 신뢰도: ${report.confidence}.`,
+            report.partialFailures.length > 0 ? `부분 실패: ${report.partialFailures.length}건.` : "부분 실패: 없음.",
+          ].join("\n")
+        : researchSettings.language === "zh"
+          ? [
+              `研究报告已保存：${reportPath}`,
+              `来源：${report.sources.length}，可信度：${report.confidence}。`,
+              report.partialFailures.length > 0 ? `部分失败：${report.partialFailures.length}。` : "部分失败：无。",
+            ].join("\n")
+          : [
+              `Research report saved: ${reportPath}`,
+              `Sources: ${report.sources.length}; confidence: ${report.confidence}.`,
+              report.partialFailures.length > 0 ? `Partial failures: ${report.partialFailures.length}.` : "Partial failures: none.",
+            ].join("\n");
       return textResult(
-        [
-          `Research report saved: ${reportPath}`,
-          `Sources: ${report.sources.length}; confidence: ${report.confidence}.`,
-          report.partialFailures.length > 0 ? `Partial failures: ${report.partialFailures.length}.` : "Partial failures: none.",
-        ].join("\n"),
+        resultText,
         {
           kind: "research_report",
           reportPath,
@@ -1658,15 +1673,6 @@ function slugResearchTopic(topic: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
   return slug || "research";
-}
-
-async function readResearchSearchConfig(projectRoot: string) {
-  try {
-    const raw = JSON.parse(await readFile(join(projectRoot, "inkos.json"), "utf-8")) as Record<string, unknown>;
-    return ResearchSearchConfigSchema.parse(raw.researchSearch ?? {});
-  } catch {
-    return ResearchSearchConfigSchema.parse({});
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2934,7 +2940,7 @@ function playEditEntityId(type: string, label: string): string {
 
 const WriteTruthFileParams = Type.Object({
   bookId: Type.Optional(Type.String({ description: "Book ID. Omit to use the active book." })),
-  fileName: Type.String({ description: "Truth file path under story/. Prefer outline/story_frame.md, outline/volume_map.md, roles/major/<name>.md, roles/minor/<name>.md; flat files such as current_focus.md and author_intent.md are also supported." }),
+  fileName: Type.String({ description: "Truth file path under story/. Prefer project_pitch.md, outline/story_frame.md, outline/volume_map.md, roles/major/<name>.md, roles/minor/<name>.md; flat files such as current_focus.md and author_intent.md are also supported." }),
   content: Type.String({ description: "Full replacement content for the truth file." }),
 });
 

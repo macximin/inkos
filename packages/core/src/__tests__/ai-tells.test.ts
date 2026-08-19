@@ -67,6 +67,30 @@ describe("analyzeAITells", () => {
     expect(listIssues[0]!.severity).toBe("info");
   });
 
+  it("returns Korean labels and guidance for Korean transition and list patterns", () => {
+    const content = [
+      "하지만 그는 장부를 놓지 않았다. 하지만 그는 결재선을 다시 읽었다. 하지만 그는 팩스를 챙겼다.",
+      "도경은 문을 열었다. 도경은 복도를 건넜다. 도경은 차에 올랐다.",
+    ].join("\n");
+
+    const result = analyzeAITells(content, "ko");
+
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: "접속어 반복",
+        description: expect.stringContaining("같은 접속어"),
+        suggestion: expect.stringContaining("행동"),
+      }),
+      expect.objectContaining({
+        category: "나열식 문장 구조",
+        description: expect.stringContaining("연속"),
+        suggestion: expect.stringContaining("주어"),
+      }),
+    ]));
+    expect(result.issues.flatMap((issue) => [issue.category, issue.description, issue.suggestion]).join(" "))
+      .not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
   it("returns no issues for content with fewer than 3 paragraphs", () => {
     const content = "只有一段话。";
     const result = analyzeAITells(content);

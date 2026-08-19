@@ -42,8 +42,13 @@ export class LengthNormalizerAgent extends BaseAgent {
       };
     }
 
-    const systemPrompt = this.buildSystemPrompt(mode);
-    const userPrompt = this.buildUserPrompt(input, originalCount, mode);
+    const language = input.lengthSpec.countingMode === "ko_chars"
+      ? "ko"
+      : input.lengthSpec.countingMode === "en_words"
+        ? "en"
+        : "zh";
+    const systemPrompt = this.buildSystemPrompt(mode, language);
+    const userPrompt = this.buildUserPrompt(input, originalCount, mode, language);
     const response = await this.chat(
       [
         { role: "system", content: systemPrompt },
@@ -64,9 +69,13 @@ export class LengthNormalizerAgent extends BaseAgent {
     const normalizedContent = (wasTruncated || crossedHardRange) ? input.chapterContent : sanitizedContent;
     const finalCount = countChapterLength(normalizedContent, input.lengthSpec.countingMode);
     const warning = wasTruncated
-      ? "Length normalizer output appeared truncated; kept original chapter."
+      ? (language === "ko"
+          ? "분량 보정 결과가 중간에 끊긴 것으로 보여 원문을 유지했습니다."
+          : "Length normalizer output appeared truncated; kept original chapter.")
       : crossedHardRange
-        ? "Length normalizer output crossed the hard range; kept original chapter."
+        ? (language === "ko"
+            ? "분량 보정 결과가 절대 범위를 반대로 넘어 원문을 유지했습니다."
+            : "Length normalizer output crossed the hard range; kept original chapter.")
       : this.buildWarning(finalCount, input.lengthSpec);
 
     return {
@@ -79,10 +88,33 @@ export class LengthNormalizerAgent extends BaseAgent {
     };
   }
 
-  private buildSystemPrompt(mode: LengthNormalizeMode): string {
+  private buildSystemPrompt(mode: LengthNormalizeMode, language: "zh" | "ko" | "en"): string {
     const action = mode === "compress"
       ? "compress"
       : "expand";
+
+    if (language === "ko") {
+      return `당신은 한국 장르소설의 분량을 한 번만 보정하는 편집자입니다. 원고를 처음부터 한국어로 판단하고, ${mode === "compress" ? "군더더기를 덜어" : "필요한 장면 밀도를 보강해"} 지정 범위에 맞춥니다.
+
+보정 원칙:
+- 인물, 사건, 인과, 복선, 고유명사, 화말의 변화는 그대로 둡니다.
+- 번역하거나 문체를 새로 덮어쓰지 않습니다. 원문의 말투와 문장 호흡을 보존합니다.
+- 분량을 줄일 때는 중복 설명과 이미 보여 준 감정의 재설명부터 덜어냅니다.
+- 분량을 늘릴 때는 새 사건을 만들지 말고 기존 장면의 행동, 대화, 감각, 상대 반응을 구체화합니다.
+- 추상적인 의미 해설, 요약, 새 복선, 새 설정을 추가하지 않습니다.
+- 보정은 한 번만 수행하며 원고 밖의 설명은 출력하지 않습니다.`;
+    }
+
+    if (language === "en") {
+      return `You adjust a web-fiction chapter's length in one pass. ${action === "compress" ? "Compress" : "Expand"} it into the requested range without translating it or replacing its voice.
+
+Rules:
+- Preserve facts, causality, hooks, names, and the ending change.
+- Do not invent subplots, future reveals, or explanatory summaries.
+- When compressing, remove repeated explanation before cutting scene action.
+- When expanding, deepen existing action, dialogue, sensory detail, and reaction.
+- Output only the complete adjusted chapter.`;
+    }
 
     return `你是一位章节长度修正器。你的任务是对章节正文做一次单次修正，只能执行一次，不得递归重写。
 
@@ -97,13 +129,56 @@ export class LengthNormalizerAgent extends BaseAgent {
     input: NormalizeLengthInput,
     originalCount: number,
     mode: LengthNormalizeMode,
+    language: "zh" | "ko" | "en",
   ): string {
+    const intentHeading = language === "ko" ? "이번 화 의도" : language === "en" ? "Chapter Intent" : "本章意图";
+    const controlHeading = language === "ko" ? "보존할 제어 조건" : language === "en" ? "Reduced Control Block" : "精简控制条件";
     const intentBlock = input.chapterIntent
-      ? `\n## Chapter Intent\n${input.chapterIntent}\n`
+      ? `\n## ${intentHeading}\n${input.chapterIntent}\n`
       : "";
     const controlBlock = input.reducedControlBlock
-      ? `\n## Reduced Control Block\n${input.reducedControlBlock}\n`
+      ? `\n## ${controlHeading}\n${input.reducedControlBlock}\n`
       : "";
+
+    if (language === "ko") {
+      return `아래 원고를 한 번만 ${mode === "compress" ? "압축" : "확장"}하세요.
+
+## 분량 조건
+- 목표: 공백 포함 ${input.lengthSpec.target}자
+- 허용 범위: ${input.lengthSpec.softMin}-${input.lengthSpec.softMax}자
+- 절대 범위: ${input.lengthSpec.hardMin}-${input.lengthSpec.hardMax}자
+- 현재: ${originalCount}자
+
+## 보정 조건
+- 한국어 원문을 한국어로 직접 다룹니다.
+- 인물 이름, 장소, 기존 사실, 핵심 행동과 표식을 보존합니다.
+- 새 사건이나 새 인물을 만들지 않습니다.
+- 장면 뒤에 의미를 해설하거나 교훈을 붙이지 않습니다.
+- 보정된 전체 원고만 출력합니다.
+
+${intentBlock}${controlBlock}
+## 원고
+${input.chapterContent}`;
+    }
+
+    if (language === "en") {
+      return `${mode === "compress" ? "Compress" : "Expand"} the chapter below once.
+
+## Length Spec
+- Target: ${input.lengthSpec.target} words
+- Soft Range: ${input.lengthSpec.softMin}-${input.lengthSpec.softMax} words
+- Hard Range: ${input.lengthSpec.hardMin}-${input.lengthSpec.hardMax} words
+- Current: ${originalCount} words
+
+## Rules
+- Preserve names, places, existing facts, required markers, and the central action.
+- Do not invent subplots or add analysis after scenes.
+- Output only the complete adjusted chapter.
+
+${intentBlock}${controlBlock}
+## Chapter Content
+${input.chapterContent}`;
+    }
 
     return `请对下面正文做一次${mode === "compress" ? "压缩" : "扩写"}修正。
 
@@ -134,9 +209,15 @@ ${input.chapterContent}`;
     }
 
     if (isOutsideHardRange(finalCount, lengthSpec)) {
+      if (lengthSpec.countingMode === "ko_chars") {
+        return `한 번 보정한 뒤에도 ${finalCount}자로 절대 범위 ${lengthSpec.hardMin}-${lengthSpec.hardMax}자를 벗어났습니다.`;
+      }
       return `Final count ${finalCount} is outside the hard range ${lengthSpec.hardMin}-${lengthSpec.hardMax} after one normalization pass.`;
     }
 
+    if (lengthSpec.countingMode === "ko_chars") {
+      return `한 번 보정한 뒤에도 ${finalCount}자로 허용 범위 ${lengthSpec.softMin}-${lengthSpec.softMax}자를 벗어났습니다.`;
+    }
     return `Final count ${finalCount} is outside the soft range ${lengthSpec.softMin}-${lengthSpec.softMax} after one normalization pass.`;
   }
 
@@ -179,7 +260,7 @@ ${input.chapterContent}`;
     if (trimmed.endsWith("```")) return false;
     if (/[。！？!?」』”’）)\]】》…]$/.test(trimmed)) return false;
     if (/\n\s*$/.test(content) && /[，,；;：:]$/.test(trimmed)) return true;
-    return /[，,；;：:、]$/.test(trimmed) || /[\u4e00-\u9fffA-Za-z0-9]$/.test(trimmed);
+    return /[，,；;：:、]$/.test(trimmed) || /[\u4e00-\u9fff\uac00-\ud7a3A-Za-z0-9]$/.test(trimmed);
   }
 
   private extractFirstFencedBlock(content: string): string | undefined {
@@ -228,6 +309,14 @@ ${input.chapterContent}`;
     }
 
     if (/^i(?:'ll| will)\s+(rewrite|revise|reword|compress|expand|normalize|adjust|shorten|lengthen|trim|fix)\b/i.test(line)) {
+      return true;
+    }
+
+    if (/^(아래는|다음은).*(원고|회차|본문|압축|확장|보정|수정|결과|버전)/.test(line)) {
+      return true;
+    }
+
+    if (/^(먼저|우선).*(원고|회차|본문).*(압축|확장|보정|수정|다듬)/.test(line)) {
       return true;
     }
 

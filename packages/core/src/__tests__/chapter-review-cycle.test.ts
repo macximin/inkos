@@ -356,6 +356,121 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.revised).toBe(false);
   });
 
+  it("does not let a high LLM score hide a deterministic warning", async () => {
+    const originalContent = "b".repeat(200);
+    const revisedContent = "a".repeat(200);
+    const auditChapter = vi.fn()
+      .mockResolvedValue(createAuditResult({ overallScore: 97, passed: true }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent,
+      wordCount: revisedContent.length,
+      fixedIssues: ["fixed paragraph fragmentation"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+    const normalizeDraftLengthIfNeeded = vi.fn()
+      .mockImplementation(async (content: string) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded,
+      runPostWriteChecks: (content) => content === originalContent
+        ? [{
+            severity: "warning" as const,
+            category: "문단 파편화",
+            description: "짧은 문단이 지나치게 많습니다.",
+            suggestion: "이어지는 행동을 한 문단으로 묶으세요.",
+          }]
+        : [],
+    });
+
+    expect(reviseChapter).toHaveBeenCalledTimes(1);
+    expect(reviseChapter.mock.calls[0]?.[3]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "문단 파편화", severity: "warning" }),
+    ]));
+    expect(result.finalContent).toBe(revisedContent);
+    expect(result.auditResult.passed).toBe(true);
+  });
+
+  it("routes an AI-tell warning into repair while leaving info advisory", async () => {
+    const originalContent = "b".repeat(200);
+    const revisedContent = "a".repeat(200);
+    const auditChapter = vi.fn()
+      .mockResolvedValue(createAuditResult({ overallScore: 97, passed: true }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent,
+      wordCount: revisedContent.length,
+      fixedIssues: ["fixed formulaic transitions"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+    const normalizeDraftLengthIfNeeded = vi.fn()
+      .mockImplementation(async (content: string) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded,
+      analyzeAITells: (content) => ({
+        issues: content === originalContent
+          ? [{
+              severity: "warning" as const,
+              category: "접속어 반복",
+              description: "같은 접속어가 반복됩니다.",
+              suggestion: "행동으로 장면을 전환하세요.",
+            }, {
+              severity: "info" as const,
+              category: "나열식 문장 구조",
+              description: "같은 첫머리가 반복됩니다.",
+              suggestion: "문장 첫머리를 바꾸세요.",
+            }]
+          : [{
+              severity: "info" as const,
+              category: "나열식 문장 구조",
+              description: "같은 첫머리가 반복됩니다.",
+              suggestion: "문장 첫머리를 바꾸세요.",
+            }],
+      }),
+    });
+
+    expect(reviseChapter).toHaveBeenCalledTimes(1);
+    expect(reviseChapter.mock.calls[0]?.[3]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "접속어 반복", severity: "warning" }),
+    ]));
+    expect(result.finalContent).toBe(revisedContent);
+    expect(result.auditResult.passed).toBe(true);
+    expect(result.auditResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "나열식 문장 구조", severity: "info" }),
+    ]));
+  });
+
   it("normalizes deterministic surface blockers before audit and repair", async () => {
     const auditChapter = vi.fn()
       .mockResolvedValue(createAuditResult({ overallScore: 90, passed: true }));

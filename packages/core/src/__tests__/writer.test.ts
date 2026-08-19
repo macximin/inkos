@@ -116,6 +116,41 @@ describe("WriterAgent", () => {
     vi.restoreAllMocks();
   });
 
+  it("validates Korean PRE_WRITE_CHECK against Korean table labels", () => {
+    const { logger, warnings } = createCaptureLogger();
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-writer-ko-precheck-test",
+      logger,
+    });
+    const verify = (agent as unknown as {
+      verifyPreWriteCheckAlignsWithMemo: (
+        preWriteCheck: string,
+        chapterNumber: number,
+        language: "zh" | "ko" | "en",
+      ) => void;
+    }).verifyPreWriteCheckAlignsWithMemo.bind(agent);
+
+    verify("| 현재 작업 | 서류 확인 |\n| 화말 변화 | 팩스 확보 |\n| 금지 | 미래 폭로 |", 1, "ko");
+    expect(warnings).toHaveLength(0);
+
+    verify("| Current task | check papers |\n| Required end-of-chapter change | obtain fax |\n| Do not | reveal future |", 1, "ko");
+    expect(warnings.some((warning) => warning.includes("현재 작업"))).toBe(true);
+    expect(warnings.some((warning) => warning.includes("화말 변화"))).toBe(true);
+    expect(warnings.some((warning) => warning.includes("금지"))).toBe(true);
+  });
+
   it("renders per-chapter user context in governed creative prompts", () => {
     const agent = new WriterAgent({
       client: {

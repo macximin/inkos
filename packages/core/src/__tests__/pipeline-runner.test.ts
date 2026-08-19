@@ -5930,6 +5930,130 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("merges Korean deterministic post-write warnings into manual audit and revision gates", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    await state.saveBookConfig(bookId, {
+      ...(await state.loadBookConfig(bookId)),
+      platform: "other",
+      genre: "현대판타지 재벌물",
+      language: "ko",
+    });
+    await writeFile(join(bookDir, "story", "book_rules.md"), [
+      "## 주인공",
+      "",
+      "- 이름: 한도경",
+      "",
+      "## 금지 사항",
+      "",
+      "- 초능력으로 경제 절차를 무시하지 않는다.",
+    ].join("\n"), "utf-8");
+    const book = await state.loadBookConfig(bookId);
+    const chapterContent = [
+      "도경은 장부를 폈다.",
+      "",
+      "확인한 것은 결론이 아니라 결재 번호였다.",
+      "",
+      "도경은 팩스를 들었다.",
+      "",
+      "필요한 것은 설명이 아니라 원본이었다.",
+      "",
+      "그가 좇은 것은 날짜가 아니라 번호였다.",
+      "",
+      "이번 확인은 보고가 아니라 현장으로 가기 위한 준비였다.",
+    ].join("\n");
+
+    const result = await (
+      runner as unknown as {
+        evaluateMergedAudit: (params: {
+          auditor: Pick<ContinuityAuditor, "auditChapter">;
+          book: BookConfig;
+          bookDir: string;
+          chapterContent: string;
+          chapterNumber: number;
+          language: "zh" | "ko" | "en";
+        }) => Promise<{
+          auditResult: AuditResult;
+          blockingCount: number;
+          revisionBlockingIssues: ReadonlyArray<AuditIssue>;
+        }>;
+      }
+    ).evaluateMergedAudit({
+      auditor: {
+        auditChapter: vi.fn().mockResolvedValue(
+          createAuditResult({ passed: true, issues: [], summary: "clean", overallScore: 97 }),
+        ),
+      },
+      book,
+      bookDir,
+      chapterContent,
+      chapterNumber: 1,
+      language: "ko",
+    });
+
+    expect(result.auditResult.passed).toBe(false);
+    expect(result.blockingCount).toBeGreaterThan(0);
+    expect(result.revisionBlockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "번역형 대조문 반복", severity: "warning" }),
+    ]));
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not treat removal of advisory AI info as strict revision improvement", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "林越抬手。林越停步。林越转身。林越侧耳。";
+    const revisedBody = "门被风顶开，林越抬手停了一瞬，随后转身去听墙后的动静。";
+    await writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8");
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValue(createAuditResult({
+        passed: true,
+        issues: [{
+          severity: "warning",
+          category: "节奏",
+          description: "结尾解释略多。",
+          suggestion: "压缩一行解释。",
+        }],
+        summary: "still needs work",
+      }));
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        fixedIssues: ["- Reduced list-like cadence."],
+      }),
+    );
+
+    try {
+      const result = await runner.reviseDraft(bookId, 1);
+      const savedIndex = await state.loadChapterIndex(bookId);
+      expect(result.applied).toBe(false);
+      expect(result.status).toBe("unchanged");
+      expect(await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8"))
+        .toContain(originalBody);
+      expect(savedIndex[0]?.status).toBe("audit-failed");
+      expect(savedIndex[0]?.auditIssues).toEqual(expect.arrayContaining([
+        expect.stringContaining("结尾解释略多"),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses chapter length telemetry target for manual revise when available", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const storyDir = join(state.bookDir(bookId), "story");

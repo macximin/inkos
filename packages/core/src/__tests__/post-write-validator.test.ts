@@ -390,6 +390,62 @@ describe("validatePostWrite", () => {
     expect(result.every((issue) => !/[\u3400-\u9fff]/u.test(`${issue.description}${issue.suggestion}`))).toBe(true);
   });
 
+  it("flags Korean translation-shaped contrasts, abstract agency, and planning terms", () => {
+    const profile: GenreProfile = { ...baseProfile, name: "한국 재벌물", language: "ko" };
+    const content = [
+      "이건 돈의 문제가 아니라 책임의 문제였다.",
+      "그 선택은 승리가 아니라 관계를 전진시키는 시험이었다.",
+      "그가 원한 것은 사과가 아니라 결재권이었다.",
+      "이번 승부는 복수가 아니라 독립 지배축을 세우는 첫 단계였다.",
+      "윤태겸은 독립 지배축을 세운 뒤 핵심 동력을 확인했다.",
+    ].join("\n\n");
+
+    const result = validatePostWrite(content, profile, null, "ko");
+
+    expect(findRule(result, "번역형 대조문 반복")).toBeDefined();
+    expect(findRule(result, "추상 명사의 행동")).toBeDefined();
+    expect(findRule(result, "기획서 용어의 본문 유입")?.severity).toBe("error");
+  });
+
+  it("does not count Korean dialogue paragraphs as fragmented narration", () => {
+    const profile: GenreProfile = { ...baseProfile, name: "한국 재벌물", language: "ko" };
+    const content = [
+      "그는 서류철을 열어 숫자를 다시 확인한 뒤 맞은편 사람에게 펜을 건넸다.",
+      "“서명하시죠.”",
+      "“조건이 하나 남았습니다.”",
+      "그가 창밖을 보자 공장 굴뚝에서 검은 연기가 길게 흘러나오고 있었다.",
+      "“고용은 유지합니까?”",
+      "“석 달은 보장합니다.”",
+      "[긴급. 원본 서류 지참 예정.]",
+      "상대는 대답 대신 계약서 마지막 장을 넘기고 빈칸을 손끝으로 두드렸다.",
+      "“여기에 적으세요.”",
+    ].join("\n\n");
+
+    const result = validatePostWrite(content, profile, null, "ko");
+
+    expect(findRule(result, "문단 파편화")).toBeUndefined();
+    expect(findRule(result, "연속 단문단")).toBeUndefined();
+  });
+
+  it("allows a few functional Korean contrasts within one chapter", () => {
+    const profile: GenreProfile = { ...baseProfile, name: "한국 재벌물", language: "ko" };
+    const content = [
+      "마지막으로 본 것은 천장이 아니라 서류였다.",
+      "그는 날짜가 아니라 번호를 따라갔다.",
+      "필요한 것은 내용이 아니라 발신 시각이었다.",
+    ].join("\n\n");
+
+    expect(findRule(validatePostWrite(content, profile, null, "ko"), "번역형 대조문 반복"))
+      .toBeUndefined();
+  });
+
+  it("normalizes Korean dashes without inserting a Chinese comma", () => {
+    const normalized = normalizePostWriteSurface("그는 계약서를 밀었다——상대가 펜을 놓았다.", "ko");
+
+    expect(normalized).toBe("그는 계약서를 밀었다,상대가 펜을 놓았다.");
+    expect(normalized).not.toContain("，");
+  });
+
   it("regenerates duplicate Korean titles from Hangul content", () => {
     const result = resolveDuplicateTitle(
       "장부의 밤",
