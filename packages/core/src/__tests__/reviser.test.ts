@@ -93,6 +93,102 @@ describe("ReviserAgent", () => {
     }
   });
 
+  it("skips research-only auto revision and rejects a rewrite that erases an implemented future move", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-reviser-future-guard-test-"));
+    const bookDir = join(root, "book");
+    await mkdir(join(bookDir, "story"), { recursive: true });
+    await writeFile(join(bookDir, "book.json"), JSON.stringify({
+      id: "future-book",
+      title: "미래를 당겨온 재벌",
+      genre: "other",
+      platform: "other",
+      chapterWordCount: 5000,
+      targetChapters: 200,
+      status: "active",
+      language: "ko",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    }, null, 2), "utf-8");
+
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
+      content: [
+        "=== FIXED_ISSUES ===",
+        "- 장면을 간결하게 정리",
+        "=== REVISED_CONTENT ===",
+        "윤태겸은 과거의 역사대로 아무 일도 하지 않았다.",
+        "=== UPDATED_STATE ===",
+        "# 현재 상태",
+        "=== UPDATED_HOOKS ===",
+        "# 복선 목록",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+    const arcContext = [
+      "## Future Advantage Move",
+      "- Target: 반도체 장비 국산화",
+      "- Authorized divergences: 상용화를 실제보다 3년 앞당긴다",
+      "- A-Rail bridge: 퇴직 기술자 영입; 시험 라인 확보",
+      "- A-Rail proof: 첫 납품 검사 통과",
+      "- A-Rail reward: 계열사 우선 공급권",
+    ].join("\n");
+    const original = "퇴직 기술자 영입이 끝났다. 시험 라인 확보 뒤 첫 납품 검사 통과까지 받아냈다.";
+
+    try {
+      const researchOnly = await agent.reviseChapter(
+        bookDir,
+        original,
+        1,
+        [{
+          severity: "info",
+          track: "research",
+          category: "시대 고증",
+          description: "당시 장비 가격은 추가 확인이 필요하다.",
+          suggestion: "별도 리서치로 확인한다.",
+        }],
+        "auto",
+        "other",
+        { arcProvenanceContext: arcContext },
+      );
+      expect(researchOnly.revisedContent).toBe(original);
+      expect(researchOnly.tokenUsage?.totalTokens).toBe(0);
+      expect(chatSpy).not.toHaveBeenCalled();
+
+      const guarded = await agent.reviseChapter(
+        bookDir,
+        original,
+        1,
+        [{
+          severity: "critical",
+          track: "creative",
+          repairScope: "structural",
+          category: "정보 경계 위반",
+          description: "비공개 협상 정보를 근거 없이 안다.",
+          suggestion: "정보 획득 장면을 보강한다.",
+        }],
+        "auto",
+        "other",
+        { arcProvenanceContext: arcContext },
+      );
+      expect(chatSpy).toHaveBeenCalledTimes(1);
+      expect((chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>)[0]?.content)
+        .toContain("미래 선점 보존 규칙");
+      expect(guarded.revisedContent).toBe(original);
+      expect(guarded.fixedIssues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("prefers book language override when building revision prompts", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-reviser-lang-test-"));
     const bookDir = join(root, "book");

@@ -79,6 +79,112 @@ describe("ContinuityAuditor", () => {
     });
   });
 
+  it("keeps future-advantage research separate while preserving real creative blockers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-auditor-future-separation-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(bookDir, "book.json"), JSON.stringify({
+        id: "future-book",
+        title: "미래를 당겨온 재벌",
+        genre: "other",
+        platform: "other",
+        chapterWordCount: 5000,
+        targetChapters: 200,
+        status: "active",
+        language: "ko",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        updatedAt: "2026-08-20T00:00:00.000Z",
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# 현재 상태\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# 복선 목록\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# 회차 요약\n", "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), "# 보조 사건선\n", "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), "# 감정선\n", "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), "# 인물 관계\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# 권 구성\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# 문체 지침\n", "utf-8"),
+    ]);
+
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(ContinuityAuditor.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          passed: false,
+          creative_passed: false,
+          research_status: "verified",
+          overall_score: 72,
+          issues: [{
+            severity: "critical",
+            track: "creative",
+            repair_scope: "structural",
+            category: "시대 고증",
+            description: "실제 역사보다 3년 빠르며 외부 근거가 아직 없다.",
+            suggestion: "실제 역사로 되돌린다.",
+          }],
+          summary: "고증 확인 필요",
+        }),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          passed: false,
+          creative_passed: false,
+          research_status: "not-checked",
+          overall_score: 61,
+          issues: [{
+            severity: "critical",
+            track: "creative",
+            repair_scope: "structural",
+            category: "미래 선점 정보 경계 위반",
+            description: "주인공이 알 수 없는 비공개 협상 내용을 사용했다.",
+            suggestion: "정보 획득 장면을 만든다.",
+          }],
+          summary: "정보 경계 위반",
+        }),
+        usage: ZERO_USAGE,
+      });
+    const arcContext = [
+      "## Future Advantage Move",
+      "- Target: 반도체 장비 국산화",
+      "- Authorized divergences: 상용화를 실제보다 3년 앞당긴다",
+      "- A-Rail bridge: 퇴직 기술자 영입; 시험 라인 확보",
+      "- A-Rail proof: 첫 납품 검사 통과",
+      "- A-Rail reward: 계열사 우선 공급권",
+    ].join("\n");
+
+    try {
+      const researchOnly = await auditor.auditChapter(bookDir, "시험 라인이 돌아갔다.", 1, "other", { arcContext });
+      expect(researchOnly.passed).toBe(true);
+      expect(researchOnly.creativePassed).toBe(true);
+      expect(researchOnly.researchStatus).toBe("needs-research");
+      expect(researchOnly.issues[0]).toMatchObject({ severity: "info", track: "research" });
+
+      const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
+      expect(messages[0]?.content).toContain("당신은 엄격한");
+      expect(messages[0]?.content).toContain("허용된 역사 분기");
+      expect(messages[0]?.content).not.toContain("You are a strict");
+      expect(messages[1]?.content).toContain("## 감리할 원고");
+
+      const boundaryBreach = await auditor.auditChapter(bookDir, "비공개 협상 결과를 이미 알았다.", 1, "other", { arcContext });
+      expect(boundaryBreach.passed).toBe(false);
+      expect(boundaryBreach.creativePassed).toBe(false);
+      expect(boundaryBreach.issues[0]).toMatchObject({ severity: "critical", track: "creative" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("prefers book language override when building audit prompts", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-auditor-lang-test-"));
     const bookDir = join(root, "book");

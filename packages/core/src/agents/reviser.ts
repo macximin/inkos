@@ -2,7 +2,7 @@ import { BaseAgent } from "./base.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import type { LengthSpec } from "../models/length-governance.js";
-import type { AuditIssue } from "./continuity.js";
+import { isAutomaticRevisionIssue, type AuditIssue } from "./continuity.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
 import { countChapterLength } from "../utils/length-metrics.js";
@@ -48,6 +48,41 @@ export interface ReviseOutput {
 }
 
 type AutoOutputMode = "patch-only" | "rewrite-only" | "allow-full";
+
+const FUTURE_MOVE_ANCHOR_LABELS = new Set([
+  "Target",
+  "A-Rail bridge",
+  "A-Rail proof",
+  "A-Rail reward",
+  "B-Rail resistance",
+  "B-Rail aftermath",
+  "Authorized divergences",
+]);
+
+function extractFutureMoveAnchors(arcContext: string | undefined): string[] {
+  if (!arcContext?.includes("## Future Advantage Move")) return [];
+  const anchors = new Set<string>();
+  for (const line of arcContext.split("\n")) {
+    const match = line.match(/^\s*-\s*([^:]+):\s*(.+?)\s*$/);
+    if (!match || !FUTURE_MOVE_ANCHOR_LABELS.has(match[1]!.trim())) continue;
+    for (const value of match[2]!.split(";")) {
+      const normalized = value.trim();
+      if (normalized.length >= 2 && normalized.toLowerCase() !== "none") anchors.add(normalized);
+    }
+  }
+  return [...anchors];
+}
+
+function erasesImplementedFutureMove(
+  originalChapter: string,
+  revisedChapter: string,
+  arcContext: string | undefined,
+): boolean {
+  const presentAnchors = extractFutureMoveAnchors(arcContext)
+    .filter((anchor) => originalChapter.includes(anchor));
+  return presentAnchors.length > 0
+    && presentAnchors.every((anchor) => !revisedChapter.includes(anchor));
+}
 
 function buildTieredIssueList(
   issues: ReadonlyArray<AuditIssue>,
@@ -187,6 +222,21 @@ export class ReviserAgent extends BaseAgent {
       ? styleGuideRaw
       : (legacyRulesBody || (resolvedLanguage === "ko" ? "(문체 지침 없음)" : "(无文风指南)"));
 
+    if (mode === "auto" && issues.every((issue) => !isAutomaticRevisionIssue(issue))) {
+      const wordCount = options?.lengthSpec
+        ? countChapterLength(chapterContent, options.lengthSpec.countingMode)
+        : chapterContent.length;
+      return {
+        revisedContent: chapterContent,
+        wordCount,
+        fixedIssues: [],
+        updatedState: currentState,
+        updatedLedger: gp.numericalSystem ? ledger : "",
+        updatedHooks: hooks,
+        tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      };
+    }
+
     const issueList = mode === "auto"
       ? buildTieredIssueList(issues, resolvedLanguage)
       : issues
@@ -250,7 +300,14 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
     const systemPromptBase = mode === "auto"
       ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode })
       : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
-    const systemPrompt = await this.withPromptPackGuidance(systemPromptBase, "longform.reviser");
+    const futureAdvantageGuard = options?.arcProvenanceContext?.includes("## Future Advantage Move")
+      ? resolvedLanguage === "ko"
+        ? "\n\n미래 선점 보존 규칙: 감리 문제를 고치더라도 미래 선점 move의 대상, 현재 구현 다리, 저항, 가시적 증거, 보상, 허용된 역사 분기를 삭제하거나 실제 역사대로 되돌리지 마세요. 주인공이 결과를 안다는 설정과 현재 구현법을 구분하고, 금지된 지름길이나 정보 경계 위반만 직접 고칩니다."
+        : usesEnglishControl
+          ? "\n\nFuture Advantage preservation rule: while fixing creative issues, do not erase the move target, present-day bridge, resistance, visible proof, reward, or authorized divergences, and do not reset the story to real history. Keep remembered outcome distinct from present implementation; directly fix only forbidden shortcuts or information-boundary breaches."
+          : "\n\n未来先机保留规则：修正创作问题时，不得删除 move 的目标、当下实现步骤、阻力、可见证据、回报或已授权历史分歧，也不得把故事重置回真实历史。区分记得的未来结果与当下实现方法，只直接修正禁用捷径或信息越界。"
+      : "";
+    const systemPrompt = await this.withPromptPackGuidance(`${systemPromptBase}${futureAdvantageGuard}`, "longform.reviser");
 
     const ledgerForPrompt = resolvedLanguage === "ko" && ledger === "(文件不存在)" ? "(장부 없음)" : ledger;
     const hooksForPrompt = resolvedLanguage === "ko" && hooksWorkingSet === "(文件不存在)" ? "(복선 없음)" : hooksWorkingSet;
@@ -353,10 +410,24 @@ ${chapterContent}`;
           updatedHooks: mergeTableMarkdownByKey(hooks, output.updatedHooks, [0]),
         }
       : output;
+    const guardedOutput = erasesImplementedFutureMove(
+      chapterContent,
+      mergedOutput.revisedContent,
+      options?.arcProvenanceContext,
+    )
+      ? {
+          revisedContent: chapterContent,
+          wordCount: chapterContent.length,
+          fixedIssues: [],
+          updatedState: currentState,
+          updatedLedger: gp.numericalSystem ? ledger : "",
+          updatedHooks: hooks,
+        }
+      : mergedOutput;
     const wordCount = options?.lengthSpec
-      ? countChapterLength(mergedOutput.revisedContent, options.lengthSpec.countingMode)
-      : mergedOutput.wordCount;
-    return { ...mergedOutput, wordCount, tokenUsage: response.usage };
+      ? countChapterLength(guardedOutput.revisedContent, options.lengthSpec.countingMode)
+      : guardedOutput.wordCount;
+    return { ...guardedOutput, wordCount, tokenUsage: response.usage };
   }
 
   private parseOutput(

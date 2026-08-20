@@ -17,6 +17,10 @@ import { join } from "node:path";
 
 export interface AuditResult {
   readonly passed: boolean;
+  /** Creative/structural pass, kept separate from real-world verification. */
+  readonly creativePassed?: boolean;
+  /** Real-world verification state. This never fails creative review by itself. */
+  readonly researchStatus?: ResearchStatus;
   readonly issues: ReadonlyArray<AuditIssue>;
   readonly summary: string;
   /** True when the auditor response itself was not parseable; callers must not auto-revise content from this result. */
@@ -36,6 +40,14 @@ export interface AuditIssue {
   readonly description: string;
   readonly suggestion: string;
   readonly repairScope?: "local" | "structural" | "unknown";
+  /** Research findings are evidence/status only and never drive automatic prose revision. */
+  readonly track?: "creative" | "research";
+}
+
+export type ResearchStatus = "not-applicable" | "not-checked" | "needs-research" | "verified" | "conflict";
+
+export function isAutomaticRevisionIssue(issue: AuditIssue): boolean {
+  return issue.track !== "research" && issue.severity !== "info";
 }
 
 type PromptLanguage = "zh" | "ko" | "en";
@@ -43,6 +55,70 @@ type PromptLanguage = "zh" | "ko" | "en";
 function normalizeRepairScope(value: unknown): AuditIssue["repairScope"] {
   if (value === "local" || value === "structural" || value === "unknown") return value;
   return undefined;
+}
+
+function normalizeResearchStatus(value: unknown): ResearchStatus | undefined {
+  return value === "not-applicable"
+    || value === "not-checked"
+    || value === "needs-research"
+    || value === "verified"
+    || value === "conflict"
+    ? value
+    : undefined;
+}
+
+function inferIssueTrack(issue: AuditIssue): "creative" | "research" {
+  const text = `${issue.category} ${issue.description}`;
+  // Host-owned routing wins over an LLM-supplied track. Otherwise a model can
+  // accidentally turn an unverified historical claim into a prose rewrite.
+  if (/Era Accuracy|年代考据|시대 고증|고증|research|fact.?check|事实核查/i.test(text)) {
+    return "research";
+  }
+  return issue.track ?? "creative";
+}
+
+function normalizeSeparatedAuditResult(
+  result: AuditResult,
+  options: { readonly researchExpected: boolean; readonly futureAdvantageActive: boolean },
+): AuditResult {
+  const issues = result.issues.map((rawIssue) => {
+    const track = inferIssueTrack(rawIssue);
+    let severity = rawIssue.severity;
+    const text = `${rawIssue.category} ${rawIssue.description}`;
+
+    // Missing or disputed research is a verification state, not a prose-repair
+    // command. Critical future-advantage findings remain possible only for an
+    // actual forbidden shortcut, information-boundary breach, or canon conflict.
+    if (track === "research") severity = "info";
+    if (
+      options.futureAdvantageActive
+      && severity === "critical"
+      && /future advantage|未来先机|미래 선점|회귀 지식/i.test(text)
+      && !/forbidden shortcut|금지된 지름길|禁止.*捷径|information boundary|정보 경계|信息越界|canon conflict|정본 모순|正典.*冲突/i.test(text)
+    ) {
+      severity = "warning";
+    }
+    return { ...rawIssue, severity, track };
+  });
+  const creativePassed = !result.parseFailed
+    && !issues.some((issue) => issue.track !== "research" && issue.severity === "critical");
+  const researchIssues = issues.filter((issue) => issue.track === "research");
+  const inferredResearchStatus: ResearchStatus = !options.researchExpected
+    ? "not-applicable"
+    : researchIssues.some((issue) => /conflict|contradict|충돌|모순|冲突/i.test(`${issue.category} ${issue.description}`))
+      ? "conflict"
+      : researchIssues.length > 0
+        ? "needs-research"
+        : "not-checked";
+  return {
+    ...result,
+    passed: creativePassed,
+    creativePassed,
+    researchStatus: researchIssues.length > 0
+      ? inferredResearchStatus
+      : (result.researchStatus ?? inferredResearchStatus),
+    issues,
+  };
 }
 
 const DIMENSION_LABELS: Record<number, { readonly zh: string; readonly en: string }> = {
@@ -451,7 +527,9 @@ export class ContinuityAuditor extends BaseAgent {
     const genreLabel = resolveGenreLabel(genreId, gp.name, resolvedLanguage);
 
     const protagonistBlock = bookRules?.protagonist
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n\n주인공 고정점: ${bookRules.protagonist.name}. 성격 고정점: ${joinLocalized(bookRules.protagonist.personalityLock, resolvedLanguage)}. 행동 제약: ${joinLocalized(bookRules.protagonist.behavioralConstraints, resolvedLanguage)}.`
+        : isEnglish
         ? `\n\nProtagonist lock: ${bookRules.protagonist.name}; personality locks: ${joinLocalized(bookRules.protagonist.personalityLock, resolvedLanguage)}; behavioral constraints: ${joinLocalized(bookRules.protagonist.behavioralConstraints, resolvedLanguage)}.`
         : `\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}，行为约束：${bookRules.protagonist.behavioralConstraints.join("、")}`
       : "";
@@ -463,9 +541,67 @@ export class ContinuityAuditor extends BaseAgent {
           ? "\n\nDo not perform live web search during chapter audit. Use supplied research evidence only. If a real-world claim cannot be verified from that evidence, record an info-level research need. Never reject an explicitly authorized fictional divergence merely because it did not exist in real history."
           : "\n\n章节审稿期间不要实时联网检索，只使用已提供的研究证据。真实世界主张若无法由证据核实，应记录为 info 级待研究项。已明确授权的虚构分歧，不能仅因真实历史中不存在就判为错误。"
       : "";
+    const futureAdvantageActive = Boolean(
+      bookRules?.futureAdvantage?.enabled
+      || options?.contextPackage?.selectedContext.some((entry) => entry.source.includes("/future-advantage/"))
+      || options?.arcContext?.includes("## Future Advantage Move"),
+    );
+    const futureAdvantageAuditNote = !futureAdvantageActive
+      ? ""
+      : resolvedLanguage === "ko"
+        ? "\n\n## 미래 선점 감리 경계\n- 기억한 미래 결과와 현재 구현 방법을 구분하세요. 결과를 안다는 사실만으로 구현 생략을 허용하지 않습니다.\n- 허용된 역사 분기를 실제 역사에 없었다는 이유만으로 오류 처리하지 마세요.\n- 근거가 없거나 확인되지 않은 현실 주장에는 track=research, severity=info를 사용하고 research_status=needs-research로 기록하세요. 이것은 창작 실패나 자동 수정 사유가 아닙니다.\n- 미래 선점 관련 critical 후보는 금지된 지름길, 인물의 정보 경계 위반, 허용 분기·작품 정본과의 직접 모순뿐입니다. 일반적인 창작 구조 문제는 기존 창작 감리 기준을 따릅니다."
+        : resolvedLanguage === "en"
+          ? "\n\n## Future Advantage audit boundary\n- Distinguish a remembered later outcome from its present-day implementation. Knowing the outcome does not waive bridge steps, resistance, proof, or cost.\n- Never mark an authorized divergence as an error merely because it did not occur in real history.\n- An unsupported or unverified real-world claim uses track=research, severity=info, and research_status=needs-research. It is not a creative failure or an automatic-revision instruction.\n- Future-advantage-specific critical candidates are limited to forbidden shortcuts, information-boundary breaches, and direct contradictions with authorized divergence or book canon. General creative structural failures still follow the normal creative audit."
+          : "\n\n## 未来先机审稿边界\n- 区分主角记得的未来结果与当下实现方法；知道结果不等于可以省略实现步骤、阻力、证据或代价。\n- 已授权的历史分歧不能仅因真实历史中未发生就判错。\n- 缺少依据或尚未核实的现实主张必须使用 track=research、severity=info、research_status=needs-research；它不是创作失败，也不是自动修稿指令。\n- 未来先机专属 critical 只限于禁用捷径、信息边界越界、与授权分歧或作品正典直接矛盾。一般创作结构问题仍按原有创作审稿标准处理。";
 
-    const systemPromptBase = isEnglish
-      ? `You are a strict ${genreLabel} web-fiction structural editor. Audit the chapter for completion and structure, not for prose craft. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${searchNote}
+    const systemPromptBase = resolvedLanguage === "ko"
+      ? `당신은 엄격한 ${genreLabel} 웹소설 구조 편집자입니다. 문장 윤문이 아니라 회차의 완성도와 구조를 감리합니다.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
+
+## 감리 범위(고정)
+
+기획한 사건이 실제 장면으로 구현됐는지, 인물과 시간선이 유지되는지, 이야기가 앞으로 나아가는지만 판단하세요. 어휘, 문장 호흡, 문단 모양, 문장부호, 비유 같은 표면 문체는 Polisher의 영역입니다. 표면 문체 문제는 severity="info"로만 남길 수 있으며 passed와 overall_score에 반영하거나 critical로 만들면 안 됩니다.
+
+구조적 독자 이탈 요인 열두 가지를 봅니다. 늘어지거나 밋밋한 도입, 현실감 없는 흐릿한 세계, 모순된 인물 설정, 뒤엉킨 시점, 주선 이탈이나 정체, 충돌과 보상 부족, 무너진 완급과 거친 전환, 아크 전후의 인물 불일치, 대비 없는 납작한 인물, 뻣뻣한 감정과 갑작스러운 관계 변화, 불균형한 특전, 행동으로 구현되지 않은 설정입니다. 아래 공학적 차원도 함께 봅니다(OOC, 시간선, 정보 경계, 복선 부채, 회차 간 반복, 어휘 피로, 분량, 제목 피로, 문단 모양).
+
+성긴 chapter_memo는 정상입니다. 숨 고르기·후일담·전환 회차는 목표와 뼈대만 있을 수 있습니다. memo에 쓰지 않은 항목이 없다는 이유로 미완성 처리하거나 감점하지 말고, 실제로 적힌 약속에서 벗어났는지만 판단하세요.
+
+chapter_memo, 규칙 스택, 제공 문맥이 여러 사건선의 비율을 명시했다면 각 선이 장면, 대화, 행동, 관계 변화로 실제 구현됐는지 확인하세요. 한 문장 요약으로 넘긴 선은 구현되지 않은 것으로 봅니다. 다만 memo가 해당 선을 이번 회차에 반드시 진행하라고 명시한 경우에만 critical 후보입니다.
+
+모든 issue에는 repair_scope를 넣으세요. "local"은 표현, 문단 모양, 작은 반복, 좁은 문장 수정입니다. "structural"은 주선 이탈, 시간선 붕괴, 장면·보상 누락, 인물 논리 붕괴, 시점·정보 경계 위반처럼 장면이나 회차를 다시 써야 하는 문제입니다. 정말 판단할 수 없을 때만 "unknown"을 씁니다.
+
+감리 차원:
+${dimList}
+
+출력은 반드시 다음 JSON 형식입니다.
+{
+  "passed": true/false,
+  "creative_passed": true/false,
+  "research_status": "not-applicable|not-checked|needs-research|verified|conflict",
+  "overall_score": 0-100,
+  "issues": [
+    {
+      "severity": "critical|warning|info",
+      "repair_scope": "local|structural|unknown",
+      "track": "creative|research",
+      "category": "감리 차원 이름",
+      "description": "구체적인 문제",
+      "suggestion": "수정 제안"
+    }
+  ],
+  "summary": "한 문장 결론"
+}
+
+creative track에 critical 문제가 있을 때만 passed와 creative_passed를 false로 둡니다. research track은 창작 통과를 실패로 바꾸지 않습니다.
+
+overall_score 기준:
+- 95-100: 그대로 공개해도 될 만큼 매끄럽고 뚜렷한 문제 없음
+- 85-94: 작은 흠은 있지만 몰입을 깨지 않음
+- 75-84: 눈에 띄는 문제가 있으나 이야기 뼈대는 유지됨
+- 65-74: 여러 문제가 읽는 맛을 해치고 완급이나 연속성에 틈이 있음
+- 65 미만: 구조가 무너져 큰 재작성이 필요함
+작은 문제 하나로 점수를 크게 깎지 말고 전체 읽는 맛을 기준으로 판단하세요.`
+      : isEnglish
+      ? `You are a strict ${genreLabel} web-fiction structural editor. Audit the chapter for completion and structure, not for prose craft. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
 
 ## Reviewer Scope (hard constraints)
 
@@ -485,11 +621,14 @@ ${dimList}
 Output format MUST be JSON:
 {
   "passed": true/false,
+  "creative_passed": true/false,
+  "research_status": "not-applicable|not-checked|needs-research|verified|conflict",
   "overall_score": 0-100,
   "issues": [
 	    {
 	      "severity": "critical|warning|info",
 	      "repair_scope": "local|structural|unknown",
+	      "track": "creative|research",
 	      "category": "dimension name",
 	      "description": "specific issue description",
 	      "suggestion": "fix suggestion"
@@ -498,7 +637,7 @@ Output format MUST be JSON:
   "summary": "one-sentence audit conclusion"
 }
 
-passed is false ONLY when critical-severity issues exist.
+passed and creative_passed are false ONLY when creative-track critical issues exist. Research-track issues never fail creative review.
 
 overall_score calibration:
 - 95-100: Publishable as-is, no noticeable issues
@@ -507,7 +646,7 @@ overall_score calibration:
 - 65-74: Multiple issues hurt the reading experience, pacing or continuity has gaps
 - < 65: Structural breakdown, needs major rewrite
 Score holistically — do not let a single minor issue tank the score.`
-      : `你是一位严格的${gp.name}网络小说结构审稿编辑。你只审完成度 + 结构，不审文笔。${protagonistBlock}${searchNote}
+      : `你是一位严格的${gp.name}网络小说结构审稿编辑。你只审完成度 + 结构，不审文笔。${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
 
 ## 审稿边界（硬约束）
 
@@ -527,11 +666,14 @@ ${dimList}
 输出格式必须为 JSON：
 {
   "passed": true/false,
+  "creative_passed": true/false,
+  "research_status": "not-applicable|not-checked|needs-research|verified|conflict",
   "overall_score": 0-100,
   "issues": [
 	    {
 	      "severity": "critical|warning|info",
 	      "repair_scope": "local|structural|unknown",
+	      "track": "creative|research",
 	      "category": "审查维度名称",
 	      "description": "具体问题描述",
 	      "suggestion": "修改建议"
@@ -540,7 +682,7 @@ ${dimList}
   "summary": "一句话总结审查结论"
 }
 
-只有当存在 critical 级别问题时，passed 才为 false。
+只有 creative track 存在 critical 级别问题时，passed 与 creative_passed 才为 false。research track 不得判创作失败。
 
 overall_score 评分校准：
 - 95-100：可直接发布，无明显问题
@@ -549,13 +691,12 @@ overall_score 评分校准：
 - 65-74：多处影响阅读体验的问题，节奏或连续性有断裂
 - < 65：结构性问题，需要大幅重写
 综合评分，不要因为单一小问题大幅拉低分数。`;
-    const localizedSystemPrompt = resolvedLanguage === "ko"
-      ? `【언어 우선 규칙】모든 issue의 category, description, suggestion과 summary를 자연스러운 한국어로 작성하세요. 아래 영어 지침은 심사 기준일 뿐이며 영어 결과를 요구하지 않습니다. JSON 키와 enum 값은 그대로 유지하세요.\n\n${systemPromptBase.replace("ALL OUTPUT MUST BE IN ENGLISH.", "")}`
-      : systemPromptBase;
-    const systemPrompt = await this.withPromptPackGuidance(localizedSystemPrompt, "longform.auditor");
+    const systemPrompt = await this.withPromptPackGuidance(systemPromptBase, "longform.auditor");
 
     const ledgerBlock = gp.numericalSystem
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 자원 장부\n${ledger}`
+        : isEnglish
         ? `\n## Resource Ledger\n${ledger}`
         : `\n## 资源账本\n${ledger}`
       : "";
@@ -574,52 +715,70 @@ overall_score 评分校准：
 
     const hooksBlock = governedMemoryBlocks?.hooksBlock
       ?? (filteredHooks !== "(文件不存在)"
-        ? isEnglish
+        ? resolvedLanguage === "ko"
+          ? `\n## 복선 목록\n${filteredHooks}\n`
+          : isEnglish
           ? `\n## Pending Hooks\n${filteredHooks}\n`
           : `\n## 伏笔池\n${filteredHooks}\n`
         : "");
     const subplotBlock = filteredSubplots !== "(文件不存在)"
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 보조 사건선\n${filteredSubplots}\n`
+        : isEnglish
         ? `\n## Subplot Board\n${filteredSubplots}\n`
         : `\n## 支线进度板\n${filteredSubplots}\n`
       : "";
     const emotionalBlock = filteredArcs !== "(文件不存在)"
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 감정선\n${filteredArcs}\n`
+        : isEnglish
         ? `\n## Emotional Arcs\n${filteredArcs}\n`
         : `\n## 情感弧线\n${filteredArcs}\n`
       : "";
     const matrixBlock = filteredMatrix !== "(文件不存在)"
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 인물 관계와 상호작용\n${filteredMatrix}\n`
+        : isEnglish
         ? `\n## Character Interaction Matrix\n${filteredMatrix}\n`
         : `\n## 角色交互矩阵\n${filteredMatrix}\n`
       : "";
     const summariesBlock = governedMemoryBlocks?.summariesBlock
       ?? (filteredSummaries !== "(文件不存在)"
-        ? isEnglish
+        ? resolvedLanguage === "ko"
+          ? `\n## 최근 회차 요약(완급 확인용)\n${filteredSummaries}\n`
+          : isEnglish
           ? `\n## Chapter Summaries (for pacing checks)\n${filteredSummaries}\n`
           : `\n## 章节摘要（用于节奏检查）\n${filteredSummaries}\n`
         : "");
     const volumeSummariesBlock = governedMemoryBlocks?.volumeSummariesBlock ?? "";
 
     const canonBlock = hasParentCanon
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 본편 정본(외전 감리용)\n${parentCanon}\n`
+        : isEnglish
         ? `\n## Mainline Canon Reference (for spinoff audit)\n${parentCanon}\n`
         : `\n## 正传正典参照（番外审查专用）\n${parentCanon}\n`
       : "";
 
     const fanficCanonBlock = hasFanficCanon
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 원작 정본(팬픽 감리용)\n${fanficCanon}\n`
+        : isEnglish
         ? `\n## Fanfic Canon Reference (for fanfic audit)\n${fanficCanon}\n`
         : `\n## 同人正典参照（同人审查专用）\n${fanficCanon}\n`
       : "";
 
     const memoBlock = options?.chapterMemo
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 회차 메모(이탈 확인용)\n목표: ${options.chapterMemo.goal}\n\n${options.chapterMemo.body}\n`
+        : isEnglish
         ? `\n## Chapter Memo (for memo drift checks)\nGoal: ${options.chapterMemo.goal}\n\n${options.chapterMemo.body}\n`
         : `\n## 章节备忘（用于 memo 偏离检测）\ngoal：${options.chapterMemo.goal}\n\n${options.chapterMemo.body}\n`
       : "";
     const arcContextBlock = options?.arcContext?.trim()
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 아크 계획 스냅샷(하위 제약·회차 이탈 확인용)\n${options.arcContext.trim()}\n`
+        : isEnglish
         ? `\n## Arc Plan Snapshot (subordinate; check chapter drift)\n${options.arcContext.trim()}\n`
         : `\n## Arc 计划快照（从属约束；检查本章偏离）\n${options.arcContext.trim()}\n`
       : "";
@@ -627,18 +786,32 @@ overall_score 评分校准：
       ? this.buildReducedControlBlock(options.chapterIntent, options.contextPackage, options.ruleStack, resolvedLanguage)
       : "";
     const styleGuideBlock = reducedControlBlock.length === 0
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 문체 지침\n${styleGuide}\n`
+        : isEnglish
         ? `\n## Style Guide\n${styleGuide}`
         : `\n## 文风指南\n${styleGuide}`
       : "";
 
     const prevChapterBlock = previousChapter
-      ? isEnglish
+      ? resolvedLanguage === "ko"
+        ? `\n## 직전 회차 전문(연결 확인용)\n${previousChapter}\n`
+        : isEnglish
         ? `\n## Previous Chapter Full Text (for transition checks)\n${previousChapter}\n`
         : `\n## 上一章全文（用于衔接检查）\n${previousChapter}\n`
       : "";
 
-    const userPrompt = isEnglish
+    const userPrompt = resolvedLanguage === "ko"
+      ? `제${chapterNumber}화를 감리하세요.
+
+## 현재 상태
+${currentState}
+${ledgerBlock}
+${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${reducedControlBlock}${arcContextBlock}${memoBlock}${prevChapterBlock}${styleGuideBlock}
+
+## 감리할 원고
+${chapterContent}`
+      : isEnglish
       ? `Review chapter ${chapterNumber}.
 
 ## Current State Card
@@ -668,7 +841,13 @@ ${chapterContent}`;
     // collected separately through research_web and then attached as context.
     const response = await this.chat(chatMessages, chatOptions);
 
-    const result = this.parseAuditResult(response.content, resolvedLanguage);
+    const result = normalizeSeparatedAuditResult(
+      this.parseAuditResult(response.content, resolvedLanguage),
+      {
+        researchExpected: Boolean(gp.eraResearch || bookRules?.eraConstraints?.enabled || futureAdvantageActive),
+        futureAdvantageActive,
+      },
+    );
     return { ...result, tokenUsage: response.usage };
   }
 
@@ -715,6 +894,7 @@ ${chapterContent}`;
 	              description: issue.description ?? "",
 	              suggestion: issue.suggestion ?? "",
 	              repairScope: normalizeRepairScope(issue.repair_scope ?? issue.repairScope),
+	              track: issue.track === "research" ? "research" : issue.track === "creative" ? "creative" : undefined,
 	            });
           } catch {
             // skip malformed individual issue
@@ -723,6 +903,8 @@ ${chapterContent}`;
       }
       return {
         passed: passedMatch[1] === "true",
+        creativePassed: passedMatch[1] === "true",
+        researchStatus: normalizeResearchStatus(content.match(/"research_status"\s*:\s*"([^"]+)"/)?.[1]),
         issues,
         summary: summaryMatch?.[1] ?? "",
       };
@@ -731,6 +913,8 @@ ${chapterContent}`;
     return {
       passed: false,
       parseFailed: true,
+      creativePassed: false,
+      researchStatus: "not-checked",
       issues: [{
         severity: "critical",
         category: language === "ko" ? "시스템 오류" : language === "en" ? "System Error" : "系统错误",
@@ -815,6 +999,10 @@ ${overrides}\n`;
         : undefined;
       return {
         passed: Boolean(parsed.passed ?? false),
+        creativePassed: typeof parsed.creative_passed === "boolean"
+          ? parsed.creative_passed
+          : Boolean(parsed.passed ?? false),
+        researchStatus: normalizeResearchStatus(parsed.research_status ?? parsed.researchStatus),
         issues: Array.isArray(parsed.issues)
 	          ? parsed.issues.map((i: Record<string, unknown>) => ({
 	              severity: (i.severity as string) ?? "warning",
@@ -822,6 +1010,7 @@ ${overrides}\n`;
 	              description: (i.description as string) ?? "",
 	              suggestion: (i.suggestion as string) ?? "",
 	              repairScope: normalizeRepairScope(i.repair_scope ?? i.repairScope),
+	              track: i.track === "research" ? "research" : i.track === "creative" ? "creative" : undefined,
 	            }))
           : [],
         summary: String(parsed.summary ?? ""),

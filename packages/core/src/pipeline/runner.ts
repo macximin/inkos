@@ -13,7 +13,7 @@ import { ComposerAgent, composeGovernedChapter, contextBudgetFromClient, type Co
 import { WriterAgent, type WriteChapterInput, type WriteChapterOutput } from "../agents/writer.js";
 import { LengthNormalizerAgent } from "../agents/length-normalizer.js";
 import { ChapterAnalyzerAgent } from "../agents/chapter-analyzer.js";
-import { ContinuityAuditor } from "../agents/continuity.js";
+import { ContinuityAuditor, isAutomaticRevisionIssue } from "../agents/continuity.js";
 import { ReviserAgent, DEFAULT_REVISE_MODE, type ReviseMode } from "../agents/reviser.js";
 import { StateValidatorAgent, type ValidationResult, type ValidationWarning } from "../agents/state-validator.js";
 import { RadarAgent } from "../agents/radar.js";
@@ -4098,7 +4098,7 @@ ${matrix}`,
     // construction (not by category name) so that an LLM-reported issue
     // sharing a category label with a long-span issue is still counted.
     const revisionBlockingIssues: ReadonlyArray<AuditIssue> = [
-      ...llmAudit.issues,
+      ...llmAudit.issues.filter(isAutomaticRevisionIssue),
       ...aiTells.issues,
       ...sensitiveResult.issues,
       ...postWriteIssues,
@@ -4113,6 +4113,10 @@ ${matrix}`,
     return {
       auditResult: {
         passed: (hasBlockedWords || hasDeterministicBlocker || hasBlockingIssue) ? false : llmAudit.passed,
+        creativePassed: (hasBlockedWords || hasDeterministicBlocker || hasBlockingIssue)
+          ? false
+          : (llmAudit.creativePassed ?? llmAudit.passed),
+        researchStatus: llmAudit.researchStatus ?? "not-applicable",
         issues,
         summary: llmAudit.summary,
         tokenUsage: llmAudit.tokenUsage,

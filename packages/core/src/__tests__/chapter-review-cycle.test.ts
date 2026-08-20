@@ -356,6 +356,49 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.revised).toBe(false);
   });
 
+  it("never sends research-only findings to automatic prose revision", async () => {
+    const originalContent = "미래의 수요는 기억했지만 시험 생산은 오늘 시작했다.".repeat(8);
+    const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
+      passed: true,
+      creativePassed: true,
+      researchStatus: "needs-research",
+      overallScore: 70,
+      issues: [{
+        severity: "info",
+        track: "research",
+        category: "시대 고증",
+        description: "당시 설비 단가를 추가 확인해야 한다.",
+        suggestion: "별도 리서치로 확인한다.",
+      }],
+    }));
+    const reviseChapter = vi.fn();
+    const normalizeDraftLengthIfNeeded = vi.fn()
+      .mockImplementation(async (content: string) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded,
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.auditResult.creativePassed).toBe(true);
+    expect(result.auditResult.researchStatus).toBe("needs-research");
+  });
+
   it("does not let a high LLM score hide a deterministic warning", async () => {
     const originalContent = "b".repeat(200);
     const revisedContent = "a".repeat(200);

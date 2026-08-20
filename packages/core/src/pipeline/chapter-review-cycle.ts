@@ -1,4 +1,4 @@
-import type { AuditIssue, AuditResult } from "../agents/continuity.js";
+import { isAutomaticRevisionIssue, type AuditIssue, type AuditResult } from "../agents/continuity.js";
 import type { ReviseMode, ReviseOutput } from "../agents/reviser.js";
 import type { WriteChapterOutput } from "../agents/writer.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
@@ -174,9 +174,15 @@ export async function runChapterReviewCycle(params: {
 
     // Deterministic post-write checks: run every round, not just the first.
     // If runPostWriteChecks is provided, use it; otherwise fall back to initial postWriteErrors.
-    const postWriteIssues = params.runPostWriteChecks
+    const currentPostWriteIssues = params.runPostWriteChecks
       ? params.runPostWriteChecks(content)
-      : initialPostWriteIssues;
+      : [];
+    // Writer-reported deterministic violations belong to the initial draft even
+    // when the host also supplies a fresh validator. Re-run validators on later
+    // snapshots, but do not carry the writer's stale errors after a rewrite.
+    const postWriteIssues = content === params.initialOutput.content
+      ? [...initialPostWriteIssues, ...currentPostWriteIssues]
+      : currentPostWriteIssues;
 
     const allIssues: AuditIssue[] = [
       ...llmAudit.issues,
@@ -196,6 +202,10 @@ export async function runChapterReviewCycle(params: {
     );
     const auditResult: AuditResult = {
       passed: (hasBlockedWords || hasDeterministicStyleBlocker) ? false : llmAudit.passed,
+      creativePassed: (hasBlockedWords || hasDeterministicStyleBlocker)
+        ? false
+        : (llmAudit.creativePassed ?? llmAudit.passed),
+      researchStatus: llmAudit.researchStatus ?? "not-applicable",
       issues: allIssues,
       summary: llmAudit.summary,
       parseFailed: llmAudit.parseFailed,
@@ -254,11 +264,19 @@ export async function runChapterReviewCycle(params: {
       });
 
       const reviser = params.createReviser();
+      const automaticRevisionIssues = currentAudit.auditResult.issues.filter(isAutomaticRevisionIssue);
+      if (automaticRevisionIssues.length === 0) {
+        params.logWarn({
+          zh: "当前只有研究状态或信息级提示，跳过自动修稿",
+          en: "Only research-status or informational findings remain; skipping automatic prose revision.",
+        });
+        break;
+      }
       const reviseOutput = await reviser.reviseChapter(
         params.bookDir,
         finalContent,
         params.chapterNumber,
-        currentAudit.auditResult.issues,
+        automaticRevisionIssues,
         "auto",
         params.book.genre,
         {
