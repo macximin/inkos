@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BookConfig } from "../models/book.js";
 import type { PlanChapterOutput } from "../agents/planner.js";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 import { ComposerAgent, composeGovernedChapter } from "../agents/composer.js";
 
 const require = createRequire(import.meta.url);
@@ -283,6 +284,8 @@ describe("ComposerAgent", () => {
     expect(result.ruleStack.sections.soft).toContain("author_intent");
     expect(result.ruleStack.sections.soft).toContain("volume_map");
     expect(result.ruleStack.sections.diagnostic).toContain("anti_ai_checks");
+    expect(result.ruleStack.layers.some((layer) => layer.id === "L5")).toBe(false);
+    expect(result.ruleStack.sections.diagnostic).not.toContain("research_evidence");
     // activeOverrides now derived from the plan: 1 mustAvoid + 2 styleEmphasis.
     expect(result.ruleStack.activeOverrides.length).toBeGreaterThan(0);
     const reasons = result.ruleStack.activeOverrides.map((o) => o.reason);
@@ -314,6 +317,9 @@ describe("ComposerAgent", () => {
     expect(result.trace.selectedSources).toContain("story/current_focus.md");
     expect(result.trace).not.toHaveProperty("usedSkills");
     expect(result.trace).not.toHaveProperty("contextNeeds");
+    expect(result.trace.futureAdvantageMoveIds).toBeUndefined();
+    expect(result.trace.researchClaimIds).toBeUndefined();
+    expect(result.trace.authorizedDivergences).toBeUndefined();
     expect(result.trace.contextTiers.protectedSources).toContain("story/current_focus.md");
     expect(result.trace.contextTiers.protectedSources).toContain("story/author_intent.md");
     expect(result.trace.contextTiers.compressibleSources).not.toContain("story/author_intent.md");
@@ -324,6 +330,96 @@ describe("ComposerAgent", () => {
     // trace.notes dropped with ChapterConflict removal (Phase 1 transitional)
     expect(result.trace.notes).toEqual([]);
     await expect(readFile(result.tracePath, "utf-8")).resolves.toContain("story/current_focus.md");
+  });
+
+  it("selects one active future move and records its routing without elevating research above author intent", async () => {
+    const arcProvenance: ChapterArcProvenance = {
+      version: 1,
+      bookId: book.id,
+      arcId: "arc-future-4",
+      arcUpdatedAt: "2026-08-20T00:00:00.000Z",
+      arcTitle: "先占制造瓶颈",
+      chapterNumber: 4,
+      episodeRole: "pressure",
+      openingState: "危机尚未爆发。",
+      promise: "把未来赢家拉到现在。",
+      goal: "完成设备收购。",
+      obstacle: "董事会反对。",
+      pressure: "竞争方开始报价。",
+      turn: "主角承担失败责任。",
+      payoff: "良率第一次上升。",
+      irreversibleChange: "投资顺序改变。",
+      nextHook: "记忆开始偏移。",
+      beats: ["签下设备收购意向书。"],
+      endingHook: "工程师提出追加条件。",
+      characterChanges: [],
+      relationshipChanges: [],
+      worldChanges: [],
+      hookOperations: [],
+      mustKeep: [],
+      mustAvoid: [],
+      styleEmphasis: [],
+      futureAdvantageMove: {
+        moveId: "FA-SEMICON-004",
+        mode: "acquire",
+        domain: "技术",
+        target: "濒临破产的工艺设备",
+        rememberedOutcome: "十年后该工艺成为量产瓶颈。",
+        baselineQuestions: ["当前设备所有权是谁？"],
+        researchClaimIds: ["RC-1997-SEMICON-04"],
+        authorizedDivergences: ["把设备收购提前到1997年。"],
+        bridgeSteps: ["用现有现金签意向书。"],
+        resistance: ["董事会拒绝无业绩设备。"],
+        proof: "测试晶圆良率上升。",
+        reward: "取得独家生产线。",
+        downstreamConsequences: ["竞争方提前转向替代技术。"],
+      },
+    };
+    const futurePlan: PlanChapterOutput = {
+      ...plan,
+      arcProvenance,
+      intent: {
+        ...plan.intent,
+        futureAdvantageMoveIds: ["FA-SEMICON-004"],
+        researchClaimIds: ["RC-1997-SEMICON-04"],
+        authorizedDivergences: ["把设备收购提前到1997年。"],
+      },
+    };
+
+    const result = await composeGovernedChapter({
+      book,
+      bookDir,
+      chapterNumber: 4,
+      plan: futurePlan,
+    });
+
+    const moveSources = result.contextPackage.selectedContext.filter((entry) =>
+      entry.source.includes("/future-advantage/"),
+    );
+    expect(moveSources).toHaveLength(1);
+    expect(moveSources[0]?.source).toBe("runtime/arc/arc-future-4/future-advantage/FA-SEMICON-004");
+    expect(moveSources[0]?.excerpt).toContain("RC-1997-SEMICON-04");
+    expect(result.trace.futureAdvantageMoveIds).toEqual(["FA-SEMICON-004"]);
+    expect(result.trace.researchClaimIds).toEqual(["RC-1997-SEMICON-04"]);
+    expect(result.trace.authorizedDivergences).toEqual(["把设备收购提前到1997年。"]);
+    expect(result.trace.contextTiers.protectedSources).toContain(moveSources[0]?.source);
+    expect(result.ruleStack.layers).toContainEqual({
+      id: "L5",
+      name: "research_evidence",
+      precedence: 40,
+      scope: "local",
+    });
+    expect(result.ruleStack.overrideEdges).toContainEqual({
+      from: "L2",
+      to: "L5",
+      allowed: true,
+      scope: "authorized_divergence",
+    });
+    expect(result.ruleStack.activeOverrides).toContainEqual(expect.objectContaining({
+      from: "L2",
+      to: "L5",
+      target: "chapter:4/authorizedDivergence",
+    }));
   });
 
   it("compiles only compressible context when selected context exceeds budget", async () => {

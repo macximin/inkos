@@ -44,6 +44,7 @@ export interface PlanChapterInput {
   readonly chapterNumber: number;
   readonly externalContext?: string;
   readonly arcContext?: string;
+  readonly arcProvenance?: ChapterArcProvenance;
 }
 
 export interface PlanChapterOutput {
@@ -130,6 +131,13 @@ export class PlannerAgent extends BaseAgent {
       mustKeep,
       mustAvoid,
       styleEmphasis,
+      ...(input.arcProvenance?.futureAdvantageMove
+        ? {
+            futureAdvantageMoveIds: [input.arcProvenance.futureAdvantageMove.moveId],
+            researchClaimIds: [...input.arcProvenance.futureAdvantageMove.researchClaimIds],
+            authorizedDivergences: [...input.arcProvenance.futureAdvantageMove.authorizedDivergences],
+          }
+        : {}),
     });
 
     const isGoldenOpening = this.isGoldenOpeningChapter(input.book.language, input.chapterNumber);
@@ -173,6 +181,7 @@ export class PlannerAgent extends BaseAgent {
       intentMarkdown,
       plannerInputs: materials.plannerInputs,
       runtimePath,
+      ...(input.arcProvenance ? { arcProvenance: input.arcProvenance } : {}),
     };
   }
 
@@ -854,6 +863,9 @@ export class PlannerAgent extends BaseAgent {
   ): string {
     const label = (zh: string, ko: string, en: string) => language === "ko" ? ko : language === "en" ? en : zh;
     const empty = language === "ko" ? "없음" : language === "en" ? "none" : "无";
+    const renderIntentList = (items: ReadonlyArray<string>) => items.length > 0
+      ? items.map((item) => `- ${item}`).join("\n")
+      : `- ${empty}`;
     const mustKeep = intent.mustKeep.length > 0
       ? intent.mustKeep.map((item) => `- ${item}`).join("\n")
       : `- ${empty}`;
@@ -865,6 +877,20 @@ export class PlannerAgent extends BaseAgent {
     const styleEmphasis = intent.styleEmphasis.length > 0
       ? intent.styleEmphasis.map((item) => `- ${item}`).join("\n")
       : `- ${empty}`;
+
+    const routedFutureAdvantage = intent.futureAdvantageMoveIds
+      ? [
+          "",
+          `## ${label("未来先机 move", "미래 선점 move", "Future Advantage Moves")}`,
+          renderIntentList(intent.futureAdvantageMoveIds),
+          "",
+          `## ${label("研究 claim", "리서치 claim", "Research Claims")}`,
+          renderIntentList(intent.researchClaimIds ?? []),
+          "",
+          `## ${label("允许的历史分歧", "허용된 역사 분기", "Authorized Divergences")}`,
+          renderIntentList(intent.authorizedDivergences ?? []),
+        ]
+      : [];
 
     const memoBody = memo.body.trim();
     const threadRefsLine = memo.threadRefs.length > 0
@@ -891,6 +917,7 @@ export class PlannerAgent extends BaseAgent {
       "",
       `## ${label("Style Emphasis", "문체 강조점", "Style Emphasis")}`,
       styleEmphasis,
+      ...routedFutureAdvantage,
       "",
       `## ${label("Chapter Memo", "회차 메모", "Chapter Memo")}`,
       `- ${label("isGoldenOpening", "골든 오프닝", "isGoldenOpening")}: ${memo.isGoldenOpening ? "true" : "false"}`,

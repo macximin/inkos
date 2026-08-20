@@ -212,6 +212,12 @@ function renderFutureAdvantageMoveLines(
     ...(move.baselineQuestions.length > 0
       ? [`- Baseline questions: ${move.baselineQuestions.join("; ")}`]
       : []),
+    ...(move.researchClaimIds.length > 0
+      ? [`- Research claim IDs: ${move.researchClaimIds.join("; ")}`]
+      : []),
+    ...(move.authorizedDivergences.length > 0
+      ? [`- Authorized divergences: ${move.authorizedDivergences.join("; ")}`]
+      : []),
     `- A-Rail bridge: ${move.bridgeSteps.join("; ")}`,
     `- A-Rail proof: ${move.proof}`,
     `- A-Rail reward: ${move.reward}`,

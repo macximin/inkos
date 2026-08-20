@@ -60,7 +60,7 @@ export function buildForecastUserPrompt(input: ForecastPromptInput, language: Fo
       "",
       `후보 분기를 정확히 ${input.branchCount}개 만드세요. 각 분기는 ${firstChapter}화부터 시작하는 향후 약 ${input.horizon}화를 다룹니다.`,
       input.futureAdvantageEnabled
-        ? "작품 규칙의 미래 선점 계약이 활성화되어 있습니다. 모든 분기는 미래에 아는 결과를 현재의 실행으로 바꾸는 futureAdvantageMove를 하나씩 포함해야 합니다. A 레일은 bridgeSteps→proof→reward, B 레일은 resistance→downstreamConsequences로 설계하세요."
+        ? "작품 규칙의 미래 선점 계약이 활성화되어 있습니다. 모든 분기는 미래에 아는 결과를 현재의 실행으로 바꾸는 futureAdvantageMove를 하나씩 포함해야 합니다. A 레일은 bridgeSteps→proof→reward, B 레일은 resistance→downstreamConsequences로 설계하세요. researchClaimIds는 컨텍스트에 실제 ID가 있을 때만 옮기고 절대 지어내지 마세요. authorizedDivergences에는 이 분기가 실제 역사 기준선에서 의도적으로 앞당기거나 바꾸는 지점만 적으세요."
         : "이 작품에는 미래 선점 계약이 없습니다. futureAdvantageMove 필드를 만들지 마세요.",
       "다음 형태와 정확히 일치하는 JSON을 반환하세요. 필드명은 바꾸지 마세요:",
       forecastJsonShape(firstChapter, "ko", input.futureAdvantageEnabled),
@@ -78,7 +78,7 @@ export function buildForecastUserPrompt(input: ForecastPromptInput, language: Fo
       "",
       `Produce exactly ${input.branchCount} candidate branches. Each branch covers roughly ${input.horizon} future chapters starting at chapter ${firstChapter}.`,
       input.futureAdvantageEnabled
-        ? "The Future Advantage contract is active. Every branch must include one futureAdvantageMove. Its A-rail is bridgeSteps -> proof -> reward; its B-rail is resistance -> downstreamConsequences."
+        ? "The Future Advantage contract is active. Every branch must include one futureAdvantageMove. Its A-rail is bridgeSteps -> proof -> reward; its B-rail is resistance -> downstreamConsequences. Copy researchClaimIds only when exact IDs exist in context; never invent them. authorizedDivergences lists only deliberate departures from the real-history baseline."
         : "This book has no Future Advantage contract. Omit futureAdvantageMove entirely.",
       "Return JSON with exactly this shape (field names must match):",
       forecastJsonShape(firstChapter, "en", input.futureAdvantageEnabled),
@@ -95,7 +95,7 @@ export function buildForecastUserPrompt(input: ForecastPromptInput, language: Fo
     "",
     `生成恰好 ${input.branchCount} 个候选分支。每个分支覆盖从第 ${firstChapter} 章开始、约 ${input.horizon} 章的未来走向。`,
     input.futureAdvantageEnabled
-      ? "本书的未来先机契约已启用。每个分支必须包含一个 futureAdvantageMove；A 线为 bridgeSteps→proof→reward，B 线为 resistance→downstreamConsequences。"
+      ? "本书的未来先机契约已启用。每个分支必须包含一个 futureAdvantageMove；A 线为 bridgeSteps→proof→reward，B 线为 resistance→downstreamConsequences。researchClaimIds 只可复制上下文中真实存在的 ID，不得编造；authorizedDivergences 只记录相对真实历史基线有意提前或改变的部分。"
       : "本书没有未来先机契约。不得生成 futureAdvantageMove 字段。",
     "输出 JSON，结构如下（字段名必须完全一致）：",
     forecastJsonShape(firstChapter, "zh", input.futureAdvantageEnabled),
@@ -151,6 +151,8 @@ function forecastJsonShape(
         '        "target": "현재 시점에서 먼저 차지하거나 바꿀 구체 대상",',
         '        "rememberedOutcome": "주인공이 기억하는 훗날의 결과",',
         '        "baselineQuestions": ["현재 시점의 사실 확인 질문"],',
+        '        "researchClaimIds": ["컨텍스트에 실제로 존재하는 claim ID만, 없으면 빈 배열"],',
+        '        "authorizedDivergences": ["실제 역사 기준선에서 의도적으로 앞당기거나 바꾸는 지점"],',
         '        "bridgeSteps": ["현재 자원으로 실행할 단계"],',
         '        "resistance": ["사람·조직·기술·제도가 가하는 저항"],',
         '        "proof": "독자가 성공 여부를 장면에서 확인할 증거",',
@@ -187,6 +189,8 @@ function forecastJsonShape(
         '        "domain": "the concrete field", "target": "specific present-day target",',
         '        "rememberedOutcome": "the later outcome the protagonist remembers",',
         '        "baselineQuestions": ["present-day fact to verify"], "bridgeSteps": ["current execution step"],',
+        '        "researchClaimIds": ["exact claim IDs from context only, otherwise empty"],',
+        '        "authorizedDivergences": ["deliberate departure from the real-history baseline"],',
         '        "resistance": ["human, organizational, technical, or institutional resistance"],',
         '        "proof": "visible proof", "reward": "reader reward",',
         '        "downstreamConsequences": ["aftermath, history change, or memory decay"]',
@@ -219,6 +223,8 @@ function forecastJsonShape(
       '        "moveId": "唯一 FA 编号", "mode": "introduce|adopt|position|acquire|recruit|shape",',
       '        "domain": "具体领域", "target": "当下要抢先取得或改变的对象",',
       '        "rememberedOutcome": "主角记得的未来结果", "baselineQuestions": ["当下事实核对问题"],',
+      '        "researchClaimIds": ["只填上下文中真实存在的 claim ID，没有则为空"],',
+      '        "authorizedDivergences": ["相对真实历史基线有意提前或改变的部分"],',
       '        "bridgeSteps": ["用当下资源执行的步骤"], "resistance": ["人物、组织、技术或制度阻力"],',
       '        "proof": "可见证据", "reward": "本 Arc 的读者回报",',
       '        "downstreamConsequences": ["后果、历史变化或记忆衰减"]',

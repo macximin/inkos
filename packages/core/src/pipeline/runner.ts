@@ -4215,6 +4215,7 @@ ${matrix}`,
       chapterNumber,
       externalContext,
       arcContext: arcChapterContext?.markdown,
+      arcProvenance: arcChapterContext?.provenance,
     });
     const plan: PlanChapterOutput = {
       ...planned,

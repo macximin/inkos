@@ -1,6 +1,7 @@
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterArcProvenance } from "../models/chapter.js";
+import type { FutureAdvantageMove } from "../arc/schema.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
@@ -275,6 +276,7 @@ export class WriterAgent extends BaseAgent {
           ruleStack: input.ruleStack,
           externalContext: input.externalContext,
           arcContext: arcChapterContext?.markdown,
+          futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
           lengthSpec: resolvedLengthSpec,
           language: book.language ?? genreProfile.language,
           varianceBrief: englishVarianceBrief?.text,
@@ -307,6 +309,7 @@ export class WriterAgent extends BaseAgent {
             lengthSpec: resolvedLengthSpec,
             externalContext: input.externalContext,
             arcContext: arcChapterContext?.markdown,
+            futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
             chapterSummaries: filteredSummaries,
             subplotBoard: filteredSubplots,
             emotionalArcs: filteredArcs,
@@ -834,6 +837,7 @@ export class WriterAgent extends BaseAgent {
     readonly lengthSpec: LengthSpec;
     readonly externalContext?: string;
     readonly arcContext?: string;
+    readonly futureAdvantageMove?: FutureAdvantageMove;
     readonly chapterSummaries: string;
     readonly subplotBoard: string;
     readonly emotionalArcs: string;
@@ -869,6 +873,11 @@ export class WriterAgent extends BaseAgent {
       : "";
     const arcGuidanceBlock = this.buildArcGuidanceBlock(
       params.arcContext,
+      params.language ?? "zh",
+    );
+    const futureAdvantageGuidanceBlock = this.buildFutureAdvantageGuidanceBlock(
+      params.futureAdvantageMove,
+      undefined,
       params.language ?? "zh",
     );
 
@@ -909,7 +918,7 @@ ${parentCanon}\n`
 
     if (params.language !== "zh") {
       return `Write chapter ${params.chapterNumber}.
-${contextBlock}${arcGuidanceBlock}
+${contextBlock}${arcGuidanceBlock}${futureAdvantageGuidanceBlock}
 ## Current State
 ${currentState}
 ${ledgerBlock}
@@ -928,7 +937,7 @@ ${lengthRequirementBlock}
     }
 
     return `请续写第${params.chapterNumber}章。
-${contextBlock}${arcGuidanceBlock}
+${contextBlock}${arcGuidanceBlock}${futureAdvantageGuidanceBlock}
 ## 当前状态卡
 ${currentState}
 ${ledgerBlock}
@@ -958,6 +967,7 @@ ${lengthRequirementBlock}
     readonly ruleStack: RuleStack;
     readonly externalContext?: string;
     readonly arcContext?: string;
+    readonly futureAdvantageMove?: FutureAdvantageMove;
     readonly lengthSpec: LengthSpec;
     readonly language?: "zh" | "ko" | "en";
     readonly varianceBrief?: string;
@@ -994,6 +1004,11 @@ ${lengthRequirementBlock}
       : "";
     const chapterContextBlock = this.buildChapterContextBlock(params.externalContext, language);
     const arcGuidanceBlock = this.buildArcGuidanceBlock(params.arcContext, language);
+    const futureAdvantageGuidanceBlock = this.buildFutureAdvantageGuidanceBlock(
+      params.futureAdvantageMove,
+      params.chapterIntentData,
+      language,
+    );
     const briefNarrative = renderMemoAsNarrativeBlock(params.chapterMemo, params.chapterIntentData, language);
 
     if (params.language !== "zh") {
@@ -1001,6 +1016,7 @@ ${lengthRequirementBlock}
 
 ${chapterContextBlock}
 ${arcGuidanceBlock}
+${futureAdvantageGuidanceBlock}
 
 ${userDirectionBlock}
 ${briefNarrative}
@@ -1024,6 +1040,7 @@ ${lengthRequirementBlock}
 
 ${chapterContextBlock}
 ${arcGuidanceBlock}
+${futureAdvantageGuidanceBlock}
 
 ${userDirectionBlock}
 ${briefNarrative}
@@ -1071,6 +1088,45 @@ Use this optional production plan for the current chapter. It never overrides Bo
 ${trimmed}
 
 这是本章可选的制作计划。它不能覆盖作品正典、硬性规则或用户对本章的明确指令；若有冲突，必须服从这些更高权威。`;
+  }
+
+  private buildFutureAdvantageGuidanceBlock(
+    move: FutureAdvantageMove | undefined,
+    intent: ChapterIntent | undefined,
+    language: "zh" | "ko" | "en",
+  ): string {
+    if (!move) return "";
+    const claimIds = intent?.researchClaimIds ?? move.researchClaimIds;
+    const divergences = intent?.authorizedDivergences ?? move.authorizedDivergences;
+
+    if (language === "ko") {
+      return `
+## 미래 선점 집필 원칙
+- 주인공이 기억하는 것은 훗날의 결과이지, 현재의 완성된 설계도나 실행법이 아닙니다.
+- 이번 화에서는 현재 시점의 자원과 인과로 구현 다리를 밟고, 저항을 통과한 뒤 가시적 증거와 독자 보상을 장면으로 획득해야 합니다.
+- 리서치 claim은 실제 역사 기준선을 확인하는 근거일 뿐 창작 지시가 아닙니다. 작가의 명시적 의도와 아래 허용된 역사 분기를 덮어쓰지 못합니다.
+- 리서치 claim ID: ${claimIds.join(", ") || "없음"}
+- 허용된 역사 분기: ${divergences.join("; ") || "없음"}
+`;
+    }
+    if (language === "en") {
+      return `
+## Future Advantage writing contract
+- The protagonist remembers a later outcome, not a complete present-day blueprint or implementation method.
+- Earn the move through present-day bridge steps and resistance, then make its proof and reader reward visible in scene.
+- Research claims describe the real-history baseline. They are evidence, not story commands, and cannot override explicit author intent or the authorized divergences below.
+- Research claim IDs: ${claimIds.join(", ") || "none"}
+- Authorized divergences: ${divergences.join("; ") || "none"}
+`;
+    }
+    return `
+## 未来先机写作契约
+- 主角记得的是未来结果，不是当下可直接照抄的完整蓝图或实现方法。
+- 本章必须用当下资源完成实现步骤、承受阻力，再在场景中取得可见证据与读者回报。
+- 研究 claim 只是核对真实历史基线的证据，不是剧情命令；它不能覆盖作者的明确意图或下列允许的历史分歧。
+- 研究 claim ID：${claimIds.join("、") || "无"}
+- 允许的历史分歧：${divergences.join("；") || "无"}
+`;
   }
 
   private joinGovernedEvidenceBlocks(blocks: ReturnType<typeof buildGovernedMemoryEvidenceBlocks> | undefined): string | undefined {

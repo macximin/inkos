@@ -107,6 +107,12 @@ describe("persisted-governed-plan round trip", () => {
       .replaceAll("## 不要做", "## 금지");
     const koreanPlan: PlanChapterOutput = {
       ...plan,
+      intent: {
+        ...plan.intent,
+        futureAdvantageMoveIds: ["FA-SEMICON-001"],
+        researchClaimIds: ["RC-1997-SEMICON-01"],
+        authorizedDivergences: ["공정 장비 투자를 1997년으로 앞당긴다."],
+      },
       memo: { ...plan.memo, goal: "장부를 확보한다", body: koreanBody },
     };
 
@@ -121,10 +127,17 @@ describe("persisted-governed-plan round trip", () => {
     expect(persisted).toContain("## 연결 복선");
     expect(persisted).toContain("## 집필 의도");
     expect(persisted).toContain("## 기획 입력");
+    expect(persisted).toContain("### 미래 선점 move");
+    expect(persisted).toContain("### 리서치 claim");
+    expect(persisted).toContain("### 허용된 역사 분기");
     expect(persisted).not.toContain("# Chapter 1 Plan");
     expect(persisted).not.toContain("## Metadata");
     expect(persisted).not.toContain("## 本章目标");
-    expect((await loadPersistedPlan(dir, 1))?.memo).toEqual(koreanPlan.memo);
+    const loaded = await loadPersistedPlan(dir, 1);
+    expect(loaded?.memo).toEqual(koreanPlan.memo);
+    expect(loaded?.intent.futureAdvantageMoveIds).toEqual(["FA-SEMICON-001"]);
+    expect(loaded?.intent.researchClaimIds).toEqual(["RC-1997-SEMICON-01"]);
+    expect(loaded?.intent.authorizedDivergences).toEqual(["공정 장비 투자를 1997년으로 앞당긴다."]);
   });
 
   it("savePersistedPlan + loadPersistedPlan returns equal memo", async () => {

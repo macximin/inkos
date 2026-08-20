@@ -82,6 +82,9 @@ export async function loadPersistedPlan(
 
   let intent: ChapterIntent;
   try {
+    const futureMoveHeading = korean ? ["미래 선점 move", "Future Advantage Moves"] : "Future Advantage Moves";
+    const researchClaimHeading = korean ? ["리서치 claim", "Research Claims"] : "Research Claims";
+    const divergenceHeading = korean ? ["허용된 역사 분기", "Authorized Divergences"] : "Authorized Divergences";
     intent = ChapterIntentSchema.parse({
       chapter: chapterNumber,
       goal: readField(raw, korean ? ["의도 목표", "Intent Goal"] : "Intent Goal") ?? memo.goal,
@@ -90,6 +93,15 @@ export async function loadPersistedPlan(
       mustKeep: readListSection(raw, korean ? ["반드시 유지", "Must Keep"] : "Must Keep"),
       mustAvoid: readListSection(raw, korean ? ["반드시 회피", "Must Avoid"] : "Must Avoid"),
       styleEmphasis: readListSection(raw, korean ? ["문체 강조점", "Style Emphasis"] : "Style Emphasis"),
+      ...(hasListSection(raw, futureMoveHeading)
+        ? { futureAdvantageMoveIds: readListSection(raw, futureMoveHeading) }
+        : {}),
+      ...(hasListSection(raw, researchClaimHeading)
+        ? { researchClaimIds: readListSection(raw, researchClaimHeading) }
+        : {}),
+      ...(hasListSection(raw, divergenceHeading)
+        ? { authorizedDivergences: readListSection(raw, divergenceHeading) }
+        : {}),
     });
   } catch {
     return null;
@@ -169,6 +181,19 @@ function renderPersistedPlanMarkdown(
     korean ? "### 문체 강조점" : "### Style Emphasis",
     renderList(intent.styleEmphasis, korean ? "없음" : "none"),
     "",
+    ...(intent.futureAdvantageMoveIds !== undefined
+      ? [
+          korean ? "### 미래 선점 move" : "### Future Advantage Moves",
+          renderList(intent.futureAdvantageMoveIds, korean ? "없음" : "none"),
+          "",
+          korean ? "### 리서치 claim" : "### Research Claims",
+          renderList(intent.researchClaimIds ?? [], korean ? "없음" : "none"),
+          "",
+          korean ? "### 허용된 역사 분기" : "### Authorized Divergences",
+          renderList(intent.authorizedDivergences ?? [], korean ? "없음" : "none"),
+          "",
+        ]
+      : []),
     korean ? "## 기획 입력" : "## Planner Inputs",
     renderList(plannerInputs, korean ? "없음" : "none"),
     "",
@@ -254,6 +279,11 @@ function readListSection(markdown: string, heading: string | ReadonlyArray<strin
     .filter((line) => line.startsWith("-"))
     .map((line) => line.replace(/^-\s*/, "").trim())
     .filter((line) => line.length > 0 && !["none", "없음", "(없음)"].includes(line.toLowerCase()));
+}
+
+function hasListSection(markdown: string, heading: string | ReadonlyArray<string>): boolean {
+  const alternatives = (Array.isArray(heading) ? heading : [heading]).map(escapeRegExp).join("|");
+  return new RegExp(`^#{2,3}\\s+(?:${alternatives})\\s*$`, "m").test(markdown);
 }
 
 async function loadLegacyIntentPlan(

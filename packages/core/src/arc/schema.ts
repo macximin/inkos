@@ -32,6 +32,8 @@ export const FutureAdvantageMoveSchema = z.object({
   target: z.string().min(1),
   rememberedOutcome: z.string().min(1),
   baselineQuestions: z.array(z.string().min(1)).default([]),
+  researchClaimIds: z.array(z.string().min(1)).default([]),
+  authorizedDivergences: z.array(z.string().min(1)).default([]),
   bridgeSteps: z.array(z.string().min(1)).default([]),
   resistance: z.array(z.string().min(1)).default([]),
   proof: z.string(),

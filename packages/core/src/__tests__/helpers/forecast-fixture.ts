@@ -13,6 +13,8 @@ export function makeFutureAdvantageMove(
     target: "훗날 반도체 수율을 뒤집는 공정 엔지니어",
     rememberedOutcome: "2007년에 양산 수율의 병목을 해결한다",
     baselineQuestions: ["1997년 현재 어느 연구소에서 일하는가"],
+    researchClaimIds: [],
+    authorizedDivergences: ["1997년에 공정 장비 투자를 앞당긴다"],
     bridgeSteps: ["부도 위기 연구소의 장비를 인수한다", "실패 책임을 대신 진다"],
     resistance: ["현재 실적만 보는 그룹 임원들이 영입을 반대한다"],
     proof: "폐기 직전 웨이퍼의 수율이 실제로 오른다",

@@ -6,6 +6,7 @@ import { PlannerAgent } from "../agents/planner.js";
 import * as llmProvider from "../llm/provider.js";
 import type { LLMClient } from "../llm/provider.js";
 import type { BookConfig } from "../models/book.js";
+import type { ChapterArcProvenance } from "../models/chapter.js";
 
 const VALID_BODY = `
 ## 当前任务
@@ -210,6 +211,69 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(userPrompt).toContain("本章用户指令（本章最高优先级）");
     expect(userPrompt).toContain("当前 Arc 制作计划（从属权威）");
     expect(userPrompt).toContain("不得覆盖创作 brief、作品正典、硬性规则");
+  });
+
+  it("routes only the current Arc future-advantage move into chapter intent", async () => {
+    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validMemoRaw(1),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+    const arcProvenance: ChapterArcProvenance = {
+      version: 1,
+      bookId: "book-plan-1",
+      arcId: "arc-future-1",
+      arcUpdatedAt: "2026-08-20T00:00:00.000Z",
+      arcTitle: "먼저 확보한 공정 엔지니어",
+      chapterNumber: 1,
+      episodeRole: "promise",
+      openingState: "1997년 외환위기 직전이다.",
+      promise: "미래의 병목을 풀 인재를 먼저 확보한다.",
+      goal: "현재 시점의 영입 다리를 놓는다.",
+      obstacle: "그룹 임원들이 반대한다.",
+      pressure: "경쟁사가 먼저 접촉한다.",
+      turn: "주인공이 실패 책임을 떠안는다.",
+      payoff: "첫 수율 개선을 증명한다.",
+      irreversibleChange: "투자 시계가 빨라진다.",
+      nextHook: "바뀐 역사에서 기억은 얼마나 버틸까?",
+      beats: ["연구소 장비 인수 조건을 제시한다."],
+      endingHook: "엔지니어가 조건 하나를 더 건다.",
+      characterChanges: [],
+      relationshipChanges: [],
+      worldChanges: [],
+      hookOperations: [],
+      mustKeep: [],
+      mustAvoid: [],
+      styleEmphasis: [],
+      futureAdvantageMove: {
+        moveId: "FA-SEMICON-001",
+        mode: "recruit",
+        domain: "인재",
+        target: "공정 엔지니어",
+        rememberedOutcome: "2007년에 양산 병목을 해결한다.",
+        baselineQuestions: ["1997년 소속 연구소는 어디인가?"],
+        researchClaimIds: ["RC-1997-SEMICON-01"],
+        authorizedDivergences: ["공정 장비 투자를 1997년으로 앞당긴다."],
+        bridgeSteps: ["부도 위기 연구소 장비를 인수한다."],
+        resistance: ["현재 실적만 보는 임원 반대"],
+        proof: "폐기 웨이퍼 수율이 오른다.",
+        reward: "핵심 생산 라인을 선점한다.",
+        downstreamConsequences: ["미래 기억의 세부가 어긋난다."],
+      },
+    };
+
+    const result = await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 1,
+      arcContext: "## Active Arc\n- Required beat: 장비 인수 조건을 제시한다.",
+      arcProvenance,
+    });
+
+    expect(result.intent.futureAdvantageMoveIds).toEqual(["FA-SEMICON-001"]);
+    expect(result.intent.researchClaimIds).toEqual(["RC-1997-SEMICON-01"]);
+    expect(result.intent.authorizedDivergences).toEqual(["공정 장비 투자를 1997년으로 앞당긴다."]);
+    expect(result.intentMarkdown).toContain("FA-SEMICON-001");
+    expect(result.arcProvenance).toEqual(arcProvenance);
   });
 
   it("retries when the first response is malformed and succeeds on retry", async () => {

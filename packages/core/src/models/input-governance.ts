@@ -96,6 +96,9 @@ export const ChapterTraceSchema = z.object({
   plannerInputs: z.array(z.string()),
   composerInputs: z.array(z.string()),
   selectedSources: z.array(z.string()),
+  futureAdvantageMoveIds: z.array(z.string().min(1)).optional(),
+  researchClaimIds: z.array(z.string().min(1)).optional(),
+  authorizedDivergences: z.array(z.string().min(1)).optional(),
   promptPacks: z.array(z.string()).default([]),
   contextTiers: z.object({
     protectedSources: z.array(z.string()).default([]),

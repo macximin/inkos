@@ -36,6 +36,7 @@ function truncateForOverrideReason(value: string): string {
  */
 export function buildGovernedRuleStack(plan: PlanChapterOutput, chapterNumber: number): RuleStack {
   const activeOverrides: ActiveOverride[] = [];
+  const hasFutureAdvantageRouting = plan.intent.futureAdvantageMoveIds !== undefined;
 
   // L4 → L3: per-chapter prohibitions narrow the planning layer for this
   // chapter only. mustAvoid items come from rules-reader prohibitions +
@@ -61,23 +62,43 @@ export function buildGovernedRuleStack(plan: PlanChapterOutput, chapterNumber: n
     });
   }
 
+  for (const divergence of plan.intent.authorizedDivergences ?? []) {
+    activeOverrides.push({
+      from: "L2",
+      to: "L5",
+      target: `chapter:${chapterNumber}/authorizedDivergence`,
+      reason: truncateForOverrideReason(divergence),
+    });
+  }
+
   return RuleStackSchema.parse({
     layers: [
       { id: "L1", name: "hard_facts", precedence: 100, scope: "global" },
       { id: "L2", name: "author_intent", precedence: 80, scope: "book" },
       { id: "L3", name: "planning", precedence: 60, scope: "arc" },
       { id: "L4", name: "current_task", precedence: 70, scope: "local" },
+      ...(hasFutureAdvantageRouting
+        ? [{ id: "L5", name: "research_evidence", precedence: 40, scope: "local" }]
+        : []),
     ],
     sections: {
       // Phase 5 authoritative source names (was: story_bible, volume_outline).
       hard: ["story_frame", "current_state", "book_rules", "roles"],
       soft: ["author_intent", "current_focus", "volume_map"],
-      diagnostic: ["anti_ai_checks", "continuity_audit", "style_regression_checks"],
+      diagnostic: [
+        "anti_ai_checks",
+        "continuity_audit",
+        "style_regression_checks",
+        ...(plan.intent.researchClaimIds !== undefined ? ["research_evidence"] : []),
+      ],
     },
     overrideEdges: [
       { from: "L4", to: "L3", allowed: true, scope: "current_chapter" },
       { from: "L4", to: "L2", allowed: false, scope: "current_chapter" },
       { from: "L4", to: "L1", allowed: false, scope: "current_chapter" },
+      ...(hasFutureAdvantageRouting
+        ? [{ from: "L2", to: "L5", allowed: true, scope: "authorized_divergence" }]
+        : []),
     ],
     activeOverrides,
   });
@@ -106,6 +127,15 @@ export function buildGovernedTrace(params: {
     plannerInputs: params.plan.plannerInputs,
     composerInputs: params.composerInputs,
     selectedSources: params.contextPackage.selectedContext.map((entry) => entry.source),
+    ...(params.plan.intent.futureAdvantageMoveIds !== undefined
+      ? { futureAdvantageMoveIds: [...params.plan.intent.futureAdvantageMoveIds] }
+      : {}),
+    ...(params.plan.intent.researchClaimIds !== undefined
+      ? { researchClaimIds: [...params.plan.intent.researchClaimIds] }
+      : {}),
+    ...(params.plan.intent.authorizedDivergences !== undefined
+      ? { authorizedDivergences: [...params.plan.intent.authorizedDivergences] }
+      : {}),
     promptPacks: params.promptPacks ?? [],
     contextTiers: {
       protectedSources: protectedEntries.map((entry) => entry.source),
@@ -123,6 +153,7 @@ export function buildGovernedTrace(params: {
 
 export function isProtectedContextSource(source: string): boolean {
   return source === "runtime/chapter_memo"
+    || source.startsWith("runtime/arc/")
     || source === "story/current_focus.md"
     || source === "story/author_intent.md"
     || source === "story/audit_drift.md"

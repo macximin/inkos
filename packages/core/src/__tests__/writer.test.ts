@@ -690,6 +690,21 @@ describe("WriterAgent", () => {
         beats: ["PLANNER_SNAPSHOT_BEAT"],
         endingHook: "The captured plan remains authoritative for this run.",
       }],
+      futureAdvantageMove: {
+        moveId: "FA-WRITER-003",
+        mode: "introduce",
+        domain: "technology",
+        target: "a manufacturing method that wins ten years later",
+        rememberedOutcome: "The method becomes the later industry standard.",
+        baselineQuestions: ["Which present-day inputs are actually available?"],
+        researchClaimIds: ["RC-WRITER-003"],
+        authorizedDivergences: ["Introduce the method three years ahead of the real-history baseline."],
+        bridgeSteps: ["Build a crude pilot with present-day components."],
+        resistance: ["The plant manager rejects an unproven method."],
+        proof: "The pilot cuts defects in a witnessed run.",
+        reward: "The protagonist secures the first production contract.",
+        downstreamConsequences: ["Competitors begin adapting earlier."],
+      },
       updatedAt: "2026-08-09T01:00:00.000Z",
     };
     const diskArc: ArcPacket = {
@@ -815,6 +830,10 @@ describe("WriterAgent", () => {
       expect(creativePrompt).toContain("PLANNER_SNAPSHOT_BEAT");
       expect(creativePrompt).not.toContain("DISK_RACE_PROMISE_MUST_NOT_APPEAR");
       expect(creativePrompt).not.toContain("DISK_RACE_BEAT_MUST_NOT_APPEAR");
+      expect(creativePrompt).toContain("Future Advantage writing contract");
+      expect(creativePrompt).toContain("remembers a later outcome, not a complete present-day blueprint");
+      expect(creativePrompt).toContain("Research claims describe the real-history baseline");
+      expect(creativePrompt).toContain("Introduce the method three years ahead");
       expect(output.arcProvenance).toEqual(plannerSnapshot);
     } finally {
       await rm(root, { recursive: true, force: true });

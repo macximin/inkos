@@ -41,6 +41,8 @@ describe("future-advantage contracts", () => {
       target: "훗날 반도체 공정의 병목을 푸는 엔지니어",
       rememberedOutcome: "그가 2007년에 양산 수율을 뒤집는다",
       baselineQuestions: ["1997년에 실제로 어디에서 일했는가"],
+      researchClaimIds: ["RC-1997-SEMICON-01"],
+      authorizedDivergences: ["1997년부터 공정 장비 투자를 앞당긴다"],
       bridgeSteps: ["부도 위기 연구소의 장비를 인수한다", "실패 책임을 대신 진다"],
       resistance: ["재벌가가 이름 없는 엔지니어 영입을 반대한다"],
       proof: "경쟁사가 포기한 웨이퍼에서 수율이 오른다",
@@ -56,6 +58,8 @@ describe("future-advantage contracts", () => {
     const chapterContext = resolveArcChapterContext(ArcPacketSchema.parse(ready), 1);
     expect(chapterContext?.markdown).toContain("A-Rail bridge");
     expect(chapterContext?.markdown).toContain("B-Rail aftermath");
+    expect(chapterContext?.markdown).toContain("RC-1997-SEMICON-01");
+    expect(chapterContext?.markdown).toContain("Authorized divergences");
     expect(chapterContext?.provenance.futureAdvantageMove?.moveId).toBe("FA-001");
     expect(() => ArcPacketSchema.parse(makeArc({
       status: "ready",

@@ -95,8 +95,13 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     input.book.language ?? "zh",
     input.outlineSectionSelector,
   );
+  const activeFutureAdvantageContext = buildActiveFutureAdvantageContext(input.plan, input.book.language ?? "zh");
   const referenceContext = await loadReferenceContext(input);
-  const selectedContext = [...baseContext, ...referenceContext.entries];
+  const selectedContext = [
+    ...baseContext,
+    ...(activeFutureAdvantageContext ? [activeFutureAdvantageContext] : []),
+    ...referenceContext.entries,
+  ];
   const initialContextPackage = ContextPackageSchema.parse({
     chapter: input.chapterNumber,
     selectedContext,
@@ -140,6 +145,67 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     contextPath,
     ruleStackPath,
     tracePath,
+  };
+}
+
+function buildActiveFutureAdvantageContext(
+  plan: PlanChapterOutput,
+  language: "zh" | "ko" | "en",
+): ContextPackage["selectedContext"][number] | undefined {
+  const provenance = plan.arcProvenance;
+  const move = provenance?.futureAdvantageMove;
+  if (!provenance || !move) return undefined;
+
+  const reason = language === "ko"
+    ? "이 회차를 소유한 활성 Arc에서 선택된 미래 선점 move 하나만 전달합니다."
+    : language === "en"
+      ? "The one Future Advantage move selected by the active Arc that owns this chapter."
+      : "只传递拥有本章的当前 Arc 所选中的一个未来先机 move。";
+  const labels = language === "ko"
+    ? {
+        outcome: "기억하는 미래 결과",
+        bridge: "현재 구현 다리",
+        resistance: "현재 저항",
+        proof: "가시적 증거",
+        reward: "독자 보상",
+        consequences: "후폭풍",
+        claims: "리서치 claim ID",
+        divergences: "허용된 역사 분기",
+      }
+    : language === "en"
+      ? {
+          outcome: "Remembered future outcome",
+          bridge: "Present-day implementation bridge",
+          resistance: "Present-day resistance",
+          proof: "Visible proof",
+          reward: "Reader reward",
+          consequences: "Aftermath",
+          claims: "Research claim IDs",
+          divergences: "Authorized divergences",
+        }
+      : {
+          outcome: "记得的未来结果",
+          bridge: "当下实现路径",
+          resistance: "当下阻力",
+          proof: "可见证据",
+          reward: "读者回报",
+          consequences: "后果",
+          claims: "研究 claim ID",
+          divergences: "允许的历史分歧",
+        };
+  return {
+    source: `runtime/arc/${provenance.arcId}/future-advantage/${move.moveId}`,
+    reason,
+    excerpt: [
+      `${labels.outcome}: ${move.rememberedOutcome}`,
+      `${labels.bridge}: ${move.bridgeSteps.join("; ") || "-"}`,
+      `${labels.resistance}: ${move.resistance.join("; ") || "-"}`,
+      `${labels.proof}: ${move.proof}`,
+      `${labels.reward}: ${move.reward}`,
+      `${labels.consequences}: ${move.downstreamConsequences.join("; ") || "-"}`,
+      `${labels.claims}: ${move.researchClaimIds.join("; ") || "-"}`,
+      `${labels.divergences}: ${move.authorizedDivergences.join("; ") || "-"}`,
+    ].join("\n"),
   };
 }
 

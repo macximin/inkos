@@ -804,11 +804,15 @@ describe("ChapterTraceSchema", () => {
         "story/current_state.md",
         "story/chapter_summaries.md#7",
       ],
+      futureAdvantageMoveIds: ["FA-001"],
+      researchClaimIds: ["RC-001"],
+      authorizedDivergences: ["设备投资提前三年。"],
       notes: ["current_focus locally overrides planning"],
     });
 
     expect(result.plannerInputs).toContain("story/author_intent.md");
     expect(result.notes).toHaveLength(1);
+    expect(result.futureAdvantageMoveIds).toEqual(["FA-001"]);
   });
 
   it("defaults notes to empty", () => {
