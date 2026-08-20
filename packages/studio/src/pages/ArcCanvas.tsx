@@ -64,6 +64,7 @@ type Arc = {
     readonly proof: string;
     readonly reward: string;
     readonly downstreamConsequences: readonly string[];
+    readonly memoryRisk?: string;
   };
 };
 
@@ -277,6 +278,7 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
                         {selectedArc.futureAdvantageMove.resistance.map((item) => <li key={`r-${item}`}>• {item}</li>)}
                         {selectedArc.futureAdvantageMove.downstreamConsequences.map((item) => <li key={`c-${item}`}>• {item}</li>)}
                       </ul>
+                      <p className="mt-2 text-xs leading-5"><span className="font-semibold">기억 열화 위험</span> · {selectedArc.futureAdvantageMove.memoryRisk || "기존 Arc에는 별도 기록 없음"}</p>
                     </div>
                   </div>
                 </div>

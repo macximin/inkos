@@ -6,6 +6,7 @@ import type { AuditResult } from "../agents/continuity.js";
 import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
 import { FutureAdvantageCanonLedgerSchema, FutureAdvantageResearchReceiptStoreSchema } from "../models/future-advantage-ledger.js";
 import { StateManager } from "../state/manager.js";
+import { deleteLatestChapter } from "../state/chapter-delete.js";
 import {
   FUTURE_ADVANTAGE_CANON_PATH,
   FUTURE_ADVANTAGE_RESEARCH_RECEIPTS_PATH,
@@ -90,6 +91,15 @@ describe("Future Advantage canon ledger", () => {
     expect(await readCanon(bookDir)).toEqual([]);
     await state.restoreState("future-book", 1);
     expect(await readCanon(bookDir)).toHaveLength(1);
+
+    await state.saveChapterIndex("future-book", [approved]);
+    const deleted = await deleteLatestChapter(state, "future-book");
+    expect(deleted).toMatchObject({ deletedChapter: 1, rolledBackTo: 0 });
+    expect(await readCanon(bookDir)).toEqual([]);
+    const researchAfterDelete = FutureAdvantageResearchReceiptStoreSchema.parse(JSON.parse(
+      await readFile(join(bookDir, FUTURE_ADVANTAGE_RESEARCH_RECEIPTS_PATH), "utf8"),
+    ));
+    expect(researchAfterDelete.receipts).toEqual([]);
     await rm(root, { recursive: true, force: true });
   });
 

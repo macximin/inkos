@@ -89,11 +89,12 @@ function validateGeneratedOutput(
         || move.resistance.length === 0
         || !move.proof.trim()
         || !move.reward.trim()
-        || move.downstreamConsequences.length === 0;
+        || move.downstreamConsequences.length === 0
+        || !move.memoryRisk?.trim();
     });
     if (incomplete) {
       throw new Error(
-        `future-advantage branch ${JSON.stringify(incomplete.title)} must populate bridgeSteps, resistance, proof, reward, and downstreamConsequences.`,
+        `future-advantage branch ${JSON.stringify(incomplete.title)} must populate bridgeSteps, resistance, proof, reward, downstreamConsequences, and memoryRisk.`,
       );
     }
   }

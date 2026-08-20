@@ -20,6 +20,7 @@ export function makeFutureAdvantageMove(
     proof: "폐기 직전 웨이퍼의 수율이 실제로 오른다",
     reward: "경쟁 그룹보다 먼저 핵심 생산 라인을 확보한다",
     downstreamConsequences: ["반도체 투자 시계가 빨라져 미래 기억의 세부가 어긋난다"],
+    memoryRisk: "경쟁사의 조기 대응으로 기억한 투자 순서가 어긋난다",
     ...overrides,
   };
 }

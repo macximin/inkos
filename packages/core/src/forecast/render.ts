@@ -187,10 +187,10 @@ function renderBranchSection(
 
   const move = branch.futureAdvantageMove;
   const moveLabels = language === "ko"
-    ? { target: "대상", outcome: "기억하는 결과", bridge: "A 레일 / 실행 다리", proof: "A 레일 / 증거", reward: "A 레일 / 보상", resistance: "B 레일 / 저항", aftermath: "B 레일 / 후폭풍" }
+    ? { target: "대상", outcome: "기억하는 결과", bridge: "A 레일 / 실행 다리", proof: "A 레일 / 증거", reward: "A 레일 / 보상", resistance: "B 레일 / 저항", aftermath: "B 레일 / 후폭풍", memoryRisk: "B 레일 / 기억 열화 위험" }
     : language === "zh"
-      ? { target: "目标", outcome: "记忆中的结果", bridge: "A 线 / 落地桥梁", proof: "A 线 / 证据", reward: "A 线 / 回报", resistance: "B 线 / 阻力", aftermath: "B 线 / 后果" }
-      : { target: "Target", outcome: "Remembered outcome", bridge: "A-Rail / bridge", proof: "A-Rail / proof", reward: "A-Rail / reward", resistance: "B-Rail / resistance", aftermath: "B-Rail / aftermath" };
+      ? { target: "目标", outcome: "记忆中的结果", bridge: "A 线 / 落地桥梁", proof: "A 线 / 证据", reward: "A 线 / 回报", resistance: "B 线 / 阻力", aftermath: "B 线 / 后果", memoryRisk: "B 线 / 记忆失准风险" }
+      : { target: "Target", outcome: "Remembered outcome", bridge: "A-Rail / bridge", proof: "A-Rail / proof", reward: "A-Rail / reward", resistance: "B-Rail / resistance", aftermath: "B-Rail / aftermath", memoryRisk: "B-Rail / memory risk" };
   const moveSection = move
     ? [
         "",
@@ -204,6 +204,7 @@ function renderBranchSection(
         `- ${moveLabels.reward}: ${move.reward || labels.none}`,
         `- ${moveLabels.resistance}: ${joinOrNone(move.resistance, labels.none)}`,
         `- ${moveLabels.aftermath}: ${joinOrNone(move.downstreamConsequences, labels.none)}`,
+        `- ${moveLabels.memoryRisk}: ${move.memoryRisk || labels.none}`,
       ]
     : [];
 

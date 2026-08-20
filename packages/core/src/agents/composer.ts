@@ -169,6 +169,7 @@ function buildActiveFutureAdvantageContext(
         proof: "가시적 증거",
         reward: "독자 보상",
         consequences: "후폭풍",
+        memoryRisk: "기억 열화 위험",
         claims: "리서치 claim ID",
         divergences: "허용된 역사 분기",
       }
@@ -180,6 +181,7 @@ function buildActiveFutureAdvantageContext(
           proof: "Visible proof",
           reward: "Reader reward",
           consequences: "Aftermath",
+          memoryRisk: "Memory reliability risk",
           claims: "Research claim IDs",
           divergences: "Authorized divergences",
         }
@@ -190,6 +192,7 @@ function buildActiveFutureAdvantageContext(
           proof: "可见证据",
           reward: "读者回报",
           consequences: "后果",
+          memoryRisk: "记忆失准风险",
           claims: "研究 claim ID",
           divergences: "允许的历史分歧",
         };
@@ -203,6 +206,7 @@ function buildActiveFutureAdvantageContext(
       `${labels.proof}: ${move.proof}`,
       `${labels.reward}: ${move.reward}`,
       `${labels.consequences}: ${move.downstreamConsequences.join("; ") || "-"}`,
+      `${labels.memoryRisk}: ${move.memoryRisk || "-"}`,
       `${labels.claims}: ${move.researchClaimIds.join("; ") || "-"}`,
       `${labels.divergences}: ${move.authorizedDivergences.join("; ") || "-"}`,
     ].join("\n"),

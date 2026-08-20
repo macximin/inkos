@@ -227,6 +227,9 @@ function renderFutureAdvantageMoveLines(
     ...(move.downstreamConsequences.length > 0
       ? [`- B-Rail aftermath: ${move.downstreamConsequences.join("; ")}`]
       : []),
+    ...(move.memoryRisk?.trim()
+      ? [`- B-Rail memory risk: ${move.memoryRisk}`]
+      : []),
   ];
 }
 

@@ -39,6 +39,8 @@ export const FutureAdvantageMoveSchema = z.object({
   proof: z.string(),
   reward: z.string(),
   downstreamConsequences: z.array(z.string().min(1)).default([]),
+  /** How changed history can make remembered future knowledge less reliable. */
+  memoryRisk: z.string().optional(),
 });
 export type FutureAdvantageMove = z.infer<typeof FutureAdvantageMoveSchema>;
 
