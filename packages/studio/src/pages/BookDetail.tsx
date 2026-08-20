@@ -51,6 +51,19 @@ interface BookData {
   readonly nextChapter: number;
 }
 
+interface ChapterAuditDisplay {
+  readonly chapterNumber: number;
+  readonly passed?: boolean;
+  readonly creativePassed?: boolean;
+  readonly researchStatus?: "not-applicable" | "not-checked" | "needs-research" | "verified" | "conflict";
+  readonly issues?: ReadonlyArray<{ readonly track?: "creative" | "research" }>;
+  readonly futureAdvantageExecution?: {
+    readonly implemented: boolean;
+    readonly moveId: string;
+    readonly memoryReliability: "intact" | "strained" | "degraded" | "unreliable";
+  };
+}
+
 type ReviseMode = "spot-fix" | "polish" | "rewrite" | "rework" | "anti-detect";
 type ExportFormat = "txt" | "md" | "epub";
 type BookStatus = "active" | "paused" | "outlining" | "completed" | "dropped";
@@ -82,6 +95,23 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode }> = 
   imported: { color: "text-blue-500 bg-blue-500/10", icon: <Download size={12} /> },
 };
 
+export function researchStatusLabel(status: ChapterAuditDisplay["researchStatus"]): string {
+  if (status === "verified") return "확인됨";
+  if (status === "needs-research") return "확인 필요";
+  if (status === "conflict") return "충돌";
+  if (status === "not-applicable") return "해당 없음";
+  return "미확인";
+}
+
+export function memoryReliabilityLabel(
+  reliability: NonNullable<ChapterAuditDisplay["futureAdvantageExecution"]>["memoryReliability"],
+): string {
+  if (reliability === "strained") return "흔들림";
+  if (reliability === "degraded") return "열화";
+  if (reliability === "unreliable") return "불신 가능";
+  return "유지";
+}
+
 export function BookDetail({
   bookId,
   nav,
@@ -111,6 +141,7 @@ export function BookDetail({
   const [exportFormat, setExportFormat] = useState<ExportFormat>("txt");
   const [exportApprovedOnly, setExportApprovedOnly] = useState(false);
   const [bookActionPending, setBookActionPending] = useState<string | null>(null);
+  const [lastAudit, setLastAudit] = useState<ChapterAuditDisplay | null>(null);
   // Auto (pipeline self-reviews) vs manual (write the draft and stop; you
   // run audit / revise / approve as checkpoint actions). This is scoped to
   // the current book, with project-level mode as the inherited default.
@@ -693,6 +724,29 @@ export function BookDetail({
         </div>
       </div>
 
+      {lastAudit ? (
+        <section className="paper-sheet rounded-2xl border border-border/40 p-5 shadow-sm" aria-live="polite" data-testid="chapter-audit-result">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-bold"><ShieldCheck size={16} className="text-primary" /> {lastAudit.chapterNumber}화 감리 결과</div>
+            <div className="flex flex-wrap gap-2 text-xs font-semibold">
+              <span className={`rounded-full px-2.5 py-1 ${(lastAudit.creativePassed ?? lastAudit.passed) ? "bg-emerald-500/10 text-emerald-600" : "bg-destructive/10 text-destructive"}`}>
+                창작 {(lastAudit.creativePassed ?? lastAudit.passed) ? "통과" : "보완 필요"}
+              </span>
+              <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-blue-600">
+                고증 {researchStatusLabel(lastAudit.researchStatus)}
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs leading-5 text-muted-foreground">
+            <span>창작 이슈 {lastAudit.issues?.filter((issue) => issue.track !== "research").length ?? 0}건</span>
+            <span>고증 이슈 {lastAudit.issues?.filter((issue) => issue.track === "research").length ?? 0}건</span>
+            {lastAudit.futureAdvantageExecution?.implemented ? (
+              <span>미래 선점 {lastAudit.futureAdvantageExecution.moveId} 실행 후보 · 기억 {memoryReliabilityLabel(lastAudit.futureAdvantageExecution.memoryReliability)}</span>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
       {/* Chapters Table */}
       <div className="paper-sheet rounded-2xl overflow-hidden border border-border/40 shadow-xl shadow-primary/5">
         <div className="overflow-x-auto">
@@ -756,8 +810,8 @@ export function BookDetail({
                       <button
                         onClick={async () => {
                           try {
-                            const auditResult = await fetchJson<{ passed?: boolean; issues?: unknown[] }>(`/books/${bookId}/audit/${ch.number}`, { method: "POST" });
-                            alert(auditResult.passed ? "Audit passed" : `Audit failed: ${auditResult.issues?.length ?? 0} issues`);
+                            const auditResult = await fetchJson<ChapterAuditDisplay>(`/books/${bookId}/audit/${ch.number}`, { method: "POST" });
+                            setLastAudit({ ...auditResult, chapterNumber: ch.number });
                             refetch();
                           } catch (e) {
                             alert(e instanceof Error ? e.message : "Audit failed");

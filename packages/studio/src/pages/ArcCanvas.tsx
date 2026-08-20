@@ -272,7 +272,7 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
                       <p className="text-xs leading-5"><span className="font-semibold">보상</span> · {selectedArc.futureAdvantageMove.reward || "미정"}</p>
                     </div>
                     <div className="rounded-xl border border-border/60 bg-background/60 p-3">
-                      <div className="text-xs font-semibold text-foreground">B 레일 · 저항과 후폭풍</div>
+                      <div className="text-xs font-semibold text-foreground">B 레일 · 저항·후폭풍·기억 열화</div>
                       <ul className="mt-2 space-y-1 text-xs leading-5 text-muted-foreground">
                         {selectedArc.futureAdvantageMove.resistance.map((item) => <li key={`r-${item}`}>• {item}</li>)}
                         {selectedArc.futureAdvantageMove.downstreamConsequences.map((item) => <li key={`c-${item}`}>• {item}</li>)}

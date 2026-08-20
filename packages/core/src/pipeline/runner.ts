@@ -1377,6 +1377,14 @@ export class PipelineRunner {
         : undefined,
     });
     const result = evaluation.auditResult;
+    const futureAdvantageExecution = chapterMeta
+      ? buildChapterFutureAdvantageExecution({
+          chapterNumber: targetChapter,
+          chapterContent: content,
+          arcProvenance: chapterMeta.arcProvenance,
+          auditResult: result,
+        })
+      : undefined;
 
     // Update index with audit result
     const updated = index.map((ch) =>
@@ -1386,6 +1394,7 @@ export class PipelineRunner {
             status: (result.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
             updatedAt: new Date().toISOString(),
             auditIssues: result.issues.map((i) => `[${i.severity}] ${i.description}`),
+            futureAdvantageExecution,
           }
         : ch,
     );
@@ -4135,6 +4144,7 @@ ${matrix}`,
           ? false
           : (llmAudit.creativePassed ?? llmAudit.passed),
         researchStatus: llmAudit.researchStatus ?? "not-applicable",
+        futureAdvantageExecution: llmAudit.futureAdvantageExecution,
         issues,
         summary: llmAudit.summary,
         tokenUsage: llmAudit.tokenUsage,

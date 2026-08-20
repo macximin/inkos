@@ -11,7 +11,7 @@ import { StoryRailStore } from "../arc/rail-store.js";
 import { StoryRailReflowStore } from "../arc/reflow-store.js";
 import type { ArcPacket } from "../arc/schema.js";
 import type { StoryRailPlanInput } from "../arc/rail-schema.js";
-import { loadOptionalActiveArcContext } from "../arc/forecast.js";
+import { loadOptionalActiveArcContext, resolveArcChapterContext } from "../arc/forecast.js";
 import { ArchitectAgent } from "../agents/architect.js";
 import { PlannerAgent } from "../agents/planner.js";
 import * as ComposerModule from "../agents/composer.js";
@@ -478,6 +478,75 @@ describe("PipelineRunner", () => {
       expect(releases).toEqual([bookId]);
       const releaseAgain = await state.acquireBookLock(bookId);
       await releaseAgain();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a body-proven future-advantage execution candidate during manual audit", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const content = "# Chapter 1\n\nHe bought the failed pilot line. Yield rose to seventy percent. The first contract was signed.";
+    const arc: ArcPacket = {
+      ...makeEndpointArc(bookId, [1], "arc-future-audit"),
+      futureAdvantageMove: {
+        moveId: "FA-AUDIT-001",
+        mode: "acquire",
+        domain: "technology",
+        target: "failed pilot line",
+        rememberedOutcome: "the process becomes the later standard",
+        baselineQuestions: [],
+        researchClaimIds: [],
+        authorizedDivergences: ["pilot yield improves early"],
+        bridgeSteps: ["buy the failed pilot line"],
+        resistance: ["low yield"],
+        proof: "yield reaches seventy percent",
+        reward: "first contract",
+        downstreamConsequences: ["competitors react earlier"],
+      },
+    };
+    const provenance = resolveArcChapterContext(arc, 1)!.provenance;
+    const now = "2026-08-09T10:00:00.000Z";
+    await Promise.all([
+      writeFile(join(state.bookDir(bookId), "chapters", "0001_Future_Audit.md"), content, "utf-8"),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Future Audit",
+        status: "drafted",
+        wordCount: 16,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+        arcProvenance: provenance,
+      }]),
+    ]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(createAuditResult({
+      passed: true,
+      creativePassed: true,
+      researchStatus: "not-checked",
+      futureAdvantageExecution: {
+        moveId: "FA-AUDIT-001",
+        implemented: true,
+        bridgeEvidence: ["bought the failed pilot line"],
+        proofEvidence: ["Yield rose to seventy percent"],
+        rewardEvidence: ["first contract was signed"],
+        worldChanges: [],
+        memoryReliability: "intact",
+        memoryEvidence: [],
+        note: "The planned move is visibly executed in the body.",
+      },
+    }));
+
+    try {
+      await runner.auditDraft(bookId, 1);
+      const [saved] = await state.loadChapterIndex(bookId);
+      expect(saved?.futureAdvantageExecution).toMatchObject({
+        moveId: "FA-AUDIT-001",
+        chapterNumber: 1,
+        arcId: "arc-future-audit",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

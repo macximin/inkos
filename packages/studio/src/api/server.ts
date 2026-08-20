@@ -72,6 +72,7 @@ import {
   normalizeSkillIdList as normalizeCoreSkillIdList,
   inferLanguage,
   defaultChapterLength,
+  readBookRules,
   ingestMaterial,
   listBookReferences,
   createSkillRegistry,
@@ -3338,10 +3339,16 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     }
 
     try {
-      const listed = await listBookReferences(root, id);
+      const [listed, parsedRules] = await Promise.all([
+        listBookReferences(root, id),
+        readBookRules(bookDir),
+      ]);
       return c.json({
         content,
         path: relative(bookDir, pitchPath),
+        ...(parsedRules?.rules.futureAdvantage?.enabled
+          ? { futureAdvantageContract: parsedRules.rules.futureAdvantage }
+          : {}),
         references: listed.references.map((reference) => ({
           materialId: reference.materialId,
           title: reference.title ?? reference.materialId,
@@ -6228,27 +6235,15 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
   app.post("/api/v1/books/:id/audit/:chapter", async (c) => {
     const id = c.req.param("id");
     const chapterNum = parseInt(c.req.param("chapter"), 10);
-    const bookDir = state.bookDir(id);
 
     broadcast("audit:start", { bookId: id, chapter: chapterNum });
     try {
-      const book = await state.loadBookConfig(id);
-      const chaptersDir = join(bookDir, "chapters");
-      const files = await readdir(chaptersDir);
-      const paddedNum = String(chapterNum).padStart(4, "0");
-      const match = files.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
-      if (!match) return c.json({ error: "Chapter not found" }, 404);
-
-      const content = await readFile(join(chaptersDir, match), "utf-8");
       const currentConfig = await loadCurrentProjectConfig();
-      const { ContinuityAuditor } = await import("@actalk/inkos-core");
-      const auditor = new ContinuityAuditor({
-        client: createLLMClient(currentConfig.llm),
-        model: currentConfig.llm.model,
-        projectRoot: root,
-        bookId: id,
-      });
-      const result = await auditor.auditChapter(bookDir, content, chapterNum, book.genre);
+      const pipeline = new PipelineRunner(await buildPipelineConfig({
+        currentConfig,
+        bookIdForSettings: id,
+      }));
+      const result = await pipeline.auditDraft(id, chapterNum);
       broadcast("audit:complete", { bookId: id, chapter: chapterNum, passed: result.passed });
       return c.json(result);
     } catch (e) {

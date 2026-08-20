@@ -9,6 +9,7 @@ const initBookMock = vi.fn();
 const runRadarMock = vi.fn();
 const planChapterMock = vi.fn();
 const composeChapterMock = vi.fn();
+const auditDraftMock = vi.fn();
 const repairChapterStateMock = vi.fn();
 const reviseFoundationMock = vi.fn();
 const initSpinoffBookMock = vi.fn();
@@ -440,6 +441,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     runRadar = runRadarMock;
     planChapter = planChapterMock;
     composeChapter = composeChapterMock;
+    auditDraft = auditDraftMock;
     repairChapterState = repairChapterStateMock;
     reviseFoundation = reviseFoundationMock;
     initSpinoffBook = initSpinoffBookMock;
@@ -501,6 +503,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     normalizePlatformOrOther: actual.normalizePlatformOrOther,
     defaultChapterLength: actual.defaultChapterLength,
     inferLanguage: actual.inferLanguage,
+    readBookRules: actual.readBookRules,
     ingestMaterial: actual.ingestMaterial,
     listBookReferences: actual.listBookReferences,
     isUsablePlayInitialScene: actual.isUsablePlayInitialScene,
@@ -656,6 +659,7 @@ describe("createStudioServer daemon lifecycle", () => {
     runRadarMock.mockReset();
     planChapterMock.mockReset();
     composeChapterMock.mockReset();
+    auditDraftMock.mockReset();
     repairChapterStateMock.mockReset();
     reviseFoundationMock.mockReset();
     initSpinoffBookMock.mockReset();
@@ -687,6 +691,14 @@ describe("createStudioServer daemon lifecycle", () => {
     });
     planChapterMock.mockResolvedValue({ chapterNumber: 3, title: "Planned Chapter", memo: "plan memo" });
     composeChapterMock.mockResolvedValue({ chapterNumber: 3, title: "Composed Chapter", plan: "chapter plan" });
+    auditDraftMock.mockResolvedValue({
+      chapterNumber: 3,
+      passed: true,
+      creativePassed: true,
+      researchStatus: "not-checked",
+      issues: [],
+      summary: "clean",
+    });
     repairChapterStateMock.mockResolvedValue({
       chapterNumber: 3,
       title: "Repaired Chapter",
@@ -1297,6 +1309,20 @@ describe("createStudioServer daemon lifecycle", () => {
     const materialsDir = join(root, ".inkos", "materials");
     await mkdir(materialsDir, { recursive: true });
     await writeFile(join(bookDir, "story", "project_pitch.md"), "# Official Pitch\n", "utf-8");
+    await writeFile(join(bookDir, "story", "book_rules.md"), `---
+version: "1.0"
+futureAdvantage:
+  enabled: true
+  originMoment: "1997년 11월"
+  corePromise: "미래의 승자를 먼저 차지한다"
+  allowedDomains: ["기술", "금융"]
+  known: ["외환위기 이후의 승자"]
+  unknown: ["현재 협상 상대의 선택"]
+  forbiddenShortcuts: ["구현 과정 생략"]
+  memoryPolicy: "역사가 바뀌면 기억 신뢰도가 낮아진다"
+  researchPolicy: "on-demand"
+---
+`, "utf-8");
     await writeFile(join(materialsDir, `${materialId}.md`), "# Reference Work\n", "utf-8");
     await writeFile(join(materialsDir, `${materialId}.json`), JSON.stringify({
       id: materialId,
@@ -1330,6 +1356,17 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(response.json()).resolves.toEqual({
       content: "# Official Pitch\n",
       path: "story/project_pitch.md",
+      futureAdvantageContract: {
+        enabled: true,
+        originMoment: "1997년 11월",
+        corePromise: "미래의 승자를 먼저 차지한다",
+        allowedDomains: ["기술", "금융"],
+        known: ["외환위기 이후의 승자"],
+        unknown: ["현재 협상 상대의 선택"],
+        forbiddenShortcuts: ["구현 과정 생략"],
+        memoryPolicy: "역사가 바뀌면 기억 신뢰도가 낮아진다",
+        researchPolicy: "on-demand",
+      },
       references: [{
         materialId,
         title: "Reference Work",
@@ -1339,6 +1376,39 @@ describe("createStudioServer daemon lifecycle", () => {
         source: "operator-provided:reference-work",
       }],
     });
+  });
+
+  it("routes Studio chapter audit through the persistent pipeline and returns split verdicts", async () => {
+    auditDraftMock.mockResolvedValueOnce({
+      chapterNumber: 3,
+      passed: true,
+      creativePassed: true,
+      researchStatus: "needs-research",
+      issues: [{ severity: "info", category: "era", description: "근거 확인 필요", track: "research" }],
+      summary: "창작은 통과했고 고증은 확인 대기",
+      futureAdvantageExecution: {
+        moveId: "FA-003",
+        implemented: true,
+        bridgeEvidence: ["시험 설비를 샀다"],
+        proofEvidence: ["수율이 올랐다"],
+        rewardEvidence: ["첫 계약을 따냈다"],
+        worldChanges: [],
+        memoryReliability: "strained",
+        memoryEvidence: [],
+      },
+    });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/demo-book/audit/3", { method: "POST" });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      creativePassed: true,
+      researchStatus: "needs-research",
+      futureAdvantageExecution: { moveId: "FA-003", memoryReliability: "strained" },
+    });
+    expect(auditDraftMock).toHaveBeenCalledWith("demo-book", 3);
   });
 
   it("does not present a reference-folder pitch as the official project pitch", async () => {
