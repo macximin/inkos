@@ -6,6 +6,7 @@ import {
   StableRailIdSchema,
 } from "../arc/rail-schema.js";
 import { LengthTelemetrySchema } from "./length-governance.js";
+import { ChapterFutureAdvantageExecutionSchema } from "./future-advantage-ledger.js";
 
 export const ChapterStatusSchema = z.enum([
   "card-generated",
@@ -124,6 +125,8 @@ export const ChapterMetaSchema = z.object({
   detectedAt: z.string().datetime().optional(),
   lengthTelemetry: LengthTelemetrySchema.optional(),
   arcProvenance: ChapterArcProvenanceSchema.optional(),
+  /** Body-proven execution candidate. It becomes canon only after human approval. */
+  futureAdvantageExecution: ChapterFutureAdvantageExecutionSchema.optional(),
   tokenUsage: z.object({
     promptTokens: z.number().int().default(0),
     completionTokens: z.number().int().default(0),
@@ -136,6 +139,26 @@ export const ChapterMetaSchema = z.object({
       path: ["arcProvenance", "chapterNumber"],
       message: "Arc provenance must reference the same chapter number",
     });
+  }
+  if (chapter.futureAdvantageExecution) {
+    if (chapter.futureAdvantageExecution.chapterNumber !== chapter.number) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["futureAdvantageExecution", "chapterNumber"],
+        message: "Future Advantage execution must reference the same chapter number",
+      });
+    }
+    if (
+      !chapter.arcProvenance?.futureAdvantageMove
+      || chapter.futureAdvantageExecution.arcId !== chapter.arcProvenance.arcId
+      || chapter.futureAdvantageExecution.moveId !== chapter.arcProvenance.futureAdvantageMove.moveId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["futureAdvantageExecution"],
+        message: "Future Advantage execution must match the chapter Arc provenance move",
+      });
+    }
   }
 });
 

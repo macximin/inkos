@@ -24,6 +24,7 @@ import { analyzeSensitiveWords } from "../agents/sensitive-words.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
+import { buildChapterFutureAdvantageExecution } from "../state/future-advantage-ledger.js";
 import { ArcStore } from "../arc/store.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import {
@@ -1716,6 +1717,12 @@ export class PipelineRunner {
         : language === "en"
           ? `[warning] Chapter ${targetChapter} changed; re-review this downstream chapter for continuity.`
           : `[warning] 第${targetChapter}章已重写，请重新检查本章与前文的连续性。`;
+      const revisedFutureAdvantageExecution = buildChapterFutureAdvantageExecution({
+        chapterNumber: targetChapter,
+        chapterContent: normalizedRevision.content,
+        arcProvenance: chapterMeta.arcProvenance,
+        auditResult: effectivePostRevision.auditResult,
+      });
       const updatedIndex = index.map((ch) => {
         if (ch.number === targetChapter) {
           return {
@@ -1727,6 +1734,7 @@ export class PipelineRunner {
               lengthWarnings,
               lengthTelemetry,
               reviewNote: undefined,
+              futureAdvantageExecution: revisedFutureAdvantageExecution,
             };
         }
         if (ch.number > targetChapter) {
@@ -1738,6 +1746,7 @@ export class PipelineRunner {
               ...(ch.auditIssues ?? []).filter((issue) => !issue.includes("re-review this downstream chapter") && !issue.includes("请重新检查本章与前文")),
               downstreamRevisionNotice,
             ],
+            futureAdvantageExecution: undefined,
           };
         }
         return ch;
@@ -2268,6 +2277,14 @@ export class PipelineRunner {
     }
 
     const resolvedStatus = chapterStatus ?? (auditResult.passed ? "ready-for-review" : "audit-failed");
+    const futureAdvantageExecution = resolvedStatus === "state-degraded"
+      ? undefined
+      : buildChapterFutureAdvantageExecution({
+          chapterNumber,
+          chapterContent: finalContent,
+          arcProvenance: persistenceOutput.arcProvenance,
+          auditResult,
+        });
     const persistedArtifacts = await persistChapterArtifacts({
       chapterNumber,
       chapterTitle: persistenceOutput.title,
@@ -2278,6 +2295,7 @@ export class PipelineRunner {
       lengthTelemetry,
       degradedIssues,
       arcProvenance: persistenceOutput.arcProvenance,
+      futureAdvantageExecution,
       tokenUsage: totalUsage,
       loadChapterIndex: () => this.state.loadChapterIndex(bookId),
       saveChapter: () => writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang),

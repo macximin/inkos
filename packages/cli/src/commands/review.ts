@@ -5,6 +5,7 @@ import {
   formatLengthCount,
   readGenreProfile,
   resolveLengthCountingMode,
+  rebuildApprovedFutureAdvantageCanon,
   type ChapterMeta,
   type StoryRailReflowPrepareResult,
 } from "@actalk/inkos-core";
@@ -186,12 +187,23 @@ reviewCommand
           throw new Error(`Chapter ${chapterNum} not found in "${bookId}"`);
         }
 
+        const originalIndex = index.map((chapter) => ({ ...chapter }));
         index[idx] = {
           ...index[idx]!,
           status: "approved",
           updatedAt: new Date().toISOString(),
         };
         await state.saveChapterIndex(bookId, index);
+        let futureAdvantageCanon;
+        try {
+          futureAdvantageCanon = await rebuildApprovedFutureAdvantageCanon({
+            bookDir: state.bookDir(bookId),
+            chapters: index,
+          });
+        } catch (error) {
+          await state.saveChapterIndex(bookId, originalIndex);
+          throw error;
+        }
         const railReflow = await prepareOptionalStoryRailReflow(state, bookId, index);
 
         if (opts.json) {
@@ -199,6 +211,7 @@ reviewCommand
             bookId,
             chapter: chapterNum,
             status: "approved",
+            futureAdvantageCanon,
             ...railReflow,
           }));
         } else {
@@ -240,10 +253,20 @@ reviewCommand
         });
 
         await state.saveChapterIndex(bookId, updated);
+        let futureAdvantageCanon;
+        try {
+          futureAdvantageCanon = await rebuildApprovedFutureAdvantageCanon({
+            bookDir: state.bookDir(bookId),
+            chapters: updated,
+          });
+        } catch (error) {
+          await state.saveChapterIndex(bookId, index);
+          throw error;
+        }
         const railReflow = await prepareOptionalStoryRailReflow(state, bookId, updated);
 
         if (opts.json) {
-          log(JSON.stringify({ bookId, approvedCount: count, ...railReflow }));
+          log(JSON.stringify({ bookId, approvedCount: count, futureAdvantageCanon, ...railReflow }));
         } else {
           log(`${count} chapter(s) approved.`);
           logOptionalStoryRailReflow(railReflow);

@@ -489,6 +489,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     StoryRailStore: actual.StoryRailStore,
     StoryRailReflowStore: actual.StoryRailReflowStore,
     writeChapterTruthReceipt: actual.writeChapterTruthReceipt,
+    rebuildApprovedFutureAdvantageCanon: actual.rebuildApprovedFutureAdvantageCanon,
     safeNonSymlinkChildPath: actual.safeNonSymlinkChildPath,
     PipelineRunner: MockPipelineRunner,
     Scheduler: MockScheduler,

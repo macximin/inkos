@@ -100,6 +100,7 @@ import {
   createRemoveNodeTool,
   createLLMTranslationModel,
   deleteLatestChapter,
+  rebuildApprovedFutureAdvantageCanon,
   executeEditTransaction,
   listChapterVersions,
   readChapterPlanDocument,
@@ -4153,10 +4154,21 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       const releaseLock = await state.acquireBookLock(id);
       try {
         const index = await state.loadChapterIndex(id);
+        const approvedAt = new Date().toISOString();
         const updated = index.map((ch) =>
-          ch.number === num ? { ...ch, status: "approved" as const } : ch,
+          ch.number === num ? { ...ch, status: "approved" as const, updatedAt: approvedAt } : ch,
         );
         await state.saveChapterIndex(id, updated);
+        let futureAdvantageCanon;
+        try {
+          futureAdvantageCanon = await rebuildApprovedFutureAdvantageCanon({
+            bookDir: state.bookDir(id),
+            chapters: updated,
+          });
+        } catch (error) {
+          await state.saveChapterIndex(id, index);
+          throw error;
+        }
 
         // Approval remains authoritative even when optional Rail closeout
         // preparation cannot run. prepare() only records a pending gate; it
@@ -4172,6 +4184,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
           ok: true,
           chapterNumber: num,
           status: "approved",
+          futureAdvantageCanon,
           ...(railReflow ? { railReflow } : {}),
           ...(railReflowWarning ? { railReflowWarning } : {}),
         });

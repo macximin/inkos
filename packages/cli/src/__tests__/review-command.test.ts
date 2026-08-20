@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const loadChapterIndexMock = vi.fn();
 const saveChapterIndexMock = vi.fn();
 const prepareReflowMock = vi.fn();
+const rebuildFutureCanonMock = vi.fn();
 const logMock = vi.fn();
 const logErrorMock = vi.fn();
 const events: string[] = [];
@@ -41,6 +42,10 @@ vi.mock("@actalk/inkos-core", () => ({
   formatLengthCount: (count: number) => String(count),
   readGenreProfile: vi.fn(async () => ({ profile: { language: "en" } })),
   resolveLengthCountingMode: vi.fn(() => "words"),
+  rebuildApprovedFutureAdvantageCanon: async (input: { bookDir: string; chapters: unknown }) => {
+    events.push(`canon:${input.bookDir.split("/").at(-1)}`);
+    return rebuildFutureCanonMock(input);
+  },
 }));
 
 vi.mock("../utils.js", () => ({
@@ -91,6 +96,7 @@ describe("review approval Story Rail close trigger", () => {
       reason: "missing-plan",
       message: "No Story Rail plan exists.",
     });
+    rebuildFutureCanonMock.mockResolvedValue({ executedMoveCount: 0, changed: false });
   });
 
   it("prepares a pending reflow after approve saves status and before releasing the Book lock", async () => {
@@ -106,6 +112,7 @@ describe("review approval Story Rail close trigger", () => {
       "lock:book-a",
       "load:book-a",
       "save:book-a",
+      "canon:book-a",
       "prepare:book-a",
       "release:book-a",
     ]);

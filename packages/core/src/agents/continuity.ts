@@ -14,6 +14,11 @@ import {
   readCurrentStateWithFallback,
 } from "../utils/outline-paths.js";
 import { join } from "node:path";
+import {
+  FutureAdvantageExecutionCandidateSchema,
+  validateFutureAdvantageExecutionCandidate,
+  type FutureAdvantageExecutionCandidate,
+} from "../models/future-advantage-ledger.js";
 
 export interface AuditResult {
   readonly passed: boolean;
@@ -21,6 +26,8 @@ export interface AuditResult {
   readonly creativePassed?: boolean;
   /** Real-world verification state. This never fails creative review by itself. */
   readonly researchStatus?: ResearchStatus;
+  /** Body-quoted execution evidence; still non-canon until human approval. */
+  readonly futureAdvantageExecution?: FutureAdvantageExecutionCandidate;
   readonly issues: ReadonlyArray<AuditIssue>;
   readonly summary: string;
   /** True when the auditor response itself was not parseable; callers must not auto-revise content from this result. */
@@ -79,7 +86,12 @@ function inferIssueTrack(issue: AuditIssue): "creative" | "research" {
 
 function normalizeSeparatedAuditResult(
   result: AuditResult,
-  options: { readonly researchExpected: boolean; readonly futureAdvantageActive: boolean },
+  options: {
+    readonly researchExpected: boolean;
+    readonly futureAdvantageActive: boolean;
+    readonly futureAdvantageMoveId?: string;
+    readonly chapterContent: string;
+  },
 ): AuditResult {
   const issues = result.issues.map((rawIssue) => {
     const track = inferIssueTrack(rawIssue);
@@ -110,6 +122,13 @@ function normalizeSeparatedAuditResult(
       : researchIssues.length > 0
         ? "needs-research"
         : "not-checked";
+  const futureAdvantageExecution = options.futureAdvantageMoveId && result.futureAdvantageExecution
+    ? validateFutureAdvantageExecutionCandidate({
+        candidate: result.futureAdvantageExecution,
+        moveId: options.futureAdvantageMoveId,
+        chapterContent: options.chapterContent,
+      })
+    : undefined;
   return {
     ...result,
     passed: creativePassed,
@@ -118,7 +137,17 @@ function normalizeSeparatedAuditResult(
       ? inferredResearchStatus
       : (result.researchStatus ?? inferredResearchStatus),
     issues,
+    futureAdvantageExecution,
   };
+}
+
+function parseFutureAdvantageMoveId(arcContext: string | undefined): string | undefined {
+  return arcContext?.match(/^\s*-\s*Move:\s*(.+?)\s*$/m)?.[1]?.trim();
+}
+
+function parseFutureAdvantageExecution(value: unknown): FutureAdvantageExecutionCandidate | undefined {
+  const parsed = FutureAdvantageExecutionCandidateSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 const DIMENSION_LABELS: Record<number, { readonly zh: string; readonly en: string }> = {
@@ -549,10 +578,10 @@ export class ContinuityAuditor extends BaseAgent {
     const futureAdvantageAuditNote = !futureAdvantageActive
       ? ""
       : resolvedLanguage === "ko"
-        ? "\n\n## 미래 선점 감리 경계\n- 기억한 미래 결과와 현재 구현 방법을 구분하세요. 결과를 안다는 사실만으로 구현 생략을 허용하지 않습니다.\n- 허용된 역사 분기를 실제 역사에 없었다는 이유만으로 오류 처리하지 마세요.\n- 근거가 없거나 확인되지 않은 현실 주장에는 track=research, severity=info를 사용하고 research_status=needs-research로 기록하세요. 이것은 창작 실패나 자동 수정 사유가 아닙니다.\n- 미래 선점 관련 critical 후보는 금지된 지름길, 인물의 정보 경계 위반, 허용 분기·작품 정본과의 직접 모순뿐입니다. 일반적인 창작 구조 문제는 기존 창작 감리 기준을 따릅니다."
+        ? "\n\n## 미래 선점 감리 경계\n- 기억한 미래 결과와 현재 구현 방법을 구분하세요. 결과를 안다는 사실만으로 구현 생략을 허용하지 않습니다.\n- 허용된 역사 분기를 실제 역사에 없었다는 이유만으로 오류 처리하지 마세요.\n- 근거가 없거나 확인되지 않은 현실 주장에는 track=research, severity=info를 사용하고 research_status=needs-research로 기록하세요. 이것은 창작 실패나 자동 수정 사유가 아닙니다.\n- 미래 선점 관련 critical 후보는 금지된 지름길, 인물의 정보 경계 위반, 허용 분기·작품 정본과의 직접 모순뿐입니다. 일반적인 창작 구조 문제는 기존 창작 감리 기준을 따릅니다.\n- move가 실제 실행됐을 때만 future_advantage_execution.implemented=true로 두세요. bridge_evidence, proof_evidence, reward_evidence와 세계·기억 변화의 evidence에는 원고에서 그대로 복사한 짧은 문구만 넣으세요. 계획에만 있고 본문에 없으면 false입니다."
         : resolvedLanguage === "en"
-          ? "\n\n## Future Advantage audit boundary\n- Distinguish a remembered later outcome from its present-day implementation. Knowing the outcome does not waive bridge steps, resistance, proof, or cost.\n- Never mark an authorized divergence as an error merely because it did not occur in real history.\n- An unsupported or unverified real-world claim uses track=research, severity=info, and research_status=needs-research. It is not a creative failure or an automatic-revision instruction.\n- Future-advantage-specific critical candidates are limited to forbidden shortcuts, information-boundary breaches, and direct contradictions with authorized divergence or book canon. General creative structural failures still follow the normal creative audit."
-          : "\n\n## 未来先机审稿边界\n- 区分主角记得的未来结果与当下实现方法；知道结果不等于可以省略实现步骤、阻力、证据或代价。\n- 已授权的历史分歧不能仅因真实历史中未发生就判错。\n- 缺少依据或尚未核实的现实主张必须使用 track=research、severity=info、research_status=needs-research；它不是创作失败，也不是自动修稿指令。\n- 未来先机专属 critical 只限于禁用捷径、信息边界越界、与授权分歧或作品正典直接矛盾。一般创作结构问题仍按原有创作审稿标准处理。";
+          ? "\n\n## Future Advantage audit boundary\n- Distinguish a remembered later outcome from its present-day implementation. Knowing the outcome does not waive bridge steps, resistance, proof, or cost.\n- Never mark an authorized divergence as an error merely because it did not occur in real history.\n- An unsupported or unverified real-world claim uses track=research, severity=info, and research_status=needs-research. It is not a creative failure or an automatic-revision instruction.\n- Future-advantage-specific critical candidates are limited to forbidden shortcuts, information-boundary breaches, and direct contradictions with authorized divergence or book canon. General creative structural failures still follow the normal creative audit.\n- Set future_advantage_execution.implemented=true only when the move is executed in the body. Every evidence value must be a short verbatim excerpt from the chapter. A planned-only move is false."
+          : "\n\n## 未来先机审稿边界\n- 区分主角记得的未来结果与当下实现方法；知道结果不等于可以省略实现步骤、阻力、证据或代价。\n- 已授权的历史分歧不能仅因真实历史中未发生就判错。\n- 缺少依据或尚未核实的现实主张必须使用 track=research、severity=info、research_status=needs-research；它不是创作失败，也不是自动修稿指令。\n- 未来先机专属 critical 只限于禁用捷径、信息边界越界、与授权分歧或作品正典直接矛盾。一般创作结构问题仍按原有创作审稿标准处理。\n- 只有正文实际执行 move 时 future_advantage_execution.implemented 才能为 true。所有 evidence 必须逐字摘自本章；只存在于计划中的 move 必须为 false。";
 
     const systemPromptBase = resolvedLanguage === "ko"
       ? `당신은 엄격한 ${genreLabel} 웹소설 구조 편집자입니다. 문장 윤문이 아니라 회차의 완성도와 구조를 감리합니다.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
@@ -577,6 +606,7 @@ ${dimList}
   "passed": true/false,
   "creative_passed": true/false,
   "research_status": "not-applicable|not-checked|needs-research|verified|conflict",
+  "future_advantage_execution": null 또는 { "moveId": "계획의 move ID", "implemented": true/false, "bridgeEvidence": ["본문 그대로의 짧은 인용"], "proofEvidence": ["본문 인용"], "rewardEvidence": ["본문 인용"], "worldChanges": [{ "change": "정본화할 변화", "evidence": "본문 인용" }], "memoryReliability": "intact|strained|degraded|unreliable", "memoryEvidence": ["본문 인용"], "note": "짧은 판정 근거" },
   "overall_score": 0-100,
   "issues": [
     {
@@ -623,6 +653,7 @@ Output format MUST be JSON:
   "passed": true/false,
   "creative_passed": true/false,
   "research_status": "not-applicable|not-checked|needs-research|verified|conflict",
+  "future_advantage_execution": null or { "moveId": "planned move ID", "implemented": true/false, "bridgeEvidence": ["short verbatim chapter excerpt"], "proofEvidence": ["verbatim excerpt"], "rewardEvidence": ["verbatim excerpt"], "worldChanges": [{ "change": "canon change", "evidence": "verbatim excerpt" }], "memoryReliability": "intact|strained|degraded|unreliable", "memoryEvidence": ["verbatim excerpt"], "note": "brief verdict" },
   "overall_score": 0-100,
   "issues": [
 	    {
@@ -668,6 +699,7 @@ ${dimList}
   "passed": true/false,
   "creative_passed": true/false,
   "research_status": "not-applicable|not-checked|needs-research|verified|conflict",
+  "future_advantage_execution": null 或 { "moveId": "计划 move ID", "implemented": true/false, "bridgeEvidence": ["正文逐字短引文"], "proofEvidence": ["正文引文"], "rewardEvidence": ["正文引文"], "worldChanges": [{ "change": "正典变化", "evidence": "正文引文" }], "memoryReliability": "intact|strained|degraded|unreliable", "memoryEvidence": ["正文引文"], "note": "简短判定" },
   "overall_score": 0-100,
   "issues": [
 	    {
@@ -846,6 +878,8 @@ ${chapterContent}`;
       {
         researchExpected: Boolean(gp.eraResearch || bookRules?.eraConstraints?.enabled || futureAdvantageActive),
         futureAdvantageActive,
+        futureAdvantageMoveId: parseFutureAdvantageMoveId(options?.arcContext),
+        chapterContent,
       },
     );
     return { ...result, tokenUsage: response.usage };
@@ -1003,6 +1037,9 @@ ${overrides}\n`;
           ? parsed.creative_passed
           : Boolean(parsed.passed ?? false),
         researchStatus: normalizeResearchStatus(parsed.research_status ?? parsed.researchStatus),
+        futureAdvantageExecution: parseFutureAdvantageExecution(
+          parsed.future_advantage_execution ?? parsed.futureAdvantageExecution,
+        ),
         issues: Array.isArray(parsed.issues)
 	          ? parsed.issues.map((i: Record<string, unknown>) => ({
 	              severity: (i.severity as string) ?? "warning",

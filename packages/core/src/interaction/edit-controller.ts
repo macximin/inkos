@@ -312,6 +312,7 @@ function markChapterForManualReview(
           ...chapter.auditIssues.filter((existing) => !existing.includes(issue)),
           `[warning] ${issue}`,
         ],
+        futureAdvantageExecution: undefined,
       }
     : chapter);
 }

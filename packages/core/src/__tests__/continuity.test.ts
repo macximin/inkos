@@ -123,6 +123,17 @@ describe("ContinuityAuditor", () => {
           passed: false,
           creative_passed: false,
           research_status: "verified",
+          future_advantage_execution: {
+            moveId: "FA-1",
+            implemented: true,
+            bridgeEvidence: ["시험 라인이 돌아갔다"],
+            proofEvidence: ["시험 라인이 돌아갔다"],
+            rewardEvidence: ["시험 라인이 돌아갔다"],
+            worldChanges: [{ change: "시험 생산이 시작됐다", evidence: "시험 라인이 돌아갔다" }],
+            memoryReliability: "intact",
+            memoryEvidence: [],
+            note: "본문 실행 확인",
+          },
           overall_score: 72,
           issues: [{
             severity: "critical",
@@ -156,6 +167,7 @@ describe("ContinuityAuditor", () => {
       });
     const arcContext = [
       "## Future Advantage Move",
+      "- Move: FA-1",
       "- Target: 반도체 장비 국산화",
       "- Authorized divergences: 상용화를 실제보다 3년 앞당긴다",
       "- A-Rail bridge: 퇴직 기술자 영입; 시험 라인 확보",
@@ -169,6 +181,7 @@ describe("ContinuityAuditor", () => {
       expect(researchOnly.creativePassed).toBe(true);
       expect(researchOnly.researchStatus).toBe("needs-research");
       expect(researchOnly.issues[0]).toMatchObject({ severity: "info", track: "research" });
+      expect(researchOnly.futureAdvantageExecution).toMatchObject({ moveId: "FA-1", implemented: true });
 
       const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
       expect(messages[0]?.content).toContain("당신은 엄격한");

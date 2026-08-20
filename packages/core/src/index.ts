@@ -157,6 +157,25 @@ export {
   type VerifiedChapterTruthReceipt,
 } from "./state/chapter-truth-receipt.js";
 export {
+  FutureAdvantageExecutionCandidateSchema,
+  ChapterFutureAdvantageExecutionSchema,
+  FutureAdvantageCanonLedgerSchema,
+  FutureAdvantageResearchReceiptStoreSchema,
+  hashFutureAdvantageChapterContent,
+  validateFutureAdvantageExecutionCandidate,
+  type FutureAdvantageExecutionCandidate,
+  type ChapterFutureAdvantageExecution,
+  type FutureAdvantageCanonEntry,
+  type FutureAdvantageCanonLedger,
+  type FutureAdvantageResearchReceiptStore,
+} from "./models/future-advantage-ledger.js";
+export {
+  FUTURE_ADVANTAGE_CANON_PATH,
+  FUTURE_ADVANTAGE_RESEARCH_RECEIPTS_PATH,
+  buildChapterFutureAdvantageExecution,
+  rebuildApprovedFutureAdvantageCanon,
+} from "./state/future-advantage-ledger.js";
+export {
   type PlayActionKind,
   type PlayActionIntentInput,
   type PlayActionIntent,

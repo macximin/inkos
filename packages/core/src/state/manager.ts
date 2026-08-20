@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, readdir, rm, stat, unlink, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { BookConfig } from "../models/book.js";
 import {
   ChapterArcProvenanceSchema,
@@ -628,6 +628,16 @@ export class StateManager {
         }
       }),
     );
+    await Promise.all([
+      copyOptionalFile(
+        join(storyDir, "future_advantage_ledger.json"),
+        join(snapshotDir, "future_advantage_ledger.json"),
+      ),
+      copyOptionalFile(
+        join(storyDir, "research", "future_advantage_receipts.json"),
+        join(snapshotDir, "research", "future_advantage_receipts.json"),
+      ),
+    ]);
 
     const stateDir = join(bookDir, "story", "state");
     const snapshotStateDir = join(snapshotDir, "state");
@@ -729,6 +739,16 @@ export class StateManager {
           }
         }),
       );
+      await Promise.all([
+        restoreOptionalFile(
+          join(snapshotDir, "future_advantage_ledger.json"),
+          join(storyDir, "future_advantage_ledger.json"),
+        ),
+        restoreOptionalFile(
+          join(snapshotDir, "research", "future_advantage_receipts.json"),
+          join(storyDir, "research", "future_advantage_receipts.json"),
+        ),
+      ]);
 
       const stateDir = this.stateDir(bookId);
       let restoredStructuredState = false;
@@ -987,5 +1007,25 @@ async function loadBookIdFromConfigAt(bookDir: string): Promise<string | undefin
     return parsed.id;
   } catch {
     return undefined;
+  }
+}
+
+async function copyOptionalFile(source: string, target: string): Promise<void> {
+  try {
+    const content = await readFile(source, "utf8");
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  } catch {
+    // Optional canon files do not exist for ordinary books and pre-P5 snapshots.
+  }
+}
+
+async function restoreOptionalFile(source: string, target: string): Promise<void> {
+  try {
+    const content = await readFile(source, "utf8");
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  } catch {
+    await rm(target, { force: true });
   }
 }
