@@ -52,6 +52,19 @@ type Arc = {
     readonly beats: readonly string[];
     readonly endingHook: string;
   }[];
+  readonly futureAdvantageMove?: {
+    readonly moveId: string;
+    readonly mode: string;
+    readonly domain: string;
+    readonly target: string;
+    readonly rememberedOutcome: string;
+    readonly baselineQuestions: readonly string[];
+    readonly bridgeSteps: readonly string[];
+    readonly resistance: readonly string[];
+    readonly proof: string;
+    readonly reward: string;
+    readonly downstreamConsequences: readonly string[];
+  };
 };
 
 type RouteEntry = {
@@ -242,6 +255,32 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
               <DetailRow label="전환" value={selectedArc.turn} />
               <DetailRow label="이번 보상" value={selectedArc.payoff} />
               <DetailRow label="다음 훅" value={selectedArc.nextHook} />
+              {selectedArc.futureAdvantageMove ? (
+                <div className="space-y-4 rounded-2xl border border-amber-400/30 bg-amber-400/5 p-4">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">미래 선점 · {selectedArc.futureAdvantageMove.moveId}</div>
+                    <div className="mt-1 text-sm font-semibold">{selectedArc.futureAdvantageMove.domain} · {selectedArc.futureAdvantageMove.target}</div>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">기억하는 결과: {selectedArc.futureAdvantageMove.rememberedOutcome}</p>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
+                    <div className="rounded-xl border border-border/60 bg-background/60 p-3">
+                      <div className="text-xs font-semibold text-foreground">A 레일 · 실행과 보상</div>
+                      <ul className="mt-2 space-y-1 text-xs leading-5 text-muted-foreground">
+                        {selectedArc.futureAdvantageMove.bridgeSteps.map((step) => <li key={step}>• {step}</li>)}
+                      </ul>
+                      <p className="mt-2 text-xs leading-5"><span className="font-semibold">증거</span> · {selectedArc.futureAdvantageMove.proof || "미정"}</p>
+                      <p className="text-xs leading-5"><span className="font-semibold">보상</span> · {selectedArc.futureAdvantageMove.reward || "미정"}</p>
+                    </div>
+                    <div className="rounded-xl border border-border/60 bg-background/60 p-3">
+                      <div className="text-xs font-semibold text-foreground">B 레일 · 저항과 후폭풍</div>
+                      <ul className="mt-2 space-y-1 text-xs leading-5 text-muted-foreground">
+                        {selectedArc.futureAdvantageMove.resistance.map((item) => <li key={`r-${item}`}>• {item}</li>)}
+                        {selectedArc.futureAdvantageMove.downstreamConsequences.map((item) => <li key={`c-${item}`}>• {item}</li>)}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               <div className="border-t border-border/50 pt-5">
                 <div className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">회차 비트</div>
                 <div className="space-y-3">

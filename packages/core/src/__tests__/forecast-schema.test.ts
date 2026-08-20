@@ -5,7 +5,11 @@ import {
   NarrativeForecastSchema,
   parseForecastModelOutput,
 } from "../forecast/schema.js";
-import { makeForecast, makeForecastBranch } from "./helpers/forecast-fixture.js";
+import {
+  makeForecast,
+  makeForecastBranch,
+  makeFutureAdvantageMove,
+} from "./helpers/forecast-fixture.js";
 
 function modelBranches(count: number) {
   return Array.from({ length: count }, (_, index) => {
@@ -67,6 +71,25 @@ describe("narrative forecast schema", () => {
       ],
     });
     expect(() => NarrativeForecastSchema.parse(forecast)).toThrow();
+  });
+
+  it("accepts a structured future-advantage move and rejects an incomplete one", () => {
+    const valid = makeForecast({
+      branches: [
+        makeForecastBranch({ futureAdvantageMove: makeFutureAdvantageMove() }),
+        makeForecastBranch({ branchId: "branch-2", futureAdvantageMove: makeFutureAdvantageMove({ moveId: "FA-002" }) }),
+      ],
+    });
+    expect(NarrativeForecastSchema.parse(valid).branches[0]?.futureAdvantageMove?.reward)
+      .toContain("생산 라인");
+
+    const invalid = makeForecast({
+      branches: [
+        makeForecastBranch({ futureAdvantageMove: { moveId: "FA-broken" } as never }),
+        makeForecastBranch({ branchId: "branch-2" }),
+      ],
+    });
+    expect(() => NarrativeForecastSchema.parse(invalid)).toThrow();
   });
 });
 

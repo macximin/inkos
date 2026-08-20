@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FutureAdvantageMoveSchema } from "../arc/schema.js";
 
 // Narrative Forecast (issue #342): non-canonical multi-branch story projection.
 // A forecast never becomes canon by itself — it is planning material stored
@@ -55,6 +56,7 @@ export const ForecastBranchSchema = z.object({
   risks: z.array(ForecastRiskSchema),
   uncertainties: z.array(z.string()),
   intentAlignment: ForecastIntentAlignmentSchema,
+  futureAdvantageMove: FutureAdvantageMoveSchema.optional(),
 });
 export type ForecastBranch = z.infer<typeof ForecastBranchSchema>;
 

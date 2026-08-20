@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ArcEpisodeRoleSchema, ArcIdSchema } from "../arc/schema.js";
+import { ArcEpisodeRoleSchema, ArcIdSchema, FutureAdvantageMoveSchema } from "../arc/schema.js";
 import {
   AnchorDetailLevelSchema,
   AnchorStateSchema,
@@ -104,6 +104,7 @@ export const ChapterArcProvenanceSchema = z.object({
     forecastId: z.string().min(1),
     branchId: z.string().min(1),
   }).optional(),
+  futureAdvantageMove: FutureAdvantageMoveSchema.optional(),
   storyRail: ChapterStoryRailProvenanceSchema.optional(),
 });
 export type ChapterArcProvenance = z.infer<typeof ChapterArcProvenanceSchema>;

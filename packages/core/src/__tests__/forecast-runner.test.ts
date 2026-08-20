@@ -16,6 +16,7 @@ import type { StoryRailPlanInput } from "../arc/rail-schema.js";
 import { StateManager } from "../state/manager.js";
 import {
   makeModelBranch,
+  makeFutureAdvantageMove,
   snapshotCanonicalFiles,
   writeForecastFixtureBook,
 } from "./helpers/forecast-fixture.js";
@@ -199,6 +200,46 @@ describe("narrative forecast runner", () => {
     expect(plan).not.toContain("branch-1");
     expect(await readFile(forecastJsonPath, "utf-8")).toBe(forecastJsonBefore);
     expect(await snapshotCanonicalFiles(bookDir)).toEqual(canonBefore);
+  });
+
+  it("reads the Architect contract and carries a generated future-advantage move into the Arc draft", async () => {
+    await writeFile(join(bookDir, "story", "book_rules.md"), [
+      "## 미래 선점",
+      "- 활성화: true",
+      "- 회귀 기준 시점: 1996년 12월",
+      "- 핵심 재미: 미래의 승자를 현재로 당겨온다",
+    ].join("\n"), "utf-8");
+    const move = makeFutureAdvantageMove();
+    const spy = vi.spyOn(NarrativeForecastAgent.prototype, "generateBranches")
+      .mockImplementation(async (input) => {
+        expect(input.futureAdvantageEnabled).toBe(true);
+        return {
+          branches: stubBranches().map((branch, index) => ({
+            ...branch,
+            futureAdvantageMove: { ...move, moveId: `FA-${index + 1}` },
+          })),
+        };
+      });
+
+    await createNarrativeForecast(createOptions());
+    const result = await selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+      determinism: { now: FIXED_NOW },
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.arc?.futureAdvantageMove).toMatchObject({
+      moveId: "FA-1",
+      domain: "인재",
+      proof: expect.stringContaining("수율"),
+      reward: expect.stringContaining("생산 라인"),
+    });
+    const plan = await readFile(result.planPath, "utf-8");
+    expect(plan).toContain("A 线 / 落地桥梁");
+    expect(plan).toContain("B 线 / 后果");
   });
 
   it("rejects selection while the Book is busy and releases its lock after a successful selection", async () => {

@@ -333,11 +333,13 @@ describe("native Korean writing contracts", () => {
       language: "ko",
       baseChapter: 12,
       contextFingerprint: "test",
+      futureAdvantageEnabled: false,
       sections: {
         authorIntent: "재벌가 내부 감사를 파고든다.",
         currentFocus: "비자금 장부",
         currentState: "감사팀이 장부를 확보했다.",
         pendingHooks: "배후는 미확인",
+        bookRules: "## 금지 사항\n- 우연한 해결 금지",
         storyFrame: "승계 전쟁",
         volumeMap: "1권",
         recentChapterSummaries: "12화 요약",
@@ -361,6 +363,7 @@ describe("native Korean writing contracts", () => {
       branchCount: 3,
       horizon: 10,
       baseChapter: 12,
+      futureAdvantageEnabled: false,
     }, "ko");
     const repair = buildForecastRepairPrompt("branches가 비었습니다.", "ko");
     const prompt = `${system}\n${user}\n${repair}`;

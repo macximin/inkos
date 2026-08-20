@@ -1,15 +1,20 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { NarrativeForecastAgent } from "../forecast/agent.js";
-import { makeForecastBranch } from "./helpers/forecast-fixture.js";
+import { makeForecastBranch, makeFutureAdvantageMove } from "./helpers/forecast-fixture.js";
 import type { LLMMessage, LLMResponse } from "../llm/provider.js";
 
 function llmResponse(content: string): LLMResponse {
   return { content, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
 }
 
-function validModelJson(count: number): string {
+function validModelJson(count: number, futureAdvantageEnabled = false): string {
   const branches = Array.from({ length: count }, (_, index) => {
-    const { branchId: _branchId, ...rest } = makeForecastBranch({ title: `分支${index + 1}` });
+    const { branchId: _branchId, ...rest } = makeForecastBranch({
+      title: `分支${index + 1}`,
+      ...(futureAdvantageEnabled
+        ? { futureAdvantageMove: makeFutureAdvantageMove({ moveId: `FA-${index + 1}` }) }
+        : {}),
+    });
     return rest;
   });
   return JSON.stringify({ branches });
@@ -41,6 +46,7 @@ const INPUT = {
   horizon: 5,
   baseChapter: 12,
   language: "zh" as const,
+  futureAdvantageEnabled: false,
 };
 
 afterEach(() => {
@@ -88,5 +94,20 @@ describe("NarrativeForecastAgent", () => {
     expect(spy).toHaveBeenCalledTimes(2);
     const [retryMessages] = spy.mock.calls[1]!;
     expect(retryMessages.at(-1)?.content).toContain("2");
+  });
+
+  it("requires structured moves for a future-advantage book and forbids them for ordinary books", async () => {
+    const futureSpy = spyOnChat([validModelJson(2), validModelJson(2, true)]);
+    const futureOutput = await makeAgent().generateBranches({ ...INPUT, futureAdvantageEnabled: true });
+
+    expect(futureSpy).toHaveBeenCalledTimes(2);
+    expect(futureOutput.branches.every((branch) => branch.futureAdvantageMove)).toBe(true);
+
+    vi.restoreAllMocks();
+    const ordinarySpy = spyOnChat([validModelJson(2, true), validModelJson(2)]);
+    const ordinaryOutput = await makeAgent().generateBranches(INPUT);
+
+    expect(ordinarySpy).toHaveBeenCalledTimes(2);
+    expect(ordinaryOutput.branches.every((branch) => !branch.futureAdvantageMove)).toBe(true);
   });
 });

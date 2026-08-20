@@ -1,6 +1,26 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { ForecastBranch, ForecastModelBranch, NarrativeForecast } from "../../forecast/schema.js";
+import type { FutureAdvantageMove } from "../../arc/schema.js";
+
+export function makeFutureAdvantageMove(
+  overrides: Partial<FutureAdvantageMove> = {},
+): FutureAdvantageMove {
+  return {
+    moveId: "FA-001",
+    mode: "recruit",
+    domain: "인재",
+    target: "훗날 반도체 수율을 뒤집는 공정 엔지니어",
+    rememberedOutcome: "2007년에 양산 수율의 병목을 해결한다",
+    baselineQuestions: ["1997년 현재 어느 연구소에서 일하는가"],
+    bridgeSteps: ["부도 위기 연구소의 장비를 인수한다", "실패 책임을 대신 진다"],
+    resistance: ["현재 실적만 보는 그룹 임원들이 영입을 반대한다"],
+    proof: "폐기 직전 웨이퍼의 수율이 실제로 오른다",
+    reward: "경쟁 그룹보다 먼저 핵심 생산 라인을 확보한다",
+    downstreamConsequences: ["반도체 투자 시계가 빨라져 미래 기억의 세부가 어긋난다"],
+    ...overrides,
+  };
+}
 
 export function makeForecastBranch(overrides: Partial<ForecastBranch> = {}): ForecastBranch {
   return {

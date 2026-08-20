@@ -74,6 +74,7 @@ export async function createNarrativeForecast(
     horizon,
     baseChapter: context.baseChapter,
     language: context.language,
+    futureAdvantageEnabled: context.futureAdvantageEnabled,
   });
 
   const store = new ForecastStore(bookDir, options.determinism);

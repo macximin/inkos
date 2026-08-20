@@ -36,6 +36,7 @@ async function writeFixtureBook(bookDir: string): Promise<void> {
   await writeFile(join(bookDir, "story", "current_focus.md"), "# 当前聚焦\n推进证据链", "utf-8");
   await writeFile(join(bookDir, "story", "current_state.md"), "# 当前状态\n主角在东城", "utf-8");
   await writeFile(join(bookDir, "story", "pending_hooks.md"), "| hook_id | 描述 |\n| --- | --- |\n| hook-03 | 遗嘱 |", "utf-8");
+  await writeFile(join(bookDir, "story", "book_rules.md"), "## 禁止事项\n- 不得无代价获胜", "utf-8");
   await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "# 故事框架\n都市复仇", "utf-8");
   await writeFile(join(bookDir, "story", "outline", "volume_map.md"), "# 卷映射\n第一卷", "utf-8");
   await writeFile(join(bookDir, "story", "roles", "主要角色", "林潜.md"), "# 林潜\n人设锁：绝不妥协", "utf-8");
@@ -72,6 +73,8 @@ describe("buildForecastContext", () => {
     expect(context.sections.authorIntent).toContain("复仇主线");
     expect(context.sections.currentFocus).toContain("推进证据链");
     expect(context.sections.pendingHooks).toContain("hook-03");
+    expect(context.sections.bookRules).toContain("不得无代价获胜");
+    expect(context.futureAdvantageEnabled).toBe(false);
     expect(context.sections.storyFrame).toContain("都市复仇");
     expect(context.sections.recentChapterSummaries).toContain("拿到证据");
     expect(context.contextFingerprint).toMatch(/^[0-9a-f]{64}$/);
@@ -102,6 +105,21 @@ describe("buildForecastContext", () => {
     const before = await buildForecastContext({ bookDir, bookId: "demo" });
     await writeFile(join(bookDir, "story", "current_focus.md"), "# 当前聚焦\n转向感情线", "utf-8");
     const after = await buildForecastContext({ bookDir, bookId: "demo" });
+    expect(after.contextFingerprint).not.toBe(before.contextFingerprint);
+  });
+
+  it("detects the optional future-advantage contract and fingerprints rule changes", async () => {
+    const before = await buildForecastContext({ bookDir, bookId: "demo" });
+    await writeFile(join(bookDir, "story", "book_rules.md"), [
+      "## 未来先机",
+      "- 启用: true",
+      "- 回归基准时点: 1996年",
+      "- 核心乐趣: 抢先布局未来赢家",
+    ].join("\n"), "utf-8");
+    const after = await buildForecastContext({ bookDir, bookId: "demo" });
+
+    expect(after.futureAdvantageEnabled).toBe(true);
+    expect(after.sections.bookRules).toContain("未来先机");
     expect(after.contextFingerprint).not.toBe(before.contextFingerprint);
   });
 

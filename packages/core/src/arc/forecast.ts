@@ -69,6 +69,9 @@ export async function createArcDraftFromForecast(input: {
     mustKeep: [],
     mustAvoid: input.branch.risks.map((risk) => risk.description),
     styleEmphasis: [],
+    ...(input.branch.futureAdvantageMove
+      ? { futureAdvantageMove: input.branch.futureAdvantageMove }
+      : {}),
     sourceForecast: { forecastId: input.forecast.forecastId, branchId: input.branch.branchId },
     createdAt: now,
     updatedAt: now,
@@ -119,6 +122,9 @@ export function renderChapterArcProvenance(provenance: ChapterArcProvenance): st
     provenance.styleEmphasis.length > 0
       ? `- Style emphasis: ${provenance.styleEmphasis.join("; ")}`
       : "",
+    ...(provenance.futureAdvantageMove
+      ? ["", ...renderFutureAdvantageMoveLines(provenance.futureAdvantageMove)]
+      : []),
   ].filter(Boolean).join("\n");
 }
 
@@ -155,6 +161,9 @@ export function resolveArcChapterContext(
     arc.mustKeep.length > 0 ? `- Must keep: ${arc.mustKeep.join("; ")}` : "",
     arc.mustAvoid.length > 0 ? `- Must avoid: ${arc.mustAvoid.join("; ")}` : "",
     arc.styleEmphasis.length > 0 ? `- Style emphasis: ${arc.styleEmphasis.join("; ")}` : "",
+    ...(arc.futureAdvantageMove
+      ? ["", ...renderFutureAdvantageMoveLines(arc.futureAdvantageMove)]
+      : []),
   ].filter(Boolean).join("\n");
   const provenance: ChapterArcProvenance = {
     version: 1,
@@ -182,10 +191,37 @@ export function resolveArcChapterContext(
     mustKeep: [...arc.mustKeep],
     mustAvoid: [...arc.mustAvoid],
     styleEmphasis: [...arc.styleEmphasis],
+    ...(arc.futureAdvantageMove
+      ? { futureAdvantageMove: structuredClone(arc.futureAdvantageMove) }
+      : {}),
     ...(arc.sourceForecast ? { sourceForecast: { ...arc.sourceForecast } } : {}),
     ...(storyRail ? { storyRail } : {}),
   };
   return { markdown, provenance };
+}
+
+function renderFutureAdvantageMoveLines(
+  move: NonNullable<ArcPacket["futureAdvantageMove"]>,
+): string[] {
+  return [
+    "## Future Advantage Move",
+    `- Move: ${move.moveId}`,
+    `- Mode / domain: ${move.mode} / ${move.domain}`,
+    `- Target: ${move.target}`,
+    `- Remembered outcome: ${move.rememberedOutcome}`,
+    ...(move.baselineQuestions.length > 0
+      ? [`- Baseline questions: ${move.baselineQuestions.join("; ")}`]
+      : []),
+    `- A-Rail bridge: ${move.bridgeSteps.join("; ")}`,
+    `- A-Rail proof: ${move.proof}`,
+    `- A-Rail reward: ${move.reward}`,
+    ...(move.resistance.length > 0
+      ? [`- B-Rail resistance: ${move.resistance.join("; ")}`]
+      : []),
+    ...(move.downstreamConsequences.length > 0
+      ? [`- B-Rail aftermath: ${move.downstreamConsequences.join("; ")}`]
+      : []),
+  ];
 }
 
 /**

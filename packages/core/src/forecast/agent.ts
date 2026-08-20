@@ -18,6 +18,7 @@ export interface ForecastGenerationInput {
   readonly horizon: number;
   readonly baseChapter: number;
   readonly language: ForecastLanguage;
+  readonly futureAdvantageEnabled: boolean;
 }
 
 /**
@@ -41,7 +42,11 @@ export class NarrativeForecastAgent extends BaseAgent {
     const first = await this.chat(messages, { temperature: 0.6, maxTokens });
     let firstError: unknown;
     try {
-      return validateGeneratedOutput(parseForecastModelOutput(first.content), input.branchCount);
+      return validateGeneratedOutput(
+        parseForecastModelOutput(first.content),
+        input.branchCount,
+        input.futureAdvantageEnabled,
+      );
     } catch (error) {
       firstError = error;
       this.log?.warn(`[narrative-forecast] model output invalid, retrying once: ${String(error)}`);
@@ -52,15 +57,45 @@ export class NarrativeForecastAgent extends BaseAgent {
       { role: "assistant", content: first.content },
       { role: "user", content: buildForecastRepairPrompt(String(firstError), input.language) },
     ], { temperature: 0.4, maxTokens });
-    return validateGeneratedOutput(parseForecastModelOutput(retry.content), input.branchCount);
+    return validateGeneratedOutput(
+      parseForecastModelOutput(retry.content),
+      input.branchCount,
+      input.futureAdvantageEnabled,
+    );
   }
 }
 
-function validateGeneratedOutput(output: ForecastModelOutput, expectedBranches: number): ForecastModelOutput {
+function validateGeneratedOutput(
+  output: ForecastModelOutput,
+  expectedBranches: number,
+  futureAdvantageEnabled: boolean,
+): ForecastModelOutput {
   if (output.branches.length !== expectedBranches) {
     throw new Error(
       `narrative forecast model returned ${output.branches.length} branches, expected exactly ${expectedBranches}.`,
     );
+  }
+  const invalidBranch = output.branches.find((branch) =>
+    futureAdvantageEnabled ? !branch.futureAdvantageMove : branch.futureAdvantageMove !== undefined);
+  if (invalidBranch) {
+    throw new Error(futureAdvantageEnabled
+      ? `future-advantage branch ${JSON.stringify(invalidBranch.title)} is missing futureAdvantageMove.`
+      : `ordinary branch ${JSON.stringify(invalidBranch.title)} must not invent futureAdvantageMove.`);
+  }
+  if (futureAdvantageEnabled) {
+    const incomplete = output.branches.find((branch) => {
+      const move = branch.futureAdvantageMove!;
+      return move.bridgeSteps.length === 0
+        || move.resistance.length === 0
+        || !move.proof.trim()
+        || !move.reward.trim()
+        || move.downstreamConsequences.length === 0;
+    });
+    if (incomplete) {
+      throw new Error(
+        `future-advantage branch ${JSON.stringify(incomplete.title)} must populate bridgeSteps, resistance, proof, reward, and downstreamConsequences.`,
+      );
+    }
   }
   return output;
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ArcPacketSchema } from "../arc/schema.js";
 import { parseBookRules } from "../models/book-rules.js";
 import { ChapterIntentSchema } from "../models/input-governance.js";
+import { resolveArcChapterContext } from "../arc/forecast.js";
 
 describe("future-advantage contracts", () => {
   it("parses a Korean future-advantage section without changing legacy rules", () => {
@@ -52,6 +53,10 @@ describe("future-advantage contracts", () => {
     });
 
     expect(ArcPacketSchema.parse(ready).futureAdvantageMove?.domain).toBe("인재");
+    const chapterContext = resolveArcChapterContext(ArcPacketSchema.parse(ready), 1);
+    expect(chapterContext?.markdown).toContain("A-Rail bridge");
+    expect(chapterContext?.markdown).toContain("B-Rail aftermath");
+    expect(chapterContext?.provenance.futureAdvantageMove?.moveId).toBe("FA-001");
     expect(() => ArcPacketSchema.parse(makeArc({
       status: "ready",
       futureAdvantageMove: {

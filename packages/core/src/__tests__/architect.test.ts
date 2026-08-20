@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ArchitectAgent } from "../agents/architect.js";
+import {
+  ArchitectAgent,
+  resolveFutureAdvantageFoundationMode,
+} from "../agents/architect.js";
 import type { BookConfig } from "../models/book.js";
 import type { LLMClient } from "../llm/provider.js";
 
@@ -35,6 +38,25 @@ const KOREAN_FOUNDATION_OUTPUT = [
   "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   "| H001 | 0 | 인수 | deferred | 0 | 채권 회수 | near-term | none | 1권 중반 | true | 10 | 부도어음 장부 |",
 ].join("\n");
+
+const KOREAN_FUTURE_FOUNDATION_OUTPUT = KOREAN_FOUNDATION_OUTPUT.replace(
+  "## 주인공\n- 이름: 한도경",
+  [
+    "## 주인공",
+    "- 이름: 한도경",
+    "",
+    "## 미래 선점",
+    "- 활성화: true",
+    "- 회귀 기준 시점: 1996년 12월",
+    "- 핵심 재미: 미래의 승자를 현재의 자원으로 먼저 차지한다",
+    "- 허용 분야: 금융, 경영, 기술, 인재",
+    "- 알고 있는 것: 외환 위기의 큰 방향, 훗날의 산업 승자",
+    "- 모르는 것: 정확한 날짜, 현재의 구현법, 타인의 선택",
+    "- 금지된 지름길: 무한 자금, 완성 설계도 암기, 저항 없는 도입",
+    "- 기억 원칙: 역사가 바뀔수록 세부 기억의 신뢰도가 낮아진다",
+    "- 검색 정책: 핵심 주장 필수",
+  ].join("\n"),
+);
 
 function koreanBook(overrides: Partial<BookConfig> = {}): BookConfig {
   return {
@@ -92,6 +114,50 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).not.toContain("전경_배경_이야기");
     expect(messages[0]?.content).not.toContain("You are the architect of this book");
     expect(messages[1]?.content).toBe("제목이 \"IMF를 독식한 재벌 3세\"인 urban 장편소설의 전체 작품 기반을 한국어로 생성하세요.");
+  });
+
+  it("requires a future-advantage contract only when the creative brief makes future knowledge core", async () => {
+    expect(resolveFutureAdvantageFoundationMode({
+      title: "IMF를 독식한 재벌 3세",
+      genre: "urban",
+      creativeBrief: "IMF 직전으로 회귀한 주인공이 20년 뒤 승자를 먼저 당겨온다.",
+    })).toBe("required");
+    expect(resolveFutureAdvantageFoundationMode({
+      title: "부도어음 추심팀",
+      genre: "urban",
+      creativeBrief: "1997년을 배경으로 하지만 회귀는 없는 기업 생존물이다.",
+    })).toBe("forbidden");
+
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FUTURE_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(
+      koreanBook(),
+      "IMF 직전으로 회귀한 주인공이 기술·금융·인재의 미래 승자를 먼저 차지한다.",
+    );
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("## 미래 선점 판정");
+    expect(messages[0]?.content).toContain("완성 설계도 암기, 무한 자금, 저항 없는 도입");
+    expect(result.bookRules).toContain("## 미래 선점");
+  });
+
+  it("repairs a missing required future-advantage contract instead of silently creating ordinary rules", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: KOREAN_FUTURE_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(
+      koreanBook(),
+      "외환 위기 직전으로 회귀해 미래의 산업 승자를 선점한다.",
+    );
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    const repairMessages = chat.mock.calls[1]?.[0] as Array<{ role: string; content: string }>;
+    expect(repairMessages[0]?.content).toContain("book_rules에 미래 선점 섹션");
+    expect(result.bookRules).toContain("기억 원칙");
   });
 
   it("keeps imported Korean manuscripts on the Korean-native architect path", async () => {

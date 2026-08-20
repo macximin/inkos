@@ -5,6 +5,7 @@ import { formatRecentSummaries, readSubplotBoard } from "../agents/planner-conte
 import { readCharacterContext, readStoryFrame, readVolumeMap } from "../utils/outline-paths.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import { renderStoryRailPlan } from "../arc/rail-context.js";
+import { parseBookRules } from "../models/book-rules.js";
 
 // Read-only view of the canonical book used as forecast input. Everything in
 // here MUST stay side-effect free: building a forecast context never creates
@@ -18,6 +19,7 @@ export interface ForecastContextSections {
   readonly currentFocus: string;
   readonly currentState: string;
   readonly pendingHooks: string;
+  readonly bookRules: string;
   readonly storyFrame: string;
   readonly volumeMap: string;
   readonly recentChapterSummaries: string;
@@ -32,6 +34,7 @@ export interface ForecastContext {
   readonly language: "zh" | "ko" | "en";
   readonly baseChapter: number;
   readonly contextFingerprint: string;
+  readonly futureAdvantageEnabled: boolean;
   readonly sections: ForecastContextSections;
 }
 
@@ -48,11 +51,12 @@ export async function buildForecastContext(params: {
     collectFingerprintFiles(bookDir),
   ]);
 
-  const [authorIntent, currentFocus, currentState, pendingHooks] = await Promise.all([
+  const [authorIntent, currentFocus, currentState, pendingHooks, bookRules] = await Promise.all([
     readOrEmpty(join(storyDir, "author_intent.md")),
     readOrEmpty(join(storyDir, "current_focus.md")),
     readOrEmpty(join(storyDir, "current_state.md")),
     readOrEmpty(join(storyDir, "pending_hooks.md")),
+    readOrEmpty(join(storyDir, "book_rules.md")),
   ]);
 
   const [storyFrame, volumeMap, characterContext, subplotBoard, chapterSummariesRaw, storyRailPlan] = await Promise.all([
@@ -75,11 +79,13 @@ export async function buildForecastContext(params: {
     language: bookConfig.language,
     baseChapter,
     contextFingerprint,
+    futureAdvantageEnabled: parseBookRules(bookRules)?.rules.futureAdvantage?.enabled === true,
     sections: {
       authorIntent,
       currentFocus,
       currentState,
       pendingHooks,
+      bookRules,
       storyFrame,
       volumeMap,
       recentChapterSummaries: chapterSummariesRaw.trim()
@@ -117,6 +123,7 @@ export function computeContextFingerprint(input: {
 const FINGERPRINT_FIXED_INPUTS: ReadonlyArray<string> = [
   "book.json",
   "story/author_intent.md",
+  "story/book_rules.md",
   "story/chapter_summaries.md",
   "story/character_matrix.md",
   "story/current_focus.md",
@@ -186,6 +193,7 @@ export function renderForecastContextMarkdown(context: ForecastContext): string 
     [ko ? "현재 초점" : zh ? "当前聚焦" : "Current focus", context.sections.currentFocus],
     [ko ? "현재 상태" : zh ? "当前状态" : "Current state", context.sections.currentState],
     [ko ? "미회수 복선과 훅" : zh ? "伏笔与钩子" : "Pending hooks", context.sections.pendingHooks],
+    [ko ? "작품 규칙" : zh ? "本书规则" : "Book rules", context.sections.bookRules],
     [ko ? "이야기 프레임" : zh ? "故事框架" : "Story frame", context.sections.storyFrame],
     [ko ? "권 구성" : zh ? "卷映射" : "Volume map", context.sections.volumeMap],
     [ko ? "최근 회차 요약" : zh ? "近期章节摘要" : "Recent chapter summaries", context.sections.recentChapterSummaries],

@@ -621,7 +621,12 @@ export { probeModelsFromUpstream, type ProbedModel } from "./llm/providers/probe
 
 // Agents
 export { BaseAgent, type AgentContext } from "./agents/base.js";
-export { ArchitectAgent, type ArchitectOutput } from "./agents/architect.js";
+export {
+  ArchitectAgent,
+  resolveFutureAdvantageFoundationMode,
+  type ArchitectOutput,
+  type FutureAdvantageFoundationMode,
+} from "./agents/architect.js";
 export { WriterAgent, type WriteChapterInput, type WriteChapterOutput, type TokenUsage } from "./agents/writer.js";
 export { LengthNormalizerAgent, type NormalizeLengthInput, type NormalizeLengthOutput } from "./agents/length-normalizer.js";
 export { ContinuityAuditor, type AuditResult, type AuditIssue } from "./agents/continuity.js";

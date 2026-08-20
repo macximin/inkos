@@ -12,6 +12,7 @@ import {
 } from "../utils/hook-promotion.js";
 import { normalizeStoredHookStatus } from "../utils/hook-lifecycle.js";
 import type { StoredHook } from "../state/memory-db.js";
+import { parseBookRules } from "../models/book-rules.js";
 
 // ---------------------------------------------------------------------------
 // Phase 5 (v13) — Static 骨架 layer collapse
@@ -78,6 +79,62 @@ export interface ArchitectOutput {
   readonly volumeMap?: string;
   readonly rhythmPrinciples?: string;
   readonly roles?: ReadonlyArray<ArchitectRole>;
+}
+
+export type FutureAdvantageFoundationMode = "required" | "preserve" | "forbidden";
+
+/**
+ * Host-side gate for the optional future-advantage contract. The model may
+ * design the contents, but it may not decide to turn an ordinary book into a
+ * regression/precognition book by itself.
+ */
+export function resolveFutureAdvantageFoundationMode(input: {
+  readonly title: string;
+  readonly genre: string;
+  readonly creativeBrief?: string;
+  readonly existingBookRules?: string;
+}): FutureAdvantageFoundationMode {
+  if (input.existingBookRules && parseBookRules(input.existingBookRules)?.rules.futureAdvantage?.enabled) {
+    return "preserve";
+  }
+
+  const premise = [input.title, input.genre, input.creativeBrief ?? ""].join("\n").normalize("NFKC");
+  const explicitlyExcluded = [
+    /(?:회귀|빙의|예지|미래\s*기억)(?:물)?(?:은|는|이|가)?\s*(?:아님|아니다|없다|없는|금지)/i,
+    /(?:without|no)\s+(?:regression|possession|precognition|future\s+memor)/i,
+    /(?:不要|没有|并非|不是)(?:回归|重生|穿越|预知|未来记忆)/i,
+  ].some((pattern) => pattern.test(premise));
+  if (explicitlyExcluded) return "forbidden";
+
+  const explicitFutureKnowledge = [
+    /회귀(?:물|자|했다|한|후|해서|하여|하고|한다|합니다)?/i,
+    /빙의(?:물|자|했다|한|후|해서|하여|하고|한다|합니다)?/i,
+    /예지|예언\s*(?:능력|기억)|미래\s*(?:기억|정보|지식|사건|결과)|과거로\s*(?:돌아|회귀)/i,
+    /(?:미래|훗날|\d+\s*년\s*(?:후|뒤)).*(?:당겨\s*오|선점|미리\s*(?:차지|확보))/i,
+    /\b(?:regression|regressor|reincarnat(?:ed|ion)|possess(?:ed|ion)|precognition|future\s+(?:memory|knowledge))\b/i,
+    /回归|重生|穿越|预知|未来记忆|前世记忆/,
+  ].some((pattern) => pattern.test(premise));
+  return explicitFutureKnowledge ? "required" : "forbidden";
+}
+
+class FutureAdvantageFoundationContractError extends Error {
+  readonly expectation: FutureAdvantageFoundationMode;
+  readonly content: string;
+  readonly issues: readonly string[];
+
+  constructor(
+    expectation: FutureAdvantageFoundationMode,
+    content: string,
+    issues: readonly string[] = [],
+  ) {
+    super(expectation === "forbidden"
+      ? "ordinary foundation unexpectedly contains a future-advantage contract"
+      : "future-advantage foundation is missing its required contract");
+    this.name = "FutureAdvantageFoundationContractError";
+    this.expectation = expectation;
+    this.content = content;
+    this.issues = issues;
+  }
 }
 
 export class ArchitectIncompleteFoundationError extends Error {
@@ -149,6 +206,16 @@ export class ArchitectAgent extends BaseAgent {
     const revisePrompt = options?.reviseFrom
       ? this.buildRevisePrompt(options.reviseFrom, resolvedLanguage)
       : "";
+    const futureAdvantageMode = resolveFutureAdvantageFoundationMode({
+      title: book.title,
+      genre: book.genre,
+      creativeBrief: externalContext,
+      existingBookRules: options?.reviseFrom?.bookRules,
+    });
+    const futureAdvantageBlock = this.buildFutureAdvantageFoundationBlock(
+      futureAdvantageMode,
+      resolvedLanguage,
+    );
 
     const numericalBlock = gp.numericalSystem
       ? resolvedLanguage === "zh"
@@ -177,10 +244,10 @@ export class ArchitectAgent extends BaseAgent {
       : "";
 
     const systemPrompt = resolvedLanguage === "ko"
-      ? this.buildKoreanFoundationPrompt(book, promptProfile, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
+      ? this.buildKoreanFoundationPrompt(book, promptProfile, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock)
       : resolvedLanguage === "en"
-        ? this.buildEnglishFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock)
-        : this.buildChineseFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock);
+        ? this.buildEnglishFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock)
+        : this.buildChineseFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock);
 
     const langPrefix = resolvedLanguage === "en"
         ? `【LANGUAGE OVERRIDE】ALL output (story_frame, volume_map, roles, book_rules, pending_hooks) MUST be written in English. Character names, place names, and all prose must be in English. The === SECTION: === tags remain unchanged. Do NOT emit rhythm_principles or current_state sections — rhythm principles live inside the last paragraph of volume_map; environment/era anchors (when relevant) are woven into story_frame's world-tonal-ground paragraph.\n\n`
@@ -196,7 +263,54 @@ export class ArchitectAgent extends BaseAgent {
       { role: "user", content: userMessage },
     ], { temperature: 0.8 });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage);
+    return this.parseSectionsWithRepair(response.content, resolvedLanguage, futureAdvantageMode);
+  }
+
+  private buildFutureAdvantageFoundationBlock(
+    mode: FutureAdvantageFoundationMode,
+    language: "zh" | "ko" | "en",
+  ): string {
+    if (language === "ko") {
+      if (mode === "forbidden") {
+        return `## 미래 선점 판정
+- 이 작품에는 회귀·빙의·예지·미래 기억이 핵심 재미로 명시되지 않았습니다.
+- book_rules에 "미래 선점" 항목을 만들지 마세요. 시대 배경이나 고증 필요만으로 회귀 설정을 덧붙이지 않습니다.`;
+      }
+      return `## 미래 선점 판정
+- 이 작품은 주인공이 미래의 결과를 기억하고 현재의 실행으로 당겨오는 재미가 핵심입니다.
+- book_rules의 "금지 사항" 바로 앞에 아래 형식의 "## 미래 선점"을 반드시 둡니다.
+- 알고 있는 것은 훗날의 승자·실패·큰 방향이며, 현재의 정확한 구현법·날짜·타인의 선택은 모르는 것으로 나눕니다.
+- 기술·금융·경영·유통·문화·인재·정책 중 작품이 실제로 쓸 분야만 적습니다.
+- 완성 설계도 암기, 무한 자금, 저항 없는 도입, 바뀐 역사 뒤에도 완벽한 기억은 금지된 지름길에 넣습니다.
+- 기존 계약을 고치는 중이라면 핵심 약속과 정보 경계를 보존하고, 사용자가 요구한 범위만 구체화합니다.
+
+## 미래 선점
+- 활성화: true
+- 회귀 기준 시점: <미래 기억이 시작되는 과거의 시점>
+- 핵심 재미: <미래의 결과를 현재의 어떤 행동과 보상으로 당겨오는가>
+- 허용 분야: <쉼표로 구분>
+- 알고 있는 것: <결과와 큰 방향, 쉼표로 구분>
+- 모르는 것: <현재의 구현법·정확한 날짜·타인의 선택, 쉼표로 구분>
+- 금지된 지름길: <대가와 저항을 없애는 편의, 쉼표로 구분>
+- 기억 원칙: <역사가 달라질수록 기억의 신뢰도가 어떻게 변하는가>
+- 검색 정책: <끄기 | 필요할 때 | 핵심 주장 필수 중 하나>`;
+    }
+    if (language === "en") {
+      if (mode === "forbidden") {
+        return "## Future-advantage decision\n- The premise does not explicitly make regression, possession, precognition, or future memory its core appeal. Omit the entire `## Future Advantage` section from book_rules.";
+      }
+      return `## Future-advantage decision
+- The core appeal is pulling remembered future outcomes forward through present-day execution.
+- Add a required \`## Future Advantage\` section to book_rules with: Enabled, Origin moment, Core promise, Allowed domains, Known, Unknown, Forbidden shortcuts, Memory policy, Research policy.
+- Separate remembered outcomes from unknown implementation details. Ban perfect blueprint recall, unlimited capital, resistance-free adoption, and flawless memory after history changes.${mode === "preserve" ? " Preserve the existing contract and only refine what the user requested." : ""}`;
+    }
+    if (mode === "forbidden") {
+      return "## 未来先机判定\n- 本书未明确把回归、穿越、预知或未来记忆作为核心乐趣。book_rules 中不得生成 `## 未来先机`。";
+    }
+    return `## 未来先机判定
+- 本书的核心乐趣是把记忆中的未来结果通过当下执行提前兑现。
+- book_rules 必须包含 \`## 未来先机\`，依次写：启用、回归基准时点、核心乐趣、允许领域、已知、未知、禁止捷径、记忆规则、检索策略。
+- 必须区分已知结果与未知实现方法；禁止完整图纸记忆、无限资金、无阻力落地、历史改变后记忆仍绝对准确。${mode === "preserve" ? "保留既有契约，只按用户要求细化。" : ""}`;
   }
 
   private buildRevisePrompt(reviseFrom: {
@@ -289,6 +403,7 @@ ${reviseFrom.userFeedback || "（无）"}
     numericalBlock: string,
     powerBlock: string,
     eraBlock: string,
+    futureAdvantageBlock: string,
   ): string {
     return `당신은 한국 상업 웹소설을 기획하는 작가입니다. 설정집을 만드는 사람이 아니라, 독자가 다음 화를 누르게 할 사건과 보상을 고르는 사람입니다. 기계가 읽는 표지는 영어로 남기되 사람이 읽는 문장은 처음부터 자연스러운 한국어로 씁니다.${contextBlock}${reviewFeedbackBlock}
 
@@ -328,6 +443,7 @@ ${reviseFrom.userFeedback || "（无）"}
 ${numericalBlock}
 ${powerBlock}
 ${eraBlock}
+${futureAdvantageBlock}
 
 ## 출력 계약
 아래 다섯 SECTION을 순서대로 모두 출력합니다. SECTION 표지, ---ROLE---, ---CONTENT---, tier, name과 pending_hooks의 열 이름은 기계 계약이므로 그대로 둡니다. 별도의 rhythm_principles나 current_state SECTION은 만들지 않습니다.
@@ -463,6 +579,7 @@ ${gp.eraResearch ? `## 시대 고증
     numericalBlock: string,
     powerBlock: string,
     eraBlock: string,
+    futureAdvantageBlock: string,
   ): string {
     return `你是这本书的总架构师。你的唯一输出是**散文密度的基础设定**——不是表格、不是 schema、不是条目化 bullet。v6 以后这本书的"灵气"从哪里来？从你这里来。你的散文密度决定了后面 planner 能不能读出"稀疏 memo"，writer 能不能写出活人，reviewer 能不能校准硬伤。${contextBlock}${reviewFeedbackBlock}
 
@@ -480,6 +597,7 @@ ${genreBody}
 ${numericalBlock}
 ${powerBlock}
 ${eraBlock}
+${futureAdvantageBlock}
 
 ## 输出结构（5 个 SECTION，严格按 === SECTION: === 分块，不要漏任何一块）
 
@@ -669,6 +787,7 @@ ${gp.eraResearch ? `## 年代限制
     numericalBlock: string,
     powerBlock: string,
     eraBlock: string,
+    futureAdvantageBlock: string,
   ): string {
     return `You are the architect of this book. Your only job is to produce **prose-density foundation design** — not tables, not schema, not bullet lists. The book's aura comes from your prose density: Phase 3 planner reads sparse memos out of your volume_map only if it was written to chapter-level prose; the writer only produces living characters because your role sheets carry contrast details; the reviewer only catches hard errors because your story_frame set the tonal anchors.${contextBlock}${reviewFeedbackBlock}
 
@@ -686,6 +805,7 @@ ${genreBody}
 ${numericalBlock}
 ${powerBlock}
 ${eraBlock}
+${futureAdvantageBlock}
 
 ## Output contract (5 === SECTION: === blocks)
 
@@ -861,33 +981,50 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
   // -------------------------------------------------------------------------
   // Parsing
   // -------------------------------------------------------------------------
-  private async parseSectionsWithRepair(content: string, language: "zh" | "ko" | "en"): Promise<ArchitectOutput> {
+  private async parseSectionsWithRepair(
+    content: string,
+    language: "zh" | "ko" | "en",
+    futureAdvantageMode: FutureAdvantageFoundationMode = "forbidden",
+  ): Promise<ArchitectOutput> {
     try {
-      return this.parseSections(content, language);
+      const parsed = this.parseSections(content, language);
+      this.validateFutureAdvantageFoundation(parsed, futureAdvantageMode, content);
+      return parsed;
     } catch (error) {
-      if (!(error instanceof MissingArchitectSectionsError)) {
+      if (!(error instanceof MissingArchitectSectionsError)
+        && !(error instanceof FutureAdvantageFoundationContractError)) {
         throw error;
       }
 
       const repaired = await this.repairMissingSections(error, language);
       try {
-        return this.parseSections(repaired, language);
+        const parsed = this.parseSections(repaired, language);
+        this.validateFutureAdvantageFoundation(parsed, futureAdvantageMode, repaired);
+        return parsed;
       } catch (repairError) {
-        if (repairError instanceof MissingArchitectSectionsError) {
-          const missing = repairError.missing.join("、");
+        if (repairError instanceof MissingArchitectSectionsError
+          || repairError instanceof FutureAdvantageFoundationContractError) {
+          const missingItems = repairError instanceof MissingArchitectSectionsError
+            ? repairError.missing
+            : repairError.expectation === "forbidden"
+              ? ["book_rules_without_future_advantage"]
+              : repairError.issues.length > 0
+                ? repairError.issues.map((issue) => `book_rules.future_advantage.${issue}`)
+                : ["book_rules.future_advantage"];
+          const missing = missingItems.join("、");
           const message = language === "ko"
-            ? `작품 기획이 완성되지 않았습니다(누락: ${repairError.missing.join(", ")}). `
+            ? `작품 기획이 완성되지 않았습니다(계약 문제: ${missingItems.join(", ")}). `
               + "입력 문제가 아니라 모델이 한 번에 모든 구역을 쓰지 못한 경우가 많습니다. "
               + "다시 시도하거나 더 강한 모델로 바꿔 생성해 주세요."
             : language === "en"
-              ? `The story foundation came back incomplete (missing: ${repairError.missing.join(", ")}). `
+              ? `The story foundation came back incomplete (contract issue: ${missingItems.join(", ")}). `
               + "This usually means the model didn't write every section in one pass — it's not a problem with your input. "
               + "Try again, or switch to a stronger model (e.g. deepseek-v4-pro / gpt-5.5) and regenerate."
               : `基础设定没有生成完整(缺少:${missing})。`
                 + "这通常是模型一次没把所有部分写全,不是你的输入有问题。"
                 + "点重试,或换更强的模型(如 deepseek-v4-pro / gpt-5.5)再生成一次,通常就能解决。";
           throw new ArchitectIncompleteFoundationError(
-            repairError.missing,
+            missingItems,
             repairError.content,
             message,
           );
@@ -898,10 +1035,29 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
   }
 
   private async repairMissingSections(
-    error: MissingArchitectSectionsError,
+    error: MissingArchitectSectionsError | FutureAdvantageFoundationContractError,
     language: "zh" | "ko" | "en",
   ): Promise<string> {
-    const missingList = error.missing.join(", ");
+    const missingList = error instanceof MissingArchitectSectionsError
+      ? error.missing.join(", ")
+      : error.expectation === "forbidden"
+        ? "book_rules에서 미래 선점/Future Advantage/未来先机 섹션 제거"
+        : error.issues.length > 0
+          ? error.issues.map((issue) => `book_rules.future_advantage.${issue}`).join(", ")
+          : "book_rules.future_advantage";
+    const futureRepairRule = error instanceof FutureAdvantageFoundationContractError
+      ? error.expectation === "forbidden"
+        ? (language === "ko"
+            ? "이 작품은 미래 지식물이 아닙니다. book_rules에서 미래 선점 섹션 전체를 제거합니다."
+            : language === "en"
+              ? "This is not a future-knowledge story. Remove the entire Future Advantage section from book_rules."
+              : "本书不是未来知识题材。删除 book_rules 中整个未来先机段落。")
+        : (language === "ko"
+            ? "book_rules에 미래 선점 섹션과 회귀 기준 시점, 핵심 재미, 허용 분야, 알고 있는 것, 모르는 것, 금지된 지름길, 기억 원칙, 검색 정책을 모두 채웁니다."
+            : language === "en"
+              ? "Add the required Future Advantage section and all nine contract fields to book_rules."
+              : "在 book_rules 中补齐未来先机段落及全部九个契约字段。")
+      : "";
     const system = language === "ko"
       ? [
           "InkOS 한국어 기획 출력의 형식을 복구합니다.",
@@ -909,6 +1065,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "새 작품으로 바꾸거나 추상적인 설명을 덧붙이지 않습니다.",
           "story_frame, volume_map, roles, book_rules, pending_hooks 다섯 SECTION을 이 순서로 모두 반환합니다.",
           "book_rules는 일반 Markdown이고 pending_hooks는 Markdown 표입니다.",
+          futureRepairRule,
           "복구 과정은 설명하지 않습니다.",
         ].join("\n")
       : language === "en"
@@ -918,6 +1075,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "Do not invent a new book. Preserve usable existing content and add the missing parts.",
           "Return the complete output with exactly these 5 SECTION blocks in order: story_frame, volume_map, roles, book_rules, pending_hooks.",
           "book_rules must be ordinary Markdown, not YAML. pending_hooks must be a Markdown table.",
+          futureRepairRule,
           "Do not explain the repair.",
         ].join("\n")
         : [
@@ -926,6 +1084,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
           "不要重新发明一本书；保留已有可用内容，只补齐缺失部分并整理成完整输出。",
           "必须按顺序返回完整 5 段 SECTION：story_frame、volume_map、roles、book_rules、pending_hooks。",
           "book_rules 必须是普通 Markdown，不要 YAML；pending_hooks 必须是 Markdown 表格。",
+          futureRepairRule,
           "不要解释修复过程。",
         ].join("\n");
     const user = language === "ko"
@@ -939,6 +1098,33 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       { role: "user", content: user },
     ], { temperature: 0.2 });
     return response.content;
+  }
+
+  private validateFutureAdvantageFoundation(
+    output: ArchitectOutput,
+    mode: FutureAdvantageFoundationMode,
+    content: string,
+  ): void {
+    const contract = parseBookRules(output.bookRules)?.rules.futureAdvantage;
+    if (mode === "forbidden") {
+      if (contract !== undefined) {
+        throw new FutureAdvantageFoundationContractError(mode, content);
+      }
+      return;
+    }
+    const missing = [
+      !contract?.enabled ? "enabled" : "",
+      !contract?.originMoment?.trim() ? "originMoment" : "",
+      !contract?.corePromise?.trim() ? "corePromise" : "",
+      !contract?.allowedDomains.length ? "allowedDomains" : "",
+      !contract?.known.length ? "known" : "",
+      !contract?.unknown.length ? "unknown" : "",
+      !contract?.forbiddenShortcuts.length ? "forbiddenShortcuts" : "",
+      !contract?.memoryPolicy?.trim() ? "memoryPolicy" : "",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new FutureAdvantageFoundationContractError(mode, content, missing);
+    }
   }
 
   private parseSections(content: string, language: "zh" | "ko" | "en"): ArchitectOutput {
@@ -1311,6 +1497,15 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
             ? `\n\n## External Instructions\n${externalContext}\n`
             : `\n\n## 外部指令\n${externalContext}\n`)
       : "";
+    const futureAdvantageMode = resolveFutureAdvantageFoundationMode({
+      title: book.title,
+      genre: book.genre,
+      creativeBrief: [externalContext ?? "", chaptersText.slice(0, 12_000)].filter(Boolean).join("\n"),
+    });
+    const futureAdvantageBlock = this.buildFutureAdvantageFoundationBlock(
+      futureAdvantageMode,
+      resolvedLanguage,
+    );
 
     const numericalBlock = gp.numericalSystem
       ? (resolvedLanguage === "ko"
@@ -1353,6 +1548,7 @@ Naturally extend the existing arc. Advance existing conflicts, pay off planted h
           numericalBlock,
           gp.powerScaling ? "- 원고에서 확인되는 힘의 서열과 승패 조건을 유지합니다." : "",
           gp.eraResearch ? "- 원고의 시대 정보와 실제 연표가 충돌하지 않게 확인합니다." : "",
+          futureAdvantageBlock,
         )}
 
 ## 가져온 원고를 다루는 법
@@ -1377,6 +1573,7 @@ ${continuationDirective}`
 ${genreBody}
 
 ${numericalBlock}
+${futureAdvantageBlock}
 
 ${continuationDirective}
 
@@ -1398,6 +1595,7 @@ All output MUST be written in English.`
 ${genreBody}
 
 ${numericalBlock}
+${futureAdvantageBlock}
 
 ${continuationDirective}
 
@@ -1417,7 +1615,7 @@ ${continuationDirective}
       { role: "user", content: userMessage },
     ], { temperature: 0.5 });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage);
+    return this.parseSectionsWithRepair(response.content, resolvedLanguage, futureAdvantageMode);
   }
 
   async generateFanficFoundation(
@@ -1430,6 +1628,14 @@ ${continuationDirective}
       await readGenreProfile(this.ctx.projectRoot, book.genre);
     const resolvedLanguage = book.language ?? "zh";
     const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, resolvedLanguage);
+    const futureAdvantageMode = resolveFutureAdvantageFoundationMode({
+      title: book.title,
+      genre: book.genre,
+    });
+    const futureAdvantageBlock = this.buildFutureAdvantageFoundationBlock(
+      futureAdvantageMode,
+      resolvedLanguage,
+    );
 
     const MODE_INSTRUCTIONS: Record<FanficMode, string> = {
       canon: "剧情发生在原作空白期或未详述的角度。不可改变原作已确立的事实。",
@@ -1455,6 +1661,7 @@ ${continuationDirective}
             : "- 원작에 없는 수치 체계를 새로 만들지 않습니다.",
           gp.powerScaling ? "- 원작의 힘의 서열을 지킵니다. 이를 뒤집을 때는 원작 안의 수단과 대가가 필요합니다." : "",
           gp.eraResearch ? "- 원작과 실제 시대의 연표를 함께 지킵니다." : "",
+          futureAdvantageBlock,
         )}
 
 ## 원작 기반 창작 조건
@@ -1479,6 +1686,7 @@ ${MODE_INSTRUCTIONS[fanficMode]}
 3. 5章内引爆
 4. 场景新鲜度 ≥ 50%
 ${reviewFeedbackBlock}
+${futureAdvantageBlock}
 
 ## 原作正典
 ${fanficCanon}
@@ -1506,7 +1714,7 @@ ${genreBody}
       },
     ], { temperature: 0.7 });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage);
+    return this.parseSectionsWithRepair(response.content, resolvedLanguage, futureAdvantageMode);
   }
 
   // -------------------------------------------------------------------------
