@@ -11,6 +11,7 @@ import {
 import { StoryRailPlanSchema } from "../arc/rail-schema.js";
 import { ArcPacketSchema, type ArcPacket } from "../arc/schema.js";
 import { ArcStore } from "../arc/store.js";
+import { ingestMaterial } from "../materials/ingest.js";
 import {
   BOOK_PRODUCTION_BASELINE_STORE_PATH,
   approveBookProductionBaseline,
@@ -18,6 +19,8 @@ import {
   loadBookProductionBaselineStore,
   saveBookProductionBaselineDraft,
 } from "../production/baseline-store.js";
+import { inspectBookProductionReadiness } from "../production/readiness-report.js";
+import { bindBookReference } from "../references/book-references.js";
 import { approveGoldRouteReceipt } from "../references/gold-route-receipt.js";
 
 describe("Book Production Baseline v1", () => {
@@ -36,6 +39,7 @@ describe("Book Production Baseline v1", () => {
     ]);
     await Promise.all([
       writeFile(join(bookDir(), "project_pitch.md"), "# 프로젝트 피치\nIMF 직전, 미래를 아는 재벌 3세가 판을 선점한다.\n", "utf8"),
+      writeFile(join(bookDir(), "story", "book_rules.md"), "# 작품 규칙\n재미와 실행 저항을 우선한다.\n", "utf8"),
       writeFile(join(referenceRoot, "analyses/gold/card.md"), "# Gold\n인수전과 공개 보상\n", "utf8"),
       writeFile(join(referenceRoot, "analyses/gold/qa/receipt.json"), '{"qa":"PASS"}\n', "utf8"),
     ]);
@@ -55,6 +59,7 @@ describe("Book Production Baseline v1", () => {
     const draft = await saveDraft();
     expect(draft.review.status).toBe("draft");
     expect(draft.pitch.path).toBe("project_pitch.md");
+    expect(draft.bookRules.path).toBe("story/book_rules.md");
     expect(draft.storyRail.path).toBe("story/rails/plan.json");
     expect(draft.narrativeArcs).toEqual([expect.objectContaining({
       narrativeArcId: "NA-001",
@@ -206,6 +211,63 @@ describe("Book Production Baseline v1", () => {
     await expect(loadBookProductionBaselineStore(projectRoot, bookId)).rejects.toThrow(
       /approval hash mismatch/i,
     );
+  });
+
+  it("aggregates the live production state without writing or approving Book content", async () => {
+    const report = await inspectBookProductionReadiness(projectRoot, bookId, {
+      repositoryRoots: repositoryRoots(),
+      now: () => new Date("2026-08-22T05:00:00.000Z"),
+    });
+    expect(report).toMatchObject({
+      version: 1,
+      bookId,
+      status: "current",
+      controlFiles: {
+        pitch: { status: "current", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        bookRules: { status: "current", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      },
+      storyRail: { status: "current" },
+      narrativeArcs: [{ allocationId: "ALLOC-001", status: "current" }],
+      arcPackets: [{ arcPacketId: "arc-na1-01", status: "current" }],
+      latestChapterTruth: { status: "not-applicable" },
+      ownerLock: { status: "clear" },
+      openIssues: [],
+    });
+    await expect(readFile(join(bookDir(), BOOK_PRODUCTION_BASELINE_STORE_PATH), "utf8")).rejects.toThrow();
+  });
+
+  it("reports an active owner lock as pending without clearing it", async () => {
+    const heartbeat = new Date("2026-08-22T04:59:30.000Z").getTime();
+    const lockPath = join(bookDir(), ".write.lock");
+    await writeFile(lockPath, JSON.stringify({ heartbeatAt: heartbeat }), "utf8");
+    const report = await inspectBookProductionReadiness(projectRoot, bookId, {
+      repositoryRoots: repositoryRoots(),
+      now: () => new Date("2026-08-22T05:00:00.000Z"),
+    });
+    expect(report).toMatchObject({ status: "pending", ownerLock: { status: "active" } });
+    await expect(readFile(lockPath, "utf8")).resolves.toContain(String(heartbeat));
+  });
+
+  it("labels legacy reference bindings unverified instead of inventing a current approval", async () => {
+    const material = await ingestMaterial(projectRoot, {
+      sourceKind: "text",
+      sourceLabel: "operator-note.txt",
+      content: "IMF기 기업 인수 참고 메모",
+      title: "기업 인수 참고",
+      purpose: "reference",
+    }, { now: () => new Date("2026-08-22T04:00:00.000Z") });
+    await bindBookReference(projectRoot, bookId, {
+      materialId: material.id,
+      uses: ["기업 인수 배경 확인"],
+    }, { now: () => new Date("2026-08-22T04:10:00.000Z") });
+    const report = await inspectBookProductionReadiness(projectRoot, bookId, {
+      repositoryRoots: repositoryRoots(),
+      now: () => new Date("2026-08-22T05:00:00.000Z"),
+    });
+    expect(report).toMatchObject({
+      status: "pending",
+      references: [{ materialId: material.id, status: "unverified" }],
+    });
   });
 
   async function saveDraft() {

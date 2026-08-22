@@ -10,6 +10,12 @@ export const BookProductionPitchSnapshotSchema = z.object({
 }).strict();
 export type BookProductionPitchSnapshot = z.infer<typeof BookProductionPitchSnapshotSchema>;
 
+export const BookProductionBookRulesSnapshotSchema = z.object({
+  path: z.literal("story/book_rules.md"),
+  sha256: Sha256Schema,
+}).strict();
+export type BookProductionBookRulesSnapshot = z.infer<typeof BookProductionBookRulesSnapshotSchema>;
+
 export const BookProductionStoryRailSnapshotSchema = z.object({
   path: z.literal("story/rails/plan.json"),
   updatedAt: z.string().datetime(),
@@ -57,6 +63,7 @@ export const BookProductionBaselineSchema = z.object({
   baselineId: StableIdSchema,
   bookId: z.string().min(1),
   pitch: BookProductionPitchSnapshotSchema,
+  bookRules: BookProductionBookRulesSnapshotSchema,
   storyRail: BookProductionStoryRailSnapshotSchema,
   narrativeArcs: z.array(BookProductionNarrativeArcSnapshotSchema).min(1).max(500),
   arcPackets: z.array(BookProductionArcPacketSnapshotSchema).min(1).max(2_000),

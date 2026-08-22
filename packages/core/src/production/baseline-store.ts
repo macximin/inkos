@@ -27,6 +27,7 @@ import {
 
 export const BOOK_PRODUCTION_BASELINE_STORE_PATH = "story/production/baselines.json";
 export const BOOK_PRODUCTION_PITCH_PATH = "project_pitch.md";
+export const BOOK_PRODUCTION_RULES_PATH = "story/book_rules.md";
 
 export interface BookProductionBaselineDeps {
   readonly repositoryRoots: Readonly<Record<string, string>>;
@@ -38,6 +39,12 @@ export type BookProductionBaselineFreshness = GoldArtifactFreshness | "pending";
 export interface BookProductionPitchInspection {
   readonly status: GoldArtifactFreshness;
   readonly reason?: "pitch-missing" | "pitch-changed";
+  readonly actualSha256?: string;
+}
+
+export interface BookProductionBookRulesInspection {
+  readonly status: GoldArtifactFreshness;
+  readonly reason?: "book-rules-missing" | "book-rules-changed";
   readonly actualSha256?: string;
 }
 
@@ -78,6 +85,7 @@ export interface BookProductionBaselineInspection {
   readonly status: BookProductionBaselineFreshness;
   readonly evidenceStatus: GoldArtifactFreshness;
   readonly pitch?: BookProductionPitchInspection;
+  readonly bookRules?: BookProductionBookRulesInspection;
   readonly storyRail?: BookProductionStoryRailInspection;
   readonly narrativeArcs: ReadonlyArray<BookProductionNarrativeArcInspection>;
   readonly arcPackets: ReadonlyArray<BookProductionArcPacketInspection>;
@@ -100,8 +108,9 @@ export async function saveBookProductionBaselineDraft(
     throw new Error(`Approved production baseline ${JSON.stringify(input.baselineId)} cannot be replaced.`);
   }
 
-  const [pitch, railPlan, allocationStore, goldStore] = await Promise.all([
+  const [pitch, bookRules, railPlan, allocationStore, goldStore] = await Promise.all([
     snapshotPitch(bookDir),
+    snapshotBookRules(bookDir),
     new StoryRailStore(bookDir).load(),
     loadNarrativeArcAllocationStore(projectRoot, bookId),
     loadGoldRouteReceiptStore(projectRoot, bookId),
@@ -169,6 +178,7 @@ export async function saveBookProductionBaselineDraft(
     baselineId: input.baselineId,
     bookId,
     pitch,
+    bookRules,
     storyRail: {
       path: "story/rails/plan.json",
       updatedAt: railPlan.updatedAt,
@@ -326,6 +336,7 @@ async function inspectBookProductionBaselineEvidence(
 ): Promise<{
   readonly status: GoldArtifactFreshness;
   readonly pitch: BookProductionPitchInspection;
+  readonly bookRules: BookProductionBookRulesInspection;
   readonly storyRail: BookProductionStoryRailInspection;
   readonly narrativeArcs: ReadonlyArray<BookProductionNarrativeArcInspection>;
   readonly arcPackets: ReadonlyArray<BookProductionArcPacketInspection>;
@@ -333,6 +344,7 @@ async function inspectBookProductionBaselineEvidence(
 }> {
   const bookDir = join(projectRoot, "books", bookId);
   const pitch = await inspectPitch(bookDir, baseline.pitch.sha256);
+  const bookRules = await inspectBookRules(bookDir, baseline.bookRules.sha256);
   const storyRail = await inspectStoryRail(bookDir, baseline.storyRail);
 
   let allocationStore;
@@ -489,6 +501,7 @@ async function inspectBookProductionBaselineEvidence(
 
   const statuses = [
     pitch.status,
+    bookRules.status,
     storyRail.status,
     ...narrativeArcs.map((entry) => entry.status),
     ...arcPackets.map((entry) => entry.status),
@@ -499,7 +512,7 @@ async function inspectBookProductionBaselineEvidence(
     : statuses.includes("missing")
       ? "missing"
       : "current";
-  return { status, pitch, storyRail, narrativeArcs, arcPackets, goldRoutes };
+  return { status, pitch, bookRules, storyRail, narrativeArcs, arcPackets, goldRoutes };
 }
 
 async function snapshotPitch(bookDir: string): Promise<{ path: "project_pitch.md"; sha256: string }> {
@@ -519,6 +532,25 @@ async function snapshotPitch(bookDir: string): Promise<{ path: "project_pitch.md
   return { path: "project_pitch.md", sha256: sha256(content) };
 }
 
+async function snapshotBookRules(
+  bookDir: string,
+): Promise<{ path: "story/book_rules.md"; sha256: string }> {
+  const path = await safeNonSymlinkChildPath(bookDir, BOOK_PRODUCTION_RULES_PATH);
+  let content: Buffer;
+  try {
+    content = await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      throw new Error("Book production baseline requires story/book_rules.md.");
+    }
+    throw error;
+  }
+  if (content.toString("utf8").trim().length === 0) {
+    throw new Error("Book production baseline requires a non-empty story/book_rules.md.");
+  }
+  return { path: "story/book_rules.md", sha256: sha256(content) };
+}
+
 async function inspectPitch(bookDir: string, expectedSha256: string): Promise<BookProductionPitchInspection> {
   let content: Buffer;
   try {
@@ -534,6 +566,26 @@ async function inspectPitch(bookDir: string, expectedSha256: string): Promise<Bo
   return actualSha256 === expectedSha256
     ? { status: "current", actualSha256 }
     : { status: "stale", reason: "pitch-changed", actualSha256 };
+}
+
+async function inspectBookRules(
+  bookDir: string,
+  expectedSha256: string,
+): Promise<BookProductionBookRulesInspection> {
+  let content: Buffer;
+  try {
+    const path = await safeNonSymlinkChildPath(bookDir, BOOK_PRODUCTION_RULES_PATH);
+    content = await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      return { status: "missing", reason: "book-rules-missing" };
+    }
+    throw error;
+  }
+  const actualSha256 = sha256(content);
+  return actualSha256 === expectedSha256
+    ? { status: "current", actualSha256 }
+    : { status: "stale", reason: "book-rules-changed", actualSha256 };
 }
 
 async function inspectStoryRail(
