@@ -42,6 +42,41 @@ export {
 } from "./arc/schema.js";
 export { ArcStore, assertSafeArcId, type ArcStoreOptions } from "./arc/store.js";
 export {
+  NarrativeArcAllocationInputSchema,
+  NarrativeArcAllocationSchema,
+  NarrativeArcAllocationStoreSchema,
+  NarrativeArcGoldObligationInputSchema,
+  NarrativeArcGoldObligationSchema,
+  NarrativeArcGoldRouteSnapshotSchema,
+  NarrativeArcObligationDispositionSchema,
+  NarrativeArcPacketAssignmentInputSchema,
+  NarrativeArcPacketAssignmentSchema,
+  type NarrativeArcAllocation,
+  type NarrativeArcAllocationInput,
+  type NarrativeArcAllocationReview,
+  type NarrativeArcAllocationStore,
+  type NarrativeArcGoldObligation,
+  type NarrativeArcGoldObligationInput,
+  type NarrativeArcGoldRouteSnapshot,
+  type NarrativeArcObligationDisposition,
+  type NarrativeArcPacketAssignment,
+  type NarrativeArcPacketAssignmentInput,
+} from "./arc/allocation-schema.js";
+export {
+  NARRATIVE_ARC_ALLOCATION_STORE_PATH,
+  approveNarrativeArcAllocation,
+  assertNarrativeArcAllocationApproval,
+  inspectNarrativeArcAllocation,
+  loadNarrativeArcAllocationStore,
+  saveNarrativeArcAllocationDraft,
+  type ApproveNarrativeArcAllocationDeps,
+  type NarrativeArcAllocationDeps,
+  type NarrativeArcAllocationFreshness,
+  type NarrativeArcAllocationInspection,
+  type NarrativeArcGoldRouteInspection,
+  type NarrativeArcPacketEvidenceInspection,
+} from "./arc/allocation-store.js";
+export {
   type AnchorDetailLevel,
   type AnchorState,
   type StoryAnchor,
