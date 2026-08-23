@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { commitAtomicFileSet, recoverAtomicFileSets } from "../utils/atomic-file-set.js";
 
 describe("commitAtomicFileSet", () => {
@@ -66,7 +66,7 @@ describe("commitAtomicFileSet", () => {
       ],
       deletes: ["chapters/0001_old.md"],
       renameFile: async (from, to) => {
-        if (from.includes("/staged/")) {
+        if (from.includes(`${sep}staged${sep}`)) {
           stagedRenameCount += 1;
           if (stagedRenameCount === 2) {
             throw new Error("injected commit failure");
@@ -95,11 +95,11 @@ describe("commitAtomicFileSet", () => {
       ],
       deletes: ["chapters/0001_old.md"],
       renameFile: async (from, to) => {
-        if (from.includes("/staged/")) {
+        if (from.includes(`${sep}staged${sep}`)) {
           stagedRenameCount += 1;
           if (stagedRenameCount === 2) throw new Error("injected commit failure");
         }
-        if (from.includes("/backup/story/current_state.md")) {
+        if (from.includes(`${sep}backup${sep}story${sep}current_state.md`)) {
           throw new Error("injected rollback failure");
         }
         await rename(from, to);
