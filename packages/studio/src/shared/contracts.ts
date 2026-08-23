@@ -45,6 +45,36 @@ export interface BookDetail extends BookSummary {
   readonly language: "zh" | "ko" | "en" | null;
 }
 
+export type ProductionReadinessStatus = "current" | "pending" | "stale" | "missing";
+
+export interface BookProductionReadiness {
+  readonly version: 1;
+  readonly bookId: string;
+  readonly inspectedAt: string;
+  readonly status: ProductionReadinessStatus;
+  readonly controlFiles: {
+    readonly pitch: { readonly path: "story/project_pitch.md"; readonly status: "current" | "missing" };
+    readonly bookRules: { readonly path: "story/book_rules.md"; readonly status: "current" | "missing" };
+  };
+  readonly references: ReadonlyArray<{ readonly materialId: string; readonly status: "unverified" | "missing" }>;
+  readonly goldRoutes: ReadonlyArray<{ readonly receiptId: string; readonly status: "current" | "stale" | "missing" }>;
+  readonly storyRail: { readonly status: ProductionReadinessStatus; readonly reason?: string };
+  readonly narrativeArcs: ReadonlyArray<{ readonly allocationId: string; readonly narrativeArcId: string; readonly status: ProductionReadinessStatus }>;
+  readonly arcPackets: ReadonlyArray<{ readonly arcPacketId: string; readonly status: ProductionReadinessStatus; readonly reason?: string }>;
+  readonly latestChapterTruth: {
+    readonly status: ProductionReadinessStatus | "not-applicable";
+    readonly chapterNumber?: number;
+    readonly chapterStatus?: string;
+    readonly reason?: string;
+  };
+  readonly ownerLock: { readonly status: "clear" | "active" | "stale" };
+  readonly openIssues: ReadonlyArray<{
+    readonly kind: "chapter-audit" | "chapter-length" | "research";
+    readonly status: "pending" | "stale";
+    readonly message: string;
+  }>;
+}
+
 // --- Chapters ---
 
 export interface ChapterSummary {

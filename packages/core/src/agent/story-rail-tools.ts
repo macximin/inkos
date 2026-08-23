@@ -97,11 +97,24 @@ const ArcRouteEntryParam = Type.Object({
   contrastRequirement: Type.String({ description: "How this B must differ from the preceding Arc." }),
 });
 
+const ArcRouteCapacityReservationParam = Type.Object({
+  targetAnchorId: StableRailIdParam,
+  arcCount: Type.Integer({
+    minimum: 1,
+    maximum: 10000,
+    description: "Count of unshaped 1-3 chapter Arc slots reserved for this distant Anchor. This is capacity only, never chapter guidance.",
+  }),
+});
+
 const ArcRouteRailParam = Type.Object({
   status: DraftReadyStatusParam,
   entries: Type.Array(ArcRouteEntryParam, {
     description: "Complete ordered B-Rail. Existing ids may not be omitted; retire unused entries as tombstones.",
   }),
+  capacityReservations: Type.Optional(Type.Array(ArcRouteCapacityReservationParam, {
+    maxItems: 12,
+    description: "Optional long-range capacity by Anchor. Use this instead of inventing dozens of distant B entries.",
+  })),
 });
 
 const StoryRailGetParams = Type.Object({
@@ -273,7 +286,8 @@ export function createReplaceStoryRailsTool(
       "Fully replace the active book's A-Rail and B-Rail plan. Always call get_story_rails first and send the complete "
       + "anchorRail and arcRouteRail, including every stable id, retired tombstone, existing Arc binding, and entry that "
       + "already exists; omission is rejected, and retired/closed history or an existing Arc binding cannot be revived or "
-      + "overwritten. This is not a patch. A ready B-Rail must cover the Book target at the 1-3 chapter Arc cap. "
+      + "overwritten. This is not a patch. A ready B-Rail must cover the Book target at the 1-3 chapter Arc cap; "
+      + "distant unshaped capacity may be reserved by Anchor instead of inventing speculative B entries. "
       + "After saving, if a current active Arc exists and "
       + "the active B entry is unbound, InkOS binds it. An existing conflicting binding is preserved and reported as a warning.",
     label: "Replace Story Rails",

@@ -64,6 +64,29 @@ describe("StoryRailPlan", () => {
     expect(() => StoryRailPlanSchema.parse(makePlan(earlyClose))).not.toThrow();
   });
 
+  it("uses distant capacity reservations instead of forcing dozens of speculative B entries", () => {
+    const input = makeReadyInput();
+    input.arcRouteRail.entries = input.arcRouteRail.entries.slice(0, 2);
+    input.arcRouteRail.entries[0]!.targetAnchorId = "A01";
+    input.arcRouteRail.entries[1]!.targetAnchorId = "A02";
+    input.arcRouteRail.capacityReservations = [
+      { targetAnchorId: "A03", arcCount: 15 },
+      { targetAnchorId: "A04", arcCount: 15 },
+      { targetAnchorId: "A05", arcCount: 15 },
+      { targetAnchorId: "A06", arcCount: 20 },
+    ];
+
+    const plan = StoryRailPlanSchema.parse(makePlan(input, 200));
+    expect(plan.arcRouteRail.entries).toHaveLength(2);
+    expect(plan.arcRouteRail.capacityReservations).toHaveLength(4);
+
+    const invalid = structuredClone(input);
+    invalid.arcRouteRail.capacityReservations![3]!.targetAnchorId = "A05";
+    expect(() => StoryRailPlanSchema.parse(makePlan(invalid, 200))).toThrow(
+      /unique|increasing anchor order/i,
+    );
+  });
+
   it("requires an actual episode count only for closed B entries", () => {
     const entry = makeReadyInput().arcRouteRail.entries[0]!;
     expect(() => ArcRouteEntrySchema.parse({ ...entry, status: "closed" })).toThrow(

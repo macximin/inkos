@@ -6,6 +6,7 @@ import type { SSEMessage } from "../hooks/use-sse";
 import { useColors } from "../hooks/use-colors";
 import { deriveBookActivity, shouldRefetchBookView } from "../hooks/use-book-activity";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import type { BookProductionReadiness, ProductionReadinessStatus } from "../shared/contracts";
 import {
   ChevronLeft,
   Zap,
@@ -112,6 +113,59 @@ export function memoryReliabilityLabel(
   return "유지";
 }
 
+export function reviewModeLabel(mode: "auto" | "manual"): string {
+  return mode === "manual" ? "검수: 수동·집필 후 멈춤" : "검수: 자동";
+}
+
+export function reviewModeTitle(mode: "auto" | "manual"): string {
+  return mode === "manual"
+    ? "수동 검수: 집필 후 멈추며, 직접 검수·수정·승인을 진행합니다. 누르면 자동 검수로 전환합니다."
+    : "자동 검수: 집필 뒤 자동으로 검수하고 필요하면 다시 씁니다. 누르면 수동 검수로 전환합니다.";
+}
+
+export function productionReadinessStatusLabel(status: ProductionReadinessStatus | "not-applicable"): string {
+  if (status === "current") return "준비됨";
+  if (status === "pending") return "확인 대기";
+  if (status === "stale") return "다시 확인";
+  if (status === "missing") return "누락";
+  return "해당 없음";
+}
+
+function readinessStatusClass(status: ProductionReadinessStatus | "not-applicable"): string {
+  if (status === "current") return "bg-emerald-500/10 text-emerald-600";
+  if (status === "pending" || status === "not-applicable") return "bg-amber-500/10 text-amber-600";
+  return "bg-destructive/10 text-destructive";
+}
+
+export function worstReadinessStatus(statuses: ReadonlyArray<ProductionReadinessStatus>): ProductionReadinessStatus {
+  if (statuses.includes("stale")) return "stale";
+  if (statuses.includes("missing")) return "missing";
+  if (statuses.includes("pending")) return "pending";
+  return "current";
+}
+
+function ReadinessItem({
+  label,
+  status,
+  detail,
+}: {
+  readonly label: string;
+  readonly status: ProductionReadinessStatus | "not-applicable";
+  readonly detail: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border/40 bg-secondary/20 px-3 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-bold text-foreground/80">{label}</span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${readinessStatusClass(status)}`}>
+          {productionReadinessStatusLabel(status)}
+        </span>
+      </div>
+      <div className="mt-1 truncate text-[11px] text-muted-foreground" title={detail}>{detail}</div>
+    </div>
+  );
+}
+
 export function BookDetail({
   bookId,
   nav,
@@ -127,6 +181,12 @@ export function BookDetail({
 }) {
   const c = useColors(theme);
   const { data, loading, error, refetch } = useApi<BookData>(`/books/${bookId}`);
+  const {
+    data: readiness,
+    loading: readinessLoading,
+    error: readinessError,
+    refetch: refetchReadiness,
+  } = useApi<BookProductionReadiness>(`/books/${bookId}/production-readiness`);
   const [writeRequestPending, setWriteRequestPending] = useState(false);
   const [draftRequestPending, setDraftRequestPending] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -177,8 +237,9 @@ export function BookDetail({
       setWriteRequestPending(false);
       setDraftRequestPending(false);
       refetch();
+      refetchReadiness();
     }
-  }, [bookId, refetch, sse.messages]);
+  }, [bookId, refetch, refetchReadiness, sse.messages]);
 
   const handleWriteNext = async () => {
     setWriteRequestPending(true);
@@ -533,13 +594,11 @@ export function BookDetail({
           </button>
           <button
             onClick={handleToggleReviewMode}
-            title={reviewMode === "manual"
-              ? "手动审查：写完即停，由你点 审稿/修订/通过（更快、更可控）。点此切回自动。"
-              : "自动审查：写完自动审校并按需重写（更省心，但更慢）。点此切到手动·写完即停。"}
+            title={reviewModeTitle(reviewMode)}
             className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium bg-secondary/60 text-foreground rounded-xl border border-border/50 hover:bg-secondary transition-all"
           >
             {reviewMode === "manual" ? <Hand size={16} /> : <Settings2 size={16} />}
-            {reviewMode === "manual" ? "审查：手动·写完即停" : "审查：自动"}
+            {reviewModeLabel(reviewMode)}
           </button>
           <button
             onClick={() => setConfirmDeleteOpen(true)}
@@ -723,6 +782,76 @@ export function BookDetail({
           </button>
         </div>
       </div>
+
+      {/* Read-only aggregation of the canonical pitch → Arc → manuscript inputs. */}
+      <section className="paper-sheet rounded-2xl border border-border/40 shadow-sm p-6" data-testid="production-readiness">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">제작 준비도</h2>
+            <p className="mt-1 text-xs text-muted-foreground">기획서·레일·아크·원고 근거를 읽기 전용으로 확인합니다.</p>
+          </div>
+          {readiness ? (
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${readinessStatusClass(readiness.status)}`}>
+              {productionReadinessStatusLabel(readiness.status)}
+            </span>
+          ) : null}
+        </div>
+
+        {readinessLoading ? (
+          <div className="mt-4 text-sm text-muted-foreground">준비도를 확인하는 중…</div>
+        ) : readinessError ? (
+          <div className="mt-4 rounded-lg bg-destructive/5 px-3 py-2 text-sm text-destructive">준비도 확인 실패: {readinessError}</div>
+        ) : readiness ? (
+          <>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <ReadinessItem
+                label="기획서·작품 규칙"
+                status={readiness.controlFiles.pitch.status === "current" && readiness.controlFiles.bookRules.status === "current" ? "current" : "missing"}
+                detail={readiness.controlFiles.pitch.status === "current" && readiness.controlFiles.bookRules.status === "current" ? "정본 경로 확인" : "필수 파일 확인 필요"}
+              />
+              <ReadinessItem label="A/B 레일" status={readiness.storyRail.status} detail={readiness.storyRail.reason ?? "현재 계획"} />
+              <ReadinessItem
+                label="아크 배분"
+                status={readiness.narrativeArcs.length > 0 ? worstReadinessStatus(readiness.narrativeArcs.map((arc) => arc.status)) : "pending"}
+                detail={`${readiness.narrativeArcs.length}개`}
+              />
+              <ReadinessItem
+                label="아크 패킷"
+                status={readiness.arcPackets.length > 0 ? worstReadinessStatus(readiness.arcPackets.map((packet) => packet.status)) : "pending"}
+                detail={`${readiness.arcPackets.length}개`}
+              />
+              <ReadinessItem
+                label="골드 경로"
+                status={readiness.goldRoutes.length > 0 ? worstReadinessStatus(readiness.goldRoutes.map((route) => route.status)) : "not-applicable"}
+                detail={`${readiness.goldRoutes.length}개`}
+              />
+              <ReadinessItem
+                label="일반 참고자료"
+                status={readiness.references.length === 0 ? "not-applicable" : readiness.references.some((reference) => reference.status === "missing") ? "missing" : "pending"}
+                detail={`${readiness.references.length}개`}
+              />
+              <ReadinessItem
+                label="최신 회차 정본"
+                status={readiness.latestChapterTruth.status}
+                detail={readiness.latestChapterTruth.chapterNumber ? `${readiness.latestChapterTruth.chapterNumber}화` : "승인 회차 없음"}
+              />
+              <ReadinessItem
+                label="집필 잠금"
+                status={readiness.ownerLock.status === "clear" ? "current" : readiness.ownerLock.status === "active" ? "pending" : "stale"}
+                detail={readiness.ownerLock.status === "clear" ? "비어 있음" : readiness.ownerLock.status}
+              />
+            </div>
+            {readiness.openIssues.length > 0 ? (
+              <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+                <div className="text-xs font-bold text-amber-700">열린 확인 사항 {readiness.openIssues.length}건</div>
+                <ul className="mt-2 space-y-1 text-xs leading-5 text-muted-foreground">
+                  {readiness.openIssues.map((issue, index) => <li key={`${issue.kind}-${index}`}>· {issue.message}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </section>
 
       {lastAudit ? (
         <section className="paper-sheet rounded-2xl border border-border/40 p-5 shadow-sm" aria-live="polite" data-testid="chapter-audit-result">

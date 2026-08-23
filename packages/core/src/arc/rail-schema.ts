@@ -139,9 +139,25 @@ export const ArcRouteEntrySchema = z.object({
 });
 export type ArcRouteEntry = z.infer<typeof ArcRouteEntrySchema>;
 
+/**
+ * Long-range capacity without speculative Arc content.
+ *
+ * A 200-chapter Book should not need dozens of fake B-Rail titles merely to
+ * claim that its route can reach the ending. Reservations keep only the
+ * number of still-unshaped 1-3 chapter Arc slots assigned to an A-Rail
+ * destination. They have no id, Arc binding, beats, or payoff details and
+ * therefore cannot guide chapter production until materialized as entries.
+ */
+export const ArcRouteCapacityReservationSchema = z.object({
+  targetAnchorId: StableRailIdSchema,
+  arcCount: z.number().int().min(1).max(10_000),
+}).strict();
+export type ArcRouteCapacityReservation = z.infer<typeof ArcRouteCapacityReservationSchema>;
+
 export const ArcRouteRailSchema = z.object({
   status: StoryRailReadinessSchema,
   entries: z.array(ArcRouteEntrySchema),
+  capacityReservations: z.array(ArcRouteCapacityReservationSchema).max(12).optional(),
 }).strict().superRefine((rail, ctx) => {
   validateUniqueAndIncreasing(
     rail.entries,
@@ -182,6 +198,18 @@ export const ArcRouteRailSchema = z.object({
       path: ["entries"],
       message: "A B-Rail can contain at most one provisional entry",
     });
+  }
+
+  const reservationAnchors = new Set<string>();
+  for (const [index, reservation] of (rail.capacityReservations ?? []).entries()) {
+    if (reservationAnchors.has(reservation.targetAnchorId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["capacityReservations", index, "targetAnchorId"],
+        message: `Capacity reservation anchor ids must be unique: ${JSON.stringify(reservation.targetAnchorId)}`,
+      });
+    }
+    reservationAnchors.add(reservation.targetAnchorId);
   }
 
   if (rail.status !== "ready") return;
@@ -265,7 +293,43 @@ export const StoryRailPlanSchema = z.object({
   }
 
   const liveEntries = plan.arcRouteRail.entries.filter((entry) => entry.status !== "retired");
-  const routedAnchorIds = new Set(liveEntries.map((entry) => entry.targetAnchorId));
+  const capacityReservations = plan.arcRouteRail.capacityReservations ?? [];
+  const routedAnchorIds = new Set([
+    ...liveEntries.map((entry) => entry.targetAnchorId),
+    ...capacityReservations.map((reservation) => reservation.targetAnchorId),
+  ]);
+  let previousReservationAnchorOrder: number | undefined;
+  for (const [index, reservation] of capacityReservations.entries()) {
+    const targetAnchor = plan.anchorRail.anchors.find(
+      (anchor) => anchor.id === reservation.targetAnchorId,
+    );
+    if (!targetAnchor) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["arcRouteRail", "capacityReservations", index, "targetAnchorId"],
+        message: `Capacity reservation anchor ${JSON.stringify(reservation.targetAnchorId)} does not exist`,
+      });
+      continue;
+    }
+    if (targetAnchor.state === "retired") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["arcRouteRail", "capacityReservations", index, "targetAnchorId"],
+        message: "A capacity reservation cannot target a retired anchor",
+      });
+    }
+    if (
+      previousReservationAnchorOrder !== undefined
+      && targetAnchor.routeOrder <= previousReservationAnchorOrder
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["arcRouteRail", "capacityReservations", index, "targetAnchorId"],
+        message: "Capacity reservations must follow increasing anchor order",
+      });
+    }
+    previousReservationAnchorOrder = targetAnchor.routeOrder;
+  }
   for (const [index, anchor] of plan.anchorRail.anchors.entries()) {
     if (anchor.state !== "retired" && !routedAnchorIds.has(anchor.id)) {
       ctx.addIssue({
@@ -293,13 +357,7 @@ export const StoryRailPlanSchema = z.object({
     previousAnchorOrder = targetOrder;
   }
 
-  const routeCapacity = plan.arcRouteRail.entries.reduce((total, entry) => {
-    if (entry.status === "closed") return total + (entry.actualEpisodeCount ?? 0);
-    if (entry.status === "active" || entry.status === "provisional" || entry.status === "hypothesis") {
-      return total + plan.routeCapacity.arcEpisodeCap;
-    }
-    return total;
-  }, 0);
+  const routeCapacity = calculateStoryRailMaximumChapterCapacity(plan);
   if (routeCapacity < plan.routeCapacity.targetChaptersSnapshot) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -313,19 +371,23 @@ export const StoryRailPlanSchema = z.object({
     plan.anchorRail.anchors.filter((anchor) => anchor.state !== "retired"),
   );
   const lastLiveEntry = maxByRouteOrder(liveEntries);
+  const lastReservedAnchor = capacityReservations.at(-1)?.targetAnchorId;
   if (!lastLiveAnchor) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["anchorRail", "anchors"],
       message: "A ready rail plan requires at least one live anchor",
     });
-  } else if (!lastLiveEntry) {
+  } else if (!lastLiveEntry && !lastReservedAnchor) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["arcRouteRail", "entries"],
       message: "A ready rail plan requires at least one live B-Rail entry",
     });
-  } else if (lastLiveEntry.targetAnchorId !== lastLiveAnchor.id) {
+  } else if (
+    lastLiveEntry?.targetAnchorId !== lastLiveAnchor.id
+    && lastReservedAnchor !== lastLiveAnchor.id
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["arcRouteRail", "entries"],
@@ -334,6 +396,23 @@ export const StoryRailPlanSchema = z.object({
   }
 });
 export type StoryRailPlan = z.infer<typeof StoryRailPlanSchema>;
+
+export function calculateStoryRailMaximumChapterCapacity(
+  plan: Pick<StoryRailPlan, "arcRouteRail" | "routeCapacity">,
+): number {
+  const entryCapacity = plan.arcRouteRail.entries.reduce((total, entry) => {
+    if (entry.status === "closed") return total + (entry.actualEpisodeCount ?? 0);
+    if (entry.status === "active" || entry.status === "provisional" || entry.status === "hypothesis") {
+      return total + plan.routeCapacity.arcEpisodeCap;
+    }
+    return total;
+  }, 0);
+  const reservedCapacity = (plan.arcRouteRail.capacityReservations ?? []).reduce(
+    (total, reservation) => total + reservation.arcCount * plan.routeCapacity.arcEpisodeCap,
+    0,
+  );
+  return entryCapacity + reservedCapacity;
+}
 
 const ANCHOR_COMPOUND_READY_FIELDS = [
   "entryState",

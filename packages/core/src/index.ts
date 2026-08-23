@@ -140,6 +140,7 @@ export {
   type ArcActualEpisodeCount,
   type ArcRouteEntryStatus,
   type ArcRouteEntry,
+  type ArcRouteCapacityReservation,
   type ArcRouteRail,
   type StoryRailReadiness,
   type StoryRailRouteCapacity,
@@ -153,11 +154,13 @@ export {
   AnchorRailSchema,
   ArcRouteEntryStatusSchema,
   ArcRouteEntrySchema,
+  ArcRouteCapacityReservationSchema,
   ArcRouteRailSchema,
   StoryRailReadinessSchema,
   StoryRailRouteCapacitySchema,
   StoryRailPlanInputSchema,
   StoryRailPlanSchema,
+  calculateStoryRailMaximumChapterCapacity,
 } from "./arc/rail-schema.js";
 export {
   StoryRailStore,

@@ -24,7 +24,7 @@ import { BOOK_PRODUCTION_PITCH_PATH, BOOK_PRODUCTION_RULES_PATH } from "./baseli
 export type BookProductionReadinessStatus = GoldArtifactFreshness | "pending";
 
 export interface BookProductionLiveFileStatus {
-  readonly path: "project_pitch.md" | "story/book_rules.md";
+  readonly path: "story/project_pitch.md" | "story/book_rules.md";
   readonly status: "current" | "missing";
   readonly sha256?: string;
 }
@@ -115,7 +115,7 @@ export async function inspectBookProductionReadiness(
   const now = deps.now?.() ?? new Date();
 
   const [pitch, bookRules, references, goldRoutes, storyRail, allocationStore, latestChapterTruth, ownerLock, researchIssues] = await Promise.all([
-    inspectLiveFile(bookDir, BOOK_PRODUCTION_PITCH_PATH, "project_pitch.md"),
+    inspectLiveFile(bookDir, BOOK_PRODUCTION_PITCH_PATH, "story/project_pitch.md"),
     inspectLiveFile(bookDir, BOOK_PRODUCTION_RULES_PATH, "story/book_rules.md"),
     inspectReferences(projectRoot, bookId),
     inspectGoldRoutes(projectRoot, bookId, deps.repositoryRoots),

@@ -38,7 +38,7 @@ describe("Book Production Baseline v1", () => {
       mkdir(join(referenceRoot, "analyses", "gold", "qa"), { recursive: true }),
     ]);
     await Promise.all([
-      writeFile(join(bookDir(), "project_pitch.md"), "# 프로젝트 피치\nIMF 직전, 미래를 아는 재벌 3세가 판을 선점한다.\n", "utf8"),
+      writeFile(join(bookDir(), "story", "project_pitch.md"), "# 프로젝트 피치\nIMF 직전, 미래를 아는 재벌 3세가 판을 선점한다.\n", "utf8"),
       writeFile(join(bookDir(), "story", "book_rules.md"), "# 작품 규칙\n재미와 실행 저항을 우선한다.\n", "utf8"),
       writeFile(join(referenceRoot, "analyses/gold/card.md"), "# Gold\n인수전과 공개 보상\n", "utf8"),
       writeFile(join(referenceRoot, "analyses/gold/qa/receipt.json"), '{"qa":"PASS"}\n', "utf8"),
@@ -58,7 +58,7 @@ describe("Book Production Baseline v1", () => {
   it("freezes pitch, ready Rails, approved NarrativeArc allocation, ArcPacket, and Gold route", async () => {
     const draft = await saveDraft();
     expect(draft.review.status).toBe("draft");
-    expect(draft.pitch.path).toBe("project_pitch.md");
+    expect(draft.pitch.path).toBe("story/project_pitch.md");
     expect(draft.bookRules.path).toBe("story/book_rules.md");
     expect(draft.storyRail.path).toBe("story/rails/plan.json");
     expect(draft.narrativeArcs).toEqual([expect.objectContaining({
@@ -123,10 +123,10 @@ describe("Book Production Baseline v1", () => {
   });
 
   it("requires a non-empty project pitch and ready A/B Rails", async () => {
-    await writeFile(join(bookDir(), "project_pitch.md"), "\n", "utf8");
-    await expect(saveDraft()).rejects.toThrow(/non-empty project_pitch\.md/i);
+    await writeFile(join(bookDir(), "story", "project_pitch.md"), "\n", "utf8");
+    await expect(saveDraft()).rejects.toThrow(/non-empty story\/project_pitch\.md/i);
 
-    await writeFile(join(bookDir(), "project_pitch.md"), "# 복구된 피치\n", "utf8");
+    await writeFile(join(bookDir(), "story", "project_pitch.md"), "# 복구된 피치\n", "utf8");
     const railPath = join(bookDir(), "story", "rails", "plan.json");
     const rail = JSON.parse(await readFile(railPath, "utf8")) as {
       anchorRail: { status: string };
@@ -136,6 +136,21 @@ describe("Book Production Baseline v1", () => {
     rail.arcRouteRail.status = "draft";
     await writeFile(railPath, `${JSON.stringify(rail, null, 2)}\n`, "utf8");
     await expect(saveDraft()).rejects.toThrow(/requires ready A-Rail and B-Rail/i);
+  });
+
+  it("does not mistake a root-level pitch for the canonical story pitch", async () => {
+    await unlink(join(bookDir(), "story", "project_pitch.md"));
+    await writeFile(join(bookDir(), "project_pitch.md"), "# 잘못된 위치의 피치\n", "utf8");
+
+    await expect(saveDraft()).rejects.toThrow(/requires story\/project_pitch\.md/i);
+    await expect(inspectBookProductionReadiness(projectRoot, bookId, {
+      repositoryRoots: repositoryRoots(),
+    })).resolves.toMatchObject({
+      status: "missing",
+      controlFiles: {
+        pitch: { path: "story/project_pitch.md", status: "missing" },
+      },
+    });
   });
 
   it("rejects an unapproved NarrativeArc allocation and a draft ArcPacket", async () => {
@@ -156,7 +171,7 @@ describe("Book Production Baseline v1", () => {
 
   it("refuses approval when the project pitch changes after the draft", async () => {
     const draft = await saveDraft();
-    await writeFile(join(bookDir(), "project_pitch.md"), "# 승인 직전 바뀐 피치\n", "utf8");
+    await writeFile(join(bookDir(), "story", "project_pitch.md"), "# 승인 직전 바뀐 피치\n", "utf8");
     await expect(approveBookProductionBaseline(
       projectRoot,
       bookId,

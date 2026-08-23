@@ -26,7 +26,7 @@ import {
 } from "./baseline-schema.js";
 
 export const BOOK_PRODUCTION_BASELINE_STORE_PATH = "story/production/baselines.json";
-export const BOOK_PRODUCTION_PITCH_PATH = "project_pitch.md";
+export const BOOK_PRODUCTION_PITCH_PATH = "story/project_pitch.md";
 export const BOOK_PRODUCTION_RULES_PATH = "story/book_rules.md";
 
 export interface BookProductionBaselineDeps {
@@ -515,21 +515,21 @@ async function inspectBookProductionBaselineEvidence(
   return { status, pitch, bookRules, storyRail, narrativeArcs, arcPackets, goldRoutes };
 }
 
-async function snapshotPitch(bookDir: string): Promise<{ path: "project_pitch.md"; sha256: string }> {
+async function snapshotPitch(bookDir: string): Promise<{ path: "story/project_pitch.md"; sha256: string }> {
   const path = await safeNonSymlinkChildPath(bookDir, BOOK_PRODUCTION_PITCH_PATH);
   let content: Buffer;
   try {
     content = await readFile(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
-      throw new Error("Book production baseline requires project_pitch.md.");
+      throw new Error("Book production baseline requires story/project_pitch.md.");
     }
     throw error;
   }
   if (content.toString("utf8").trim().length === 0) {
-    throw new Error("Book production baseline requires a non-empty project_pitch.md.");
+    throw new Error("Book production baseline requires a non-empty story/project_pitch.md.");
   }
-  return { path: "project_pitch.md", sha256: sha256(content) };
+  return { path: "story/project_pitch.md", sha256: sha256(content) };
 }
 
 async function snapshotBookRules(

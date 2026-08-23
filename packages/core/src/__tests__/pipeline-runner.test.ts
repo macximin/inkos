@@ -27,6 +27,7 @@ import type { BookConfig } from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import { MemoryDB } from "../state/memory-db.js";
 import * as memoryDbModule from "../state/memory-db.js";
+import { verifyChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
 import { countChapterLength } from "../utils/length-metrics.js";
 import {
   listChapterVersions,
@@ -522,7 +523,7 @@ describe("PipelineRunner", () => {
         arcProvenance: provenance,
       }]),
     ]);
-    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(createAuditResult({
+    const auditSpy = vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(createAuditResult({
       passed: true,
       creativePassed: true,
       researchStatus: "not-checked",
@@ -547,6 +548,16 @@ describe("PipelineRunner", () => {
         chapterNumber: 1,
         arcId: "arc-future-audit",
       });
+
+      auditSpy.mockResolvedValue(createAuditResult({
+        passed: true,
+        creativePassed: true,
+        researchStatus: "not-checked",
+        summary: "same body; optional execution block omitted",
+      }));
+      await runner.auditDraft(bookId, 1);
+      const [reaudited] = await state.loadChapterIndex(bookId);
+      expect(reaudited?.futureAdvantageExecution).toEqual(saved?.futureAdvantageExecution);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3542,6 +3553,7 @@ describe("PipelineRunner", () => {
     const now = "2026-03-19T00:00:00.000Z";
     const bookDir = state.bookDir(bookId);
     const storyDir = join(bookDir, "story");
+    const { endpointProvenance } = await installReadyEndpointArc(state, bookId, [1]);
 
     await Promise.all([
       writeFile(join(storyDir, "current_focus.md"), "# 当前聚焦\n\n## 当前重点\n\n商会路线优先。\n", "utf-8"),
@@ -3586,7 +3598,7 @@ describe("PipelineRunner", () => {
         title: "夜灯",
         content: "林越推门进去，先停在门槛外听了一息，再去看柜台后那盏没关的灯。",
         wordCount: "林越推门进去，先停在门槛外听了一息，再去看柜台后那盏没关的灯。".length,
-        updatedState: "synced state",
+        updatedState: "synced state\n",
         updatedHooks: "synced hooks",
         updatedLedger: "synced ledger",
       }),
@@ -3612,9 +3624,20 @@ describe("PipelineRunner", () => {
       allowReapply: true,
       chapterIntent: expect.stringContaining("把注意力收回师债主线"),
     }));
-    await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("synced state");
+    await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("synced state\n");
     await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe("synced hooks");
     expect(savedIndex[0]?.status).toBe("ready-for-review");
+    expect(savedIndex[0]?.arcProvenance).toEqual(endpointProvenance);
+    await expect(stat(join(storyDir, "runtime", "chapter-0001.truth-receipt.json")))
+      .resolves.toBeDefined();
+
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "clean" }),
+    );
+    await runner.auditDraft(bookId, 1);
+    const [auditedChapter] = await state.loadChapterIndex(bookId);
+    await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("synced state\n");
+    await expect(verifyChapterTruthReceipt(bookDir, bookId, auditedChapter!)).resolves.toBeDefined();
 
     await rm(root, { recursive: true, force: true });
   });

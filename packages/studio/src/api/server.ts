@@ -142,9 +142,10 @@ import {
   CODEX_DEFAULT_MODEL,
   probeCodexCli,
   safeNonSymlinkChildPath,
+  inspectBookProductionReadiness,
 } from "@actalk/inkos-core";
 import { access, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSafeBookId } from "./safety.js";
 import { ApiError } from "./errors.js";
 import { buildStudioBookConfig } from "./book-create.js";
@@ -2996,7 +2997,25 @@ async function probeServiceCapabilities(args: {
 
 // --- Server factory ---
 
-export function createStudioServer(initialConfig: ProjectConfig, root: string, overrides: { readonly nodeImageGenerator?: NodeImageDeps } = {}) {
+async function discoverSiblingRepositoryRoots(root: string): Promise<Readonly<Record<string, string>>> {
+  const parent = dirname(root);
+  const entries = await readdir(parent, { withFileTypes: true }).catch(() => []);
+  return Object.fromEntries([
+    [basename(root), root],
+    ...entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => [entry.name, join(parent, entry.name)] as const),
+  ]);
+}
+
+export function createStudioServer(
+  initialConfig: ProjectConfig,
+  root: string,
+  overrides: {
+    readonly nodeImageGenerator?: NodeImageDeps;
+    readonly repositoryRoots?: Readonly<Record<string, string>>;
+  } = {},
+) {
   const app = new Hono();
   const state = new StateManager(root);
   let cachedConfig = initialConfig;
@@ -3365,6 +3384,30 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         references: [],
         referenceError: error instanceof Error ? error.message : String(error),
       });
+    }
+  });
+
+  // Read-only production readiness. Canonical files remain authoritative and
+  // this endpoint never creates, approves, repairs, or rewrites Book content.
+  app.get("/api/v1/books/:id/production-readiness", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+    } catch {
+      return c.json({ error: `Book "${id}" not found` }, 404);
+    }
+
+    try {
+      const repositoryRoots = overrides.repositoryRoots
+        ?? await discoverSiblingRepositoryRoots(root);
+      return c.json(await inspectBookProductionReadiness(root, id, { repositoryRoots }));
+    } catch (error) {
+      return c.json({
+        error: {
+          code: "PRODUCTION_READINESS_INVALID",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      }, 422);
     }
   });
 

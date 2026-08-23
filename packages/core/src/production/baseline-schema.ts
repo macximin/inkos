@@ -5,7 +5,7 @@ const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const StableIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/);
 
 export const BookProductionPitchSnapshotSchema = z.object({
-  path: z.literal("project_pitch.md"),
+  path: z.literal("story/project_pitch.md"),
   sha256: Sha256Schema,
 }).strict();
 export type BookProductionPitchSnapshot = z.infer<typeof BookProductionPitchSnapshotSchema>;

@@ -506,6 +506,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     readBookRules: actual.readBookRules,
     ingestMaterial: actual.ingestMaterial,
     listBookReferences: actual.listBookReferences,
+    inspectBookProductionReadiness: actual.inspectBookProductionReadiness,
     isUsablePlayInitialScene: actual.isUsablePlayInitialScene,
     chatCompletion: chatCompletionMock,
     loadProjectConfig: loadProjectConfigMock,
@@ -1426,6 +1427,34 @@ futureAdvantage:
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "PROJECT_PITCH_NOT_FOUND" },
     });
+  });
+
+  it("reports canonical production readiness without modifying the book", async () => {
+    const bookId = "readiness-book";
+    await writeCompleteBookFixture(root, bookId, "Readiness Book");
+    const storyDir = join(root, "books", bookId, "story");
+    await Promise.all([
+      writeFile(join(storyDir, "project_pitch.md"), "# 정본 피치\n", "utf8"),
+      writeFile(join(storyDir, "book_rules.md"), "# 작품 규칙\n", "utf8"),
+    ]);
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root, { repositoryRoots: {} });
+    const response = await app.request(`http://localhost/api/v1/books/${bookId}/production-readiness`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      version: 1,
+      bookId,
+      status: "missing",
+      controlFiles: {
+        pitch: { path: "story/project_pitch.md", status: "current" },
+        bookRules: { path: "story/book_rules.md", status: "current" },
+      },
+      storyRail: { status: "missing", reason: "story-rail-missing" },
+      ownerLock: { status: "clear" },
+    });
+    await expect(access(join(root, "books", bookId, "story", "production"))).rejects.toThrow();
   });
 
   it("allows reading and updating fixed control truth files", async () => {

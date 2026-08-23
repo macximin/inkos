@@ -25,6 +25,7 @@ import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
 import { buildChapterFutureAdvantageExecution } from "../state/future-advantage-ledger.js";
+import { hashFutureAdvantageChapterContent } from "../models/future-advantage-ledger.js";
 import { ArcStore } from "../arc/store.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import {
@@ -115,6 +116,23 @@ function sameArcProvenance(
 ): boolean {
   if (!left || !right) return left === right;
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function preserveCurrentFutureAdvantageExecution(
+  chapter: ChapterMeta | undefined,
+  chapterContent: string,
+): ChapterMeta["futureAdvantageExecution"] {
+  const existing = chapter?.futureAdvantageExecution;
+  const provenance = chapter?.arcProvenance;
+  if (
+    !existing
+    || !provenance?.futureAdvantageMove
+    || existing.chapterNumber !== chapter.number
+    || existing.arcId !== provenance.arcId
+    || existing.moveId !== provenance.futureAdvantageMove.moveId
+    || existing.contentSha256 !== hashFutureAdvantageChapterContent(chapterContent)
+  ) return undefined;
+  return existing;
 }
 
 interface ImportFoundationSourceOptions {
@@ -1377,7 +1395,7 @@ export class PipelineRunner {
         : undefined,
     });
     const result = evaluation.auditResult;
-    const futureAdvantageExecution = chapterMeta
+    const newlyAuditedFutureAdvantageExecution = chapterMeta
       ? buildChapterFutureAdvantageExecution({
           chapterNumber: targetChapter,
           chapterContent: content,
@@ -1385,6 +1403,8 @@ export class PipelineRunner {
           auditResult: result,
         })
       : undefined;
+    const futureAdvantageExecution = newlyAuditedFutureAdvantageExecution
+      ?? preserveCurrentFutureAdvantageExecution(chapterMeta, content);
 
     // Update index with audit result
     const updated = index.map((ch) =>
@@ -1407,6 +1427,11 @@ export class PipelineRunner {
         issues: result.issues.filter((issue) => issue.severity === "critical" || issue.severity === "warning"),
         language,
       }).catch(() => undefined);
+      const settledChapter = updated.find((chapter) => chapter.number === targetChapter);
+      if (settledChapter?.arcProvenance?.storyRail) {
+        await this.state.snapshotState(bookId, targetChapter);
+        await this.persistStoryRailTruthReceipt(bookId, settledChapter);
+      }
     }
 
     await this.emitWebhook(
@@ -2534,6 +2559,13 @@ export class PipelineRunner {
         this.config.externalContext,
         { reuseExistingIntentWhenContextMissing: true },
       );
+    const resyncedArcProvenance = reducedControlInput?.plan.arcProvenance ?? targetMeta.arcProvenance;
+    const resyncedFutureAdvantageExecution = targetMeta.futureAdvantageExecution
+      && resyncedArcProvenance
+      && targetMeta.futureAdvantageExecution.arcId === resyncedArcProvenance.arcId
+      && targetMeta.futureAdvantageExecution.moveId === resyncedArcProvenance.futureAdvantageMove?.moveId
+      ? targetMeta.futureAdvantageExecution
+      : undefined;
 
     const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
     let syncedOutput = await writer.settleChapterState({
@@ -2615,12 +2647,16 @@ export class PipelineRunner {
         updatedAt: new Date().toISOString(),
         auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
         reviewNote: undefined,
+        arcProvenance: resyncedArcProvenance,
+        futureAdvantageExecution: resyncedFutureAdvantageExecution,
       };
     } else {
       index[targetIndex] = {
         ...targetMeta,
         status: "ready-for-review",
         updatedAt: new Date().toISOString(),
+        arcProvenance: resyncedArcProvenance,
+        futureAdvantageExecution: resyncedFutureAdvantageExecution,
       };
     }
     await this.state.saveChapterIndex(bookId, index);
@@ -3953,7 +3989,7 @@ ${matrix}`,
     const driftPath = join(storyDir, "audit_drift.md");
     const statePath = join(storyDir, "current_state.md");
     const currentState = await readFile(statePath, "utf-8").catch(() => "");
-    const sanitizedState = this.stripAuditDriftCorrectionBlock(currentState).trimEnd();
+    const sanitizedState = this.stripAuditDriftCorrectionBlock(currentState);
 
     if (sanitizedState !== currentState) {
       await writeFile(statePath, sanitizedState, "utf-8");

@@ -2,7 +2,10 @@ import {
   ChapterStoryRailProvenanceSchema,
   type ChapterStoryRailProvenance,
 } from "../models/chapter.js";
-import type { StoryRailPlan } from "./rail-schema.js";
+import {
+  calculateStoryRailMaximumChapterCapacity,
+  type StoryRailPlan,
+} from "./rail-schema.js";
 
 export type StoryRailBindingStatus =
   | "bound"
@@ -161,13 +164,7 @@ export function renderStoryRailProvenance(snapshot: ChapterStoryRailProvenance):
 
 /** Render the whole editable future plan for Forecast comparison and review. */
 export function renderStoryRailPlan(plan: StoryRailPlan): string {
-  const maximumRoutedChapterCapacity = plan.arcRouteRail.entries.reduce((total, entry) => {
-    if (entry.status === "closed") return total + (entry.actualEpisodeCount ?? 0);
-    if (entry.status === "active" || entry.status === "provisional" || entry.status === "hypothesis") {
-      return total + plan.routeCapacity.arcEpisodeCap;
-    }
-    return total;
-  }, 0);
+  const maximumRoutedChapterCapacity = calculateStoryRailMaximumChapterCapacity(plan);
   const anchors = plan.anchorRail.anchors.flatMap((anchor) => [
     `### ${anchor.id} · ${anchor.title} [${anchor.state}/${anchor.detailLevel}]`,
     anchor.entryState ? `- Entry: ${anchor.entryState}` : "",
@@ -189,6 +186,9 @@ export function renderStoryRailPlan(plan: StoryRailPlan): string {
     entry.carriedReaderDebt ? `- Carried reader debt: ${entry.carriedReaderDebt}` : "",
     entry.contrastRequirement ? `- Contrast requirement: ${entry.contrastRequirement}` : "",
   ].filter(Boolean));
+  const reservations = (plan.arcRouteRail.capacityReservations ?? []).map(
+    (reservation) => `- ${reservation.targetAnchorId}: ${reservation.arcCount} unshaped Arc slot(s)`,
+  );
 
   return [
     "# Editable Story Rails",
@@ -206,5 +206,8 @@ export function renderStoryRailPlan(plan: StoryRailPlan): string {
     "",
     "## B-Rail · route of Story Arc(B) units",
     ...entries,
+    ...(reservations.length > 0
+      ? ["", "## Long-range capacity reservations · not production guidance", ...reservations]
+      : []),
   ].join("\n");
 }
