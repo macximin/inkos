@@ -6,7 +6,7 @@ fatigueWords: ["震惊", "不可思议", "难以置信", "深吸一口气", "仿
 numericalSystem: false
 powerScaling: false
 eraResearch: false
-pacingRule: "每2-3章有一个明确的进展或反馈"
+pacingRule: "把近期章节当作诊断窗口；只有明确进展、反馈、后果或关系变化真正消失并造成平淡时才调整节奏，不按固定章数配额"
 satisfactionTypes: ["目标达成", "困难克服", "真相揭示", "关系转变"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---

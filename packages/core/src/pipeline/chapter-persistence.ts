@@ -69,10 +69,14 @@ export async function persistChapterArtifacts(params: {
   await params.saveChapterIndex(updatedIndex);
   await params.markBookActiveIfNeeded();
 
-  const driftIssues = params.auditResult.issues.filter(
-    (issue) => issue.severity === "critical" || issue.severity === "warning",
-  );
-  await params.persistAuditDriftGuidance(params.status === "state-degraded" ? [] : driftIssues);
+  // An invalid audit is not a clean audit. Preserve the last trustworthy drift
+  // receipt instead of translating parse failure into a destructive clear.
+  if (!params.auditResult.parseFailed) {
+    const driftIssues = params.auditResult.issues.filter(
+      (issue) => issue.track !== "research" && issue.severity === "critical",
+    );
+    await params.persistAuditDriftGuidance(params.status === "state-degraded" ? [] : driftIssues);
+  }
 
   if (params.status !== "state-degraded") {
     params.logSnapshotStage();

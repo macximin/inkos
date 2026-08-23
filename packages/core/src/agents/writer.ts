@@ -44,6 +44,7 @@ import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
+import { sanitizeLegacyFunFirstMethodology } from "../utils/writing-methodology.js";
 import {
   buildNarrativeIntentBrief,
   renderMemoAsNarrativeBlock,
@@ -212,7 +213,13 @@ export class WriterAgent extends BaseAgent {
     const hasParentCanon = parentCanon !== "(文件尚未创建)";
     const hasFanficCanon = fanficCanonRaw !== "(文件尚未创建)";
     const resolvedLanguage = book.language ?? genreProfile.language;
-    const promptGenreProfile = resolvedLanguage === "ko"
+    const promptStyleGuide = sanitizeLegacyFunFirstMethodology(styleGuide);
+    // Korean books used to borrow non-Korean genre profiles, so the prompt
+    // path stripped localized fields to avoid leaking Chinese control text.
+    // Native Korean profiles now own their own commercial genre contract and
+    // must reach Writer intact.
+    const shouldSanitizeKoreanFallback = resolvedLanguage === "ko" && genreProfile.language !== "ko";
+    const promptGenreProfile = shouldSanitizeKoreanFallback
       ? {
           ...genreProfile,
           name: book.genre.replace(/[_-]+/g, " "),
@@ -220,9 +227,10 @@ export class WriterAgent extends BaseAgent {
           chapterTypes: ["일반 회차"],
           fatigueWords: [],
           satisfactionTypes: [],
+          pacingRule: "",
         }
       : genreProfile;
-    const promptGenreBody = resolvedLanguage === "ko" ? "" : genreBody;
+    const promptGenreBody = shouldSanitizeKoreanFallback ? "" : genreBody;
     const targetWords = input.lengthSpec?.target ?? input.wordCountOverride ?? book.chapterWordCount;
     const resolvedLengthSpec = input.lengthSpec ?? buildLengthSpec(targetWords, resolvedLanguage);
     // Arc is author-controlled planning context, not canonical state. It is
@@ -261,7 +269,7 @@ export class WriterAgent extends BaseAgent {
 
     // ── Phase 1: Creative writing (temperature 0.7) ──
     const creativeSystemPrompt = await this.withPromptPackGuidance(buildWriterSystemPrompt(
-      book, promptGenreProfile, bookRules, bookRulesBody, promptGenreBody, styleGuide, styleFingerprint,
+      book, promptGenreProfile, bookRules, bookRulesBody, promptGenreBody, promptStyleGuide, styleFingerprint,
       chapterNumber, "creative", fanficContext, resolvedLanguage,
       input.chapterMemo ? "governed" : "legacy",
       resolvedLengthSpec,

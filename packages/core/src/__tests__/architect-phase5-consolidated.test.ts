@@ -234,7 +234,7 @@ describe("Phase 5 consolidation — 7→5 sections, prompt contract", () => {
     expect(system).not.toContain("current_state 500-800 chars");
   });
 
-  it("the rhythm principles prompt allows a mix of universal + concrete (≥3 concretized, rest may stay universal)", async () => {
+  it("the rhythm principles prompt allows concrete + universal guidance without chapter-count quotas", async () => {
     const agent = buildAgent();
     const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
       .mockResolvedValue({ content: CONSOLIDATED_RESPONSE, usage: ZERO_USAGE });
@@ -244,8 +244,9 @@ describe("Phase 5 consolidation — 7→5 sections, prompt contract", () => {
 
     // Header renamed to signal the mix is legal
     expect(system).toContain("节奏原则（具体化 + 通用）");
-    // Rule: at least 3 of 6 must be concretized to this book
-    expect(system).toContain("至少 3 条必须具体化到本书");
+    // Rule: at least 3 of 6 must be concrete to this book, but not quotas.
+    expect(system).toContain("至少 3 条必须具体到本书的卷、事件或读者承诺");
+    expect(system).toContain("不必强行换算成“每几章一次”的通过配额");
     // Universal principles are explicitly allowed as examples
     expect(system).toContain("拒绝机械降神");
     // And the mix is explicitly called legal
@@ -274,7 +275,11 @@ describe("Phase 5 consolidation — 7→5 sections, prompt contract", () => {
     expect(system).not.toContain("current_state 500-800 chars");
     expect(system).toContain("ordinary Markdown");
     // Rhythm universal allowance
-    expect(system).toContain("At least 3 must be concretized for this book");
+    expect(system).toContain("At least 3 must be concrete to this book's volumes, events, or reader promises");
+    expect(system).toContain("do not turn them into pass/fail quotas");
+    expect(system).toContain("recent 3-5 chapters as a diagnostic window");
+    expect(system).not.toContain("one KR advanced every 3-5 chapters");
+    expect(system).not.toContain("must be visible in every 3-5 chapter mini-cycle");
     expect(system).toContain("no deus ex machina");
   });
 

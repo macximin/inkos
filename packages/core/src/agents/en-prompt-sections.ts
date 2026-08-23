@@ -16,10 +16,10 @@ export function buildEnglishCoreRules(_book: BookConfig): string {
 ### Narrative Technique
 6. **Show, don't tell**: Convey through action and sensory detail, not exposition. Values expressed through behavior, not declared.
 7. **Sensory grounding**: Each scene includes 1-2 sensory details beyond the visual.
-8. **Chapter hooks**: Every chapter ending needs a hook—question, reveal, threat, promise.
+8. **Ending momentum**: Let the chapter's action produce a visible result, choice, or pressure. A clean settlement or earned calm is valid; add a forward hook only when it grows naturally from that result. Never hide an earned payoff just to manufacture a cliffhanger.
 9. **Information layering**: Worldbuilding emerges through action. Key lore revealed at plot-critical moments. Never dump exposition.
 10. **Description serves narrative**: Environment descriptions set mood or foreshadow. One line is enough.
-11. **Downtime earns its place**: Quiet scenes must plant hooks, advance relationships, or build contrast. Pure filler is padding.
+11. **Downtime earns its place**: Quiet scenes may deepen emotion, change a relationship, reveal information, force a choice, deliver payoff, or show consequence. They do not need to plant a hook. Pure filler is padding.
 12. **Dialogue-driven**: In scenes with character interaction, deliver conflict and information through dialogue first, narration second. Solo/escape/exploration scenes are exempt.
 
 ### Logic / Consistency
@@ -29,24 +29,24 @@ export function buildEnglishCoreRules(_book: BookConfig): string {
 15. **No reset buttons**: The world must change permanently in response to major events.
 
 ### Reader Psychology
-16. **Promise and payoff**: Every planted hook must be resolved. Every mystery must have an answer.
+16. **Promise and payoff**: Honor promises when they come due, and make the payoff concrete enough for the reader to recognize. Do not open fresh debt by quota.
 17. **Escalation**: Each conflict should feel higher-stakes than the last—either externally or emotionally.
 18. **Reader proxy**: One character should react with surprise/excitement/fear when remarkable things happen, giving readers permission to feel the same.
 19. **Pacing breathing room**: After a high-intensity sequence, give 0.5-1 chapter of lower intensity before the next escalation.
 
-### Beat Density & Rhythm (hard ruler)
-- **A payoff beat roughly every ~200 words**: a small win, a sharp line, a reversal, a charged exchange, an emotional tug. The page should never go flat for long.
-- **A forward hook roughly every ~350 words**: a small "what happens next?" pull. You don't have to resolve it, you have to plant it.
-- **A full setup → tension → unresolved arc every ~700-1000 words**: give the reader a concrete reason to keep going.
-- No stretch of ~200+ words that is pure description, backstory, or interior monologue without advancing the chapter goal or creating a beat. If it doesn't pull, cut it or rewrite it.
+### Beat Weight & Rhythm (creative guide)
+- Select one fun anchor from the current memo or nearest reader promise and make it the chapter's strongest scene: action, resistance, turn, and a visible result.
+- Judge flatness by scene function and semantic weight, not by a fixed number of payoffs, hooks, or unresolved arcs per word count.
+- A quiet passage earns its place when it changes emotion, relationship, information, choice, payoff, or consequence. It does not have to create future debt.
+- If a stretch is pure description, backstory, or interior monologue without serving the chapter goal or changing the reader's experience, cut it or rewrite it.
 - **Density comes from semantic weight inside paragraphs, not from chopping them up.** Most narrative (non-dialogue) paragraphs should carry real weight — a few sentences, roughly 30-100 words. Dialogue lines are naturally short and do not count as "short paragraphs."
-- **One-line paragraphs are punctuation, not default rhythm.** Reserve them for: (1) an opening reversal line, (2) the final cliffhanger line, (3) a rare hammer-blow beat. Cap at ~5 per chapter.
-- **Never stack 3+ one-line paragraphs in a row.** After two short beats, the next paragraph must be a full narrative paragraph that re-gathers the action, detail, or emotion and resets the reader's breathing.
+- **One-line paragraphs are punctuation, not default rhythm.** Use them when a meaningful turn, decision, payoff, or rare hammer-blow genuinely benefits from isolation; they are not reserved for an opening reversal or final cliffhanger and have no fixed chapter quota.
+- Avoid long runs of atomized one-line paragraphs unless a high-pressure scene deliberately needs that breath. Re-gather action, detail, or emotion at the first natural point instead of following a numeric pattern.
 
-### Chapter Cut (80/20 cliffhanger, hard ruler)
-- **Never finish the chapter's story inside the chapter.** Write the main beat to ~80%; leave the last ~20% (the result / reveal / fallout) for the next chapter to open on.
-- End ~80% of chapters at the action-climax moment — the blow about to land, the door swinging open, the name not yet spoken — and let the reader turn the page for the result. The other ~20% may close on a beat of earned calm.
-- **Structure outranks word count.** Overshoot the target by a few hundred words to complete a clean beat and cut, rather than break rhythm to hit a number. Never pad with filler to reach length, and never resolve the climax early just to stay under it.`;
+### Chapter Resolution & Forward Pull
+- Complete the action and payoff that this chapter promised. Do not postpone an earned result merely to manufacture a cliffhanger.
+- Cut at the action-climax only when the chapter memo or Arc calls for it and the deferral is dramatically honest. A clean payoff, aftermath, decision, or earned calm is a legitimate ending.
+- **Structure outranks word count.** Complete a coherent beat rather than break rhythm to hit a number. Never pad with filler to reach length.`;
 }
 
 // English equivalent of buildAntiAIExamples()
@@ -110,7 +110,7 @@ export function buildEnglishPreWriteChecklist(book: BookConfig, gp: GenreProfile
   const items = [
     "Outline anchor: Which volume_outline plot point does this chapter advance?",
     "POV: Whose perspective? Consistent throughout?",
-    "Hook planted: What question/promise/threat carries reader to next chapter?",
+    "Ending value: What result lands here, and what choice, consequence, pressure, or earned calm follows naturally?",
     "Sensory grounding: At least 2 non-visual senses per major scene",
     "Character consistency: Does every character act from their established motivation?",
     "Information boundary: No character references info they haven't witnessed",

@@ -35,6 +35,10 @@ describe("native Korean writing contracts", () => {
     expect(chaebol.profile.id).toBe("chaebol-modern-fantasy-ko");
     expect(chaebol.profile.language).toBe("ko");
     expect(chaebol.profile.name).toBe("현대판타지 재벌물");
+    expect(chaebol.profile.pacingRule).toContain("독자 체감 점검 창");
+    expect(chaebol.profile.pacingRule).toContain("완전 수습");
+    expect(chaebol.profile.pacingRule).not.toContain("다음 압력을 붙인다");
+    expect(chaebol.body).toContain("완전 수습이면 새 압력을 만들지 않는다");
     expect(`${chaebol.profile.pacingRule}\n${chaebol.body}`).not.toMatch(/[\u3400-\u9fff]/u);
     expect(generic.profile.id).toBe("other-ko");
     expect(generic.profile.language).toBe("ko");
@@ -208,18 +212,18 @@ describe("native Korean writing contracts", () => {
         id: "urban",
         name: "urban",
         language: "ko",
-        chapterTypes: ["일반 회차"],
-        fatigueWords: [],
+        chapterTypes: ["거래 승부"],
+        fatigueWords: ["믿을 수 없었다"],
         numericalSystem: false,
         powerScaling: false,
         eraResearch: false,
         pacingRule: "",
-        satisfactionTypes: [],
+        satisfactionTypes: ["거래 역전"],
         auditDimensions: [],
       },
       null,
       "",
-      "",
+      "## 장르의 중심\n\n보상 장면에는 계약서 서명과 달라진 소유권을 남긴다.",
       "",
       undefined,
       1,
@@ -234,6 +238,10 @@ describe("native Korean writing contracts", () => {
     expect(prompt).toContain("공백을 포함한 5000자");
     expect(prompt).toContain("공백 포함 5000자");
     expect(prompt).toContain("주인공의 행동, 상대의 대응");
+    expect(prompt).toContain("거래 승부");
+    expect(prompt).toContain("거래 역전");
+    expect(prompt).toContain("목록을 채우기 위해 억지로 넣지는 않습니다");
+    expect(prompt).toContain("보상 장면에는 계약서 서명과 달라진 소유권");
     expect(prompt).not.toContain("Universal Writing Rules");
     expect(prompt).not.toContain("You are a professional");
     expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
@@ -289,6 +297,12 @@ describe("native Korean writing contracts", () => {
     expect(planner).toContain("주인공의 행동, 상대의 대응, 독자가 확인할 보상");
     expect(planner).toContain("## 회차 목표");
     expect(planner).toContain("## 현재 작업");
+    expect(planner).toContain("- 재미 앵커:");
+    expect(planner).toContain("- 이번 화의 지급 장면:");
+    expect(planner).toContain("- 상태: 전부 지급 / 일부 지급 / 더 키움 / 아직 감춤");
+    expect(planner).toContain("별도 점수로 환산하지 않음");
+    expect(planner).toContain("수를 맞추려고 새 복선을 억지로 열지 않고");
+    expect(planner).toContain("깨끗한 결산이 이번 화의 기능이면 그대로 닫습니다");
     expect(planner).toContain("## 이번 화 훅 장부");
     expect(planner).toContain("- 회수:");
     expect(planner).toContain("- 계속 묻어두기:");

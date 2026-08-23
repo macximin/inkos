@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: true
 eraResearch: false
-pacingRule: "Training/meditation alternates with application/combat. Breakthrough every 5-10 chapters early, every 15-25 late. Each stage must feel earned through discipline."
+pacingRule: "Let training or meditation alternate with application when causality benefits. Breakthrough cadence is a diagnostic, not a quota; each stage must feel earned through discipline, and chapters between advances may pay off through insight, cost, consequence, or relationship."
 satisfactionTypes: ["Stage Breakthrough", "Technique Mastery", "Tribulation Survived", "Martial Victory", "Philosophical Insight", "Core Formation"]
 auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---

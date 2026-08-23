@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: false
 eraResearch: false
-pacingRule: "Slow, meditative pacing. Each chapter advances an emotional arc or community bond. Seasonal/cyclical structure works well."
+pacingRule: "Slow, meditative pacing. Use recent chapters as a diagnostic window: emotional movement, community connection, earned recovery, consequence, and comforting texture can all carry reader value. Clean closure and restorative stillness are valid; seasonal/cyclical structure is optional."
 satisfactionTypes: ["Relationship Deepened", "Community Problem Solved", "Emotional Breakthrough", "Craft Mastered", "Found Family Moment", "Small Wonder Discovered"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -34,10 +34,10 @@ auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 
 ## Pacing Guidance
 
-- Chapter length: 2-3k words with space for reflection
-- Chapter structure: quiet opening -> small event or interaction -> internal response/growth -> gentle transition -> soft ending (not cliffhanger)
+- Chapter length often falls around 2-3k words when the scene needs space for reflection; follow the book's active length contract
+- A common shape is quiet opening -> small event or interaction -> internal response/growth -> gentle transition -> soft ending, but the current memo and earned emotional beat decide the shape
 - No cliffhangers — chapters end with peace, hope, or gentle anticipation
 - Seasonal/cyclical structure works well (calendar-based chapter rhythm)
-- Downtime scenes must still plant hooks, advance relationships, or build contrast
+- Downtime may deepen a relationship, let emotion or consequence settle, build contrast, reveal a choice, or simply provide earned recovery; plant a future hook only when it grows naturally from the scene
 - Slice-of-life texture woven with an emotional throughline — pure plotless chapters risk feeling static
-- Every quiet scene must shift something: a realization, a decision, an intimacy, a small loss
+- Treat a quiet scene as flat only when it offers no emotional movement, relationship texture, consequence, choice, discovery, or earned rest; do not force a visible shift into every scene

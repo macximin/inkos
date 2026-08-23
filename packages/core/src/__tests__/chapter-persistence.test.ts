@@ -115,7 +115,6 @@ describe("persistChapterArtifacts", () => {
     ]);
     expect(markBookActiveIfNeeded).toHaveBeenCalledTimes(1);
     expect(persistAuditDriftGuidance).toHaveBeenCalledWith([
-      expect.objectContaining({ severity: "warning", description: "keep me" }),
       expect.objectContaining({ severity: "critical", description: "keep me too" }),
     ]);
     expect(logSnapshotStage).toHaveBeenCalledTimes(1);
@@ -178,6 +177,35 @@ describe("persistChapterArtifacts", () => {
     expect(logSnapshotStage).not.toHaveBeenCalled();
     expect(snapshotState).not.toHaveBeenCalled();
     expect(syncCurrentStateFactHistory).not.toHaveBeenCalled();
+  });
+
+  it("preserves the last trustworthy drift receipt when audit parsing fails", async () => {
+    const persistAuditDriftGuidance = vi.fn().mockResolvedValue(undefined);
+
+    await persistChapterArtifacts({
+      chapterNumber: 5,
+      chapterTitle: "Unparseable Audit",
+      status: "audit-failed",
+      auditResult: createAuditResult({
+        passed: false,
+        parseFailed: true,
+        issues: [createIssue({ severity: "critical", description: "system parse error" })],
+      }),
+      finalWordCount: 700,
+      lengthWarnings: [],
+      degradedIssues: [],
+      loadChapterIndex: async () => [] satisfies ReadonlyArray<ChapterMeta>,
+      saveChapter: vi.fn().mockResolvedValue(undefined),
+      saveTruthFiles: vi.fn().mockResolvedValue(undefined),
+      saveChapterIndex: vi.fn().mockResolvedValue(undefined),
+      markBookActiveIfNeeded: vi.fn().mockResolvedValue(undefined),
+      persistAuditDriftGuidance,
+      snapshotState: vi.fn().mockResolvedValue(undefined),
+      syncCurrentStateFactHistory: vi.fn().mockResolvedValue(undefined),
+      logSnapshotStage: vi.fn(),
+    });
+
+    expect(persistAuditDriftGuidance).not.toHaveBeenCalled();
   });
 
   it("replaces existing entry for the same chapter number instead of appending", async () => {

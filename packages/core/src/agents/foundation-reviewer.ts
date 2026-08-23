@@ -68,8 +68,8 @@ export class FoundationReviewerAgent extends BaseAgent {
     if (language === "ko") {
       return [
         `대표 재미와 독자 약속 (이 작품이 ${target}화 동안 반복해 줄 재미가 한 문장으로 선명한가?)`,
-        `첫 ${openingWindow}화 추진력 (주인공이 바로 움직이고 독자가 확인할 첫 성과와 다음 압력이 있는가?)`,
-        "사건의 재미 인과 (주인공의 행동, 상대의 대응, 보상, 다음 문제가 원인과 결과로 이어지는가?)",
+        `첫 ${openingWindow}화 추진력 (주인공이 바로 움직여 눈에 보이는 첫 성과를 먼저 지급하는가? 그 뒤 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름으로 이어지는가?)`,
+        "사건의 재미 인과 (주인공의 행동과 상대의 대응 뒤 눈에 보이는 보상을 먼저 지급하고, 그 뒤 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 고르는가?)",
         "보상과 상승 (돈·자리·정보·평판·관계의 변화가 장면으로 보이고 갈수록 커지는가?)",
         "인물의 행동과 상대의 실력 (주요 인물이 자기 욕망으로 선택하며 상대도 유능하게 맞서는가?)",
         "한국어 기획 문체 (번역형 추상어와 인공지능식 대조 없이 한국 작가가 바로 쓰는 말로 설명되는가?)",
@@ -80,14 +80,14 @@ export class FoundationReviewerAgent extends BaseAgent {
     return language === "en"
       ? [
           `Core Conflict (Is there a clear, compelling central conflict that can sustain the requested ${target} chapters?)`,
-          `Opening Momentum (Can the first ${openingWindow} chapters create a page-turning hook?)`,
+          `Opening Momentum (Do the first ${openingWindow} chapters deliver visible value and natural forward momentum without withholding an earned result?)`,
           "World Coherence (Is the worldbuilding internally consistent and specific?)",
           "Character Differentiation (Are the main characters distinct in voice and motivation?)",
           `Pacing Feasibility (Does the outline fit the requested ${target} chapters and avoid repeating the same beat for ${repeatWindow} chapters?)`,
         ]
       : [
           `核心冲突（是否有清晰且有足够张力的核心冲突支撑用户要求的${target}章？）`,
-          `开篇节奏（前${openingWindow}章能否形成翻页驱动力？）`,
+          `开篇节奏（前${openingWindow}章是否先给出可见兑现，再从结果自然产生前进动力，而不是扣住已经挣到的结果？）`,
           "世界一致性（世界观是否内洽且具体？）",
           "角色区分度（主要角色的声音和动机是否各不相同？）",
           `节奏可行性（大纲是否适配用户要求的${target}章，并避免连续${repeatWindow}章同一种节拍？）`,
@@ -106,7 +106,7 @@ export class FoundationReviewerAgent extends BaseAgent {
         "새 이야기의 자리 (원작을 되풀이하지 않고 분기점과 새 목표가 선명한가?)",
         "대표 재미와 핵심 갈등 (이 작품만의 승부와 독자 보상이 분명한가?)",
         "첫 5화 추진력 (설명 세 화를 거치지 않고 인물이 움직이고 첫 성과를 내는가?)",
-        "사건의 재미 인과 (행동, 대응, 보상, 다음 문제가 장면으로 이어지는가?)",
+        "사건의 재미 인과 (행동과 대응 뒤 눈에 보이는 보상을 먼저 지급하고, 그 뒤 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 고르는가?)",
         "한국어 기획 문체 (추상 명사와 번역형 대조 없이 사람이 행동하는 문장인가?)",
         "장기 연재 가능성 (원작 사건을 순서만 바꿔 다시 걷지 않는가?)",
       ];

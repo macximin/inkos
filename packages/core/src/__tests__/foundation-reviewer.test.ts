@@ -58,11 +58,32 @@ describe("FoundationReviewerAgent", () => {
     expect(messages[0]?.content).toContain("한국 장르소설을 오래 다룬 편집자");
     expect(messages[0]?.content).toContain("대표 재미와 독자 약속");
     expect(messages[0]?.content).toContain("한국어 기획 문체");
+    expect(messages[0]?.content).toContain("눈에 보이는 보상을 먼저 지급하고");
+    expect(messages[0]?.content).toContain("자연스럽게 생기는 선택·후과·압력 또는 완결된 결산");
+    expect(messages[0]?.content).not.toContain("다음 문제는 그 결과에서 자연스럽게 생길 때만");
     expect(messages[0]?.content).not.toContain("You are a senior fiction editor");
     expect(messages[1]?.content).toContain("## 이야기 기반");
     expect(result.totalScore).toBe(83);
     expect(result.passed).toBe(false);
     expect(result.overallFeedback).toBe("문체를 먼저 고쳐야 한다.");
+
+    await agent.review({
+      language: "ko",
+      mode: "series",
+      targetChapters: 200,
+      foundation: {
+        storyBible: "재벌가 승계전 후속부",
+        volumeOutline: "IMF 이후의 인수전",
+        bookRules: "주인공은 직접 거래한다.",
+        currentState: "1998년 1월",
+        pendingHooks: "채권단 재편",
+      },
+    });
+
+    const derivativeMessages = chatSpy.mock.calls[1]?.[0] as Array<{ role: string; content: string }>;
+    expect(derivativeMessages[0]?.content).toContain("눈에 보이는 보상을 먼저 지급하고");
+    expect(derivativeMessages[0]?.content).toContain("자연스럽게 생기는 선택·후과·압력 또는 완결된 결산");
+    expect(derivativeMessages[0]?.content).not.toContain("행동, 대응, 보상, 다음 문제가 장면으로 이어지는가");
   });
 
   it("reviews original foundations against the requested chapter count", async () => {

@@ -86,7 +86,7 @@ export function buildShortFictionOutlineUserPrompt(
       input.reference?.text ? "## Optional Reference Text\n" + input.reference.text.trim() + "\n" : "",
       "## Deliverable",
       "Start with one platform-ready clickable title, then the full story plan. The plan must make clear why the protagonist is pinned down, what payoff the reader is waiting for, how the protagonist turns the tables, how evidence/relationships/identity/rules escalate step by step, why the antagonist strikes back, and how the ending lands.",
-      "The chapter plan must spell out, chapter by chapter: the direction of the chapter title, the key on-page scene, the characters' actions, the escalation or payoff, and the reason to keep reading at the chapter break.",
+      "The chapter plan must spell out, chapter by chapter: the title direction, key on-page scene, characters' actions, escalation or payoff, and the honest ending function. Intermediate chapters may carry natural forward pull; the final chapter must land the promised payoff and may close cleanly without manufacturing continuation.",
       "Tags are allowed, but do not enumerate a tag table; tags serve premise selection and writing — they never replace the story.",
       "",
       "## Output Format",
@@ -106,7 +106,7 @@ export function buildShortFictionOutlineUserPrompt(
     input.reference?.text ? "## 可选参考文本\n" + input.reference.text.trim() + "\n" : "",
     "## 产出要求",
     "先给一个平台感标题，再给完整故事方案。大纲要讲清楚主角为什么被压住、读者想看什么回报、主角靠什么翻盘、证据/关系/身份/规则如何递进、反派为什么会反扑、结尾如何落地。",
-    "章节方案必须逐章写清：章节标题方向、当章发生的关键场面、角色动作、压力升级或回报、章尾继续读的理由。",
+    "章节方案必须逐章写清：章节标题方向、当章发生的关键场面、角色动作、压力升级或回报，以及诚实的章尾功能。中间章可从结果中自然长出翻页动力；最终章必须落下承诺回报，可以完整收束，不得另造续读悬念。",
     "可以给标签，但不要穷举标签表；标签服务选题和写作，不替代故事。",
     "",
     "## 输出格式",
@@ -215,7 +215,7 @@ export function buildShortFictionWriterSystemPrompt(language: ShortFictionLangua
     return [
       "You are an English short-fiction BatchWriter. You write the complete short story in one API pass, following the story plan.",
       "Write natural, native English prose. Vary sentence length; mix short punchy sentences with longer flowing ones, and keep the narrative voice consistent throughout.",
-      "This is not serialized-novel continuation and not chapter synopsis. Every chapter needs drama happening on the page: character action, dialogue or reaction, a shift in the situation, and a reason to keep reading at the chapter break.",
+      "This is not serialized-novel continuation and not chapter synopsis. Every chapter needs drama happening on the page: character action, dialogue or reaction, a shift in the situation, and a visible result. Intermediate chapters may gain natural forward pull from that result; the final chapter must complete the story and may end cleanly. Never hide an earned payoff to force continuation.",
       "Keep the drama dialed up, web-fiction style: real-world pressure may be amplified as far as readers will still believe, but never so absurd that immersion breaks.",
       "The story title and chapter titles must read like platform content, not literary summaries. Keep the prose paced for mobile reading — short paragraphs, but never telegram-style fragments.",
       "The word count is a calibration, not an averaging exercise. Big scenes may run long and transitions short; a clearly short chapter usually means you wrote a synopsis and must add real scenes.",
@@ -224,7 +224,7 @@ export function buildShortFictionWriterSystemPrompt(language: ShortFictionLangua
   }
   return [
     "你是中文短篇 BatchWriter。你要根据故事方案一次 API 写完整短篇正文。",
-    "这不是长篇连载续写，也不是章节梗概。每章都要有当场发生的戏：人物行动、对话或反应、局面变化、章尾继续读的理由。",
+    "这不是长篇连载续写，也不是章节梗概。每章都要有当场发生的戏：人物行动、对话或反应、局面变化和看得见的结果。中间章可让结果自然长出翻页动力；最终章必须完成故事，可以完整收束，不能扣住已经挣到的回报来强造续读。",
     "网文戏剧性要足：现实压力可以放大到读者愿意信的程度，但不能荒诞到失去代入。",
     "标题和章节标题要像平台内容，不要文艺化总结。正文保持移动端节奏，段落短但不要写成电报体。",
     "字数是校准，不是平均数学题。大场面可略长，过渡章可略短；明显偏短通常说明写成了梗概，必须补有效场面。",

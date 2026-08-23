@@ -110,10 +110,56 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).toContain("독자가 다음 화를 누르게 할 사건과 보상");
     expect(messages[0]?.content).toContain("## 01_독자가_기대할_재미");
     expect(messages[0]?.content).toContain("## 02_주인공의_승부와_적");
+    expect(messages[0]?.content).toContain("몇 화마다 훅 하나");
+    expect(messages[0]?.content).toContain("화말은 완전한 수습, 보상의 후과, 다음 선택이나 압력을 작품에 맞게 섞고");
+    expect(messages[0]?.content).toContain("눈에 보이는 보상을 먼저 지급");
+    expect(messages[0]?.content).toContain("자연스럽게 생기는 선택·후과·압력 또는 완결된 결산");
+    expect(messages[0]?.content).not.toContain("권말의 새 문제");
+    expect(messages[0]?.content).not.toContain("상대의 대응과 다음 문제");
+    expect(messages[0]?.content).not.toContain("얻은 것 때문에 생긴 새 문제");
+    expect(messages[0]?.content).not.toContain("첫 30화의 보상 간격은 숫자로 적습니다");
     expect(messages[0]?.content).toContain("추상어가 스스로 움직이게 쓰지 않습니다");
     expect(messages[0]?.content).not.toContain("전경_배경_이야기");
     expect(messages[0]?.content).not.toContain("You are the architect of this book");
     expect(messages[1]?.content).toBe("제목이 \"IMF를 독식한 재벌 3세\"인 urban 장편소설의 전체 작품 기반을 한국어로 생성하세요.");
+  });
+
+  it("keeps Chinese volume-map rhythm concrete without per-chapter hook quotas", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFoundation(koreanBook({
+      id: "chinese-rhythm-book",
+      title: "雾港回灯",
+      language: "zh",
+    }));
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    const system = messages[0]?.content ?? "";
+    expect(system).toContain("章末承接 / 完整收束组合");
+    expect(system).toContain("不得规定每章章末留钩数量");
+    expect(system).toContain("不按固定章数强推");
+    expect(system).toContain("最近 3-5 章当作诊断窗口");
+    expect(system).not.toContain("按每 3-5 章推进一个 KR");
+    expect(system).not.toContain("每个 3-5 章小周期里哪条线必须可见");
+    expect(system).not.toContain("钩子密度——每章章末留钩数量");
+  });
+
+  it("keeps native Korean genre payoff contracts in the foundation prompt", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFoundation(koreanBook({ genre: "현대판타지 재벌물" }));
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    const system = messages[0]?.content ?? "";
+    expect(system).toContain("## 장르 전용 약속");
+    expect(system).toContain("거래 승부");
+    expect(system).toContain("저평가 자산 선점");
+    expect(system).toContain("보상 장면에는 숫자, 문서, 소유권");
+    expect(system).toContain("후보 목록을 채우기 위해 사건이나 보상을 억지로 넣지 않습니다");
   });
 
   it("requires a future-advantage contract only when the creative brief makes future knowledge core", async () => {
@@ -191,6 +237,72 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).toContain("원작에서 확정된 사건은 바꾸지 않습니다");
     expect(messages[0]?.content).not.toContain("你是专业同人架构师");
     expect(messages[1]?.content).toContain("원작 기반 장편의 기획을 한국어로 완성하세요");
+  });
+
+  it("infers Korean fanfic prompts from a native Korean genre when language is omitted", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFanficFoundation(
+      koreanBook({
+        id: "korean-fanfic-without-language",
+        genre: "현대판타지 재벌물",
+        language: undefined,
+      }),
+      "# 원작 사실\n- 한도경은 부도 어음의 원소유자를 알고 있다.",
+      "canon",
+    );
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("한국 상업 웹소설을 기획하는 작가");
+    expect(messages[0]?.content).toContain("## 장르 전용 약속");
+    expect(messages[0]?.content).toContain("저평가 자산 선점");
+    expect(messages[0]?.content).not.toContain("你是专业同人架构师");
+  });
+
+  it("preserves the legacy Chinese fanfic route when an English profile omits language", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFanficFoundation(
+      koreanBook({
+        id: "english-profile-fanfic-without-language",
+        title: "The Tower Ledger",
+        genre: "litrpg",
+        language: undefined,
+      }),
+      "# Canon\n- The protagonist entered the tower alone.",
+      "canon",
+    );
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("你是专业同人架构师");
+    expect(messages[1]?.content).toContain("请为标题为\"The Tower Ledger\"");
+    expect(messages[0]?.content).not.toContain("한국 상업 웹소설을 기획하는 작가");
+  });
+
+  it("still infers native English for a non-fanfic foundation when language is omitted", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFoundation(koreanBook({
+      id: "english-profile-foundation-without-language",
+      title: "The Tower Ledger",
+      genre: "litrpg",
+      language: undefined,
+    }));
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("You are the architect of this book");
+    expect(messages[0]?.content).toContain("ALL output");
+    expect(messages[0]?.content).toContain("ending carry / clean-closure mix");
+    expect(messages[0]?.content).toContain("never a per-chapter hook count");
+    expect(messages[0]?.content).not.toContain("hook density");
+    expect(messages[1]?.content).toContain("Write everything in English");
+    expect(messages[0]?.content).not.toContain("你是");
   });
 
   it("uses English prompts when generating foundation from imported English chapters", async () => {

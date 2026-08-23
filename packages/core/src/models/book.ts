@@ -94,9 +94,13 @@ export type RevisionGate = "strict" | "lenient" | "always";
  * book-level `writing.revisionGate` (book.json) overrides the project-level
  * `writing.revisionGate` (inkos.json); both unset falls back to "strict".
  *
- * - "strict": apply only when audit counts do not worsen AND at least one of
- *   blocking/AI-tell improves (historical default behavior).
- * - "lenient": apply whenever audit counts do not worsen (no improvement required).
+ * Non-"always" revisions must remain inside the chapter's hard length range.
+ * - "strict": apply when creative critical debt decreases, or when critical
+ *   debt stays level and at least one advisory revision candidate is removed.
+ *   A direct user edit may also apply when its post-audit is creatively clean.
+ * - "lenient": apply when creative critical debt does not worsen; advisory
+ *   debt may grow only when a critical issue was removed. A direct user edit
+ *   may also apply when its post-audit is creatively clean.
  * - "always": always apply manual revisions; audit counts are recorded only.
  */
 export function resolveRevisionGate(

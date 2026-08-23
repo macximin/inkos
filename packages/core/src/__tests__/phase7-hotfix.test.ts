@@ -8,7 +8,8 @@
  *             falls back to undefined, legacy 11-col still parses.
  *   hotfix 2: architect tags core_hook seeds as promoted=true at seed time;
  *             consolidator re-promotes seeds whose advancedCount>=2 at volume
- *             boundary; reviewer prompt gates critical severity on promoted.
+ *             boundary; reviewer treats promotion/age as planning diagnostics,
+ *             while only a missed memo-selected hook can become critical.
  *   hotfix 3: blocked-distance computation embeds the 已阻 N 章 token.
  */
 
@@ -363,8 +364,8 @@ describe("Phase 7 hotfix 2 — consolidator re-promotes advancedCount>=2", () =>
   });
 });
 
-describe("Phase 7 hotfix 2 — reviewer gates critical severity on promoted", () => {
-  it("zh reviewer prompt references 升级=是 as critical gate and the 已阻 N 章 token", async () => {
+describe("Phase 7 hotfix 2 — reviewer keeps hook age diagnostic", () => {
+  it("zh reviewer warns on promoted/blocked debt and reserves critical for memo drift", async () => {
     // We drive the reviewer end-to-end against a minimal book fixture and
     // assert the system prompt carries the hotfix language. This mirrors the
     // continuity.test.ts style so we're exercising the actual prompt builder
@@ -434,19 +435,17 @@ describe("Phase 7 hotfix 2 — reviewer gates critical severity on promoted", ()
       const messages = stub.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined;
       const systemPrompt = messages?.[0]?.content ?? "";
 
-      // Critical severity gated on 升级=是.
-      expect(systemPrompt).toContain("升级");
-      expect(systemPrompt).toContain("升级=是");
-      // The 已阻 N 章 literal token reviewer reads verbatim (from hotfix 3).
-      expect(systemPrompt).toContain("已阻");
-      // Non-promoted stale hooks stay at info.
-      expect(systemPrompt).toMatch(/升级=否.*info|非升级.*info/);
+      expect(systemPrompt).toContain("未升级的陈旧伏笔记 info");
+      expect(systemPrompt).toContain("受阻 6 章以上的伏笔记 warning");
+      expect(systemPrompt).toContain("不能仅凭年龄判 critical");
+      expect(systemPrompt).toContain("chapter_memo");
+      expect(systemPrompt).toContain("advance/resolve");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("en reviewer prompt gates on promoted=true and references 'blocked N chapters'", async () => {
+  it("en reviewer warns on promoted/blocked debt and reserves critical for memo drift", async () => {
     const { ContinuityAuditor } = await import("../agents/continuity.js");
     const root = await mkdtemp(join(tmpdir(), "inkos-hf-reviewer-en-"));
     const bookDirLocal = join(root, "book");
@@ -512,10 +511,11 @@ describe("Phase 7 hotfix 2 — reviewer gates critical severity on promoted", ()
       const messages = stub.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }> | undefined;
       const systemPrompt = messages?.[0]?.content ?? "";
 
-      expect(systemPrompt).toContain("promoted=true");
-      expect(systemPrompt).toContain("blocked ");
-      // info-only for non-promoted.
-      expect(systemPrompt).toMatch(/non-promoted.*info/i);
+      expect(systemPrompt).toContain("non-promoted stale hooks as info");
+      expect(systemPrompt).toContain("blocked for 6+ chapters are warnings");
+      expect(systemPrompt).toContain("not an age-only critical");
+      expect(systemPrompt).toContain("Chapter Memo Drift");
+      expect(systemPrompt).toContain("advance/resolve");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

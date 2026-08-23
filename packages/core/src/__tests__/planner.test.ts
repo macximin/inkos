@@ -213,6 +213,117 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(userPrompt).toContain("不得覆盖创作 brief、作品正典、硬性规则");
   });
 
+  it("infers the Korean planner route and supplies compact native genre payoff candidates", async () => {
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validMemoRaw(1),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+    const koreanGenreBook: BookConfig = {
+      ...makeBook(),
+      title: "IMF를 독식한 재벌 3세",
+      genre: "현대판타지 재벌물",
+      language: undefined,
+    };
+    await writeFile(join(bookDir, "story", "book_rules.md"), "", "utf-8");
+
+    await makePlanner().planChapter({
+      book: koreanGenreBook,
+      bookDir,
+      chapterNumber: 1,
+    });
+
+    const messages = chatSpy.mock.calls[0]![2] as ReadonlyArray<{ role: string; content: string }>;
+    const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+    const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
+    expect(systemPrompt).toContain("당신은 한국 장르소설의 담당 편집자입니다");
+    expect(userPrompt).toContain("## 장르 반복 재미 후보 (하위 참고)");
+    expect(userPrompt).toContain("초반 1~2화를 독자 체감 점검 창으로 삼아");
+    expect(userPrompt).toContain("완전 수습, 후과, 자연스러운 다음 선택이나 압력");
+    expect(userPrompt).not.toContain("그 결과가 만든 다음 압력을 붙인다");
+    expect(userPrompt).toContain("거래 승부");
+    expect(userPrompt).toContain("저평가 자산 선점");
+    expect(userPrompt).toContain("사용자 직접 지시 > 활성 Arc의 지급 > 직전 회차가 만든 약속 > 위 후보");
+    expect(userPrompt).toContain("quota나 체크리스트가 아닙니다");
+    expect(userPrompt).toContain("첫 회차라 직전 회차 없음");
+    expect(userPrompt).toContain("작품 규칙 항목 없음");
+    expect(userPrompt).toContain("직전 회차 요약 없음");
+    expect(userPrompt).toContain("현재 Arc 자료 없음");
+    expect(userPrompt).toContain("주인공 행을 찾지 못함");
+    expect(userPrompt).toContain("이번 화에 확인된 주요 상대 없음");
+    expect(userPrompt).toContain("이번 화에 확인된 주요 협력자 없음");
+    expect(userPrompt).toContain("현재 건드릴 수 있는 활성 복선이나 보조 줄기 없음");
+    expect(userPrompt).toContain("우선 검토할 묵은 복선 없음");
+    expect(userPrompt).not.toContain("반드시 처리할 묵은 복선 없음");
+    expect(userPrompt).not.toContain("this is the opening chapter — no prior chapter");
+    expect(userPrompt).not.toContain("no book_rules entries");
+    expect(userPrompt).not.toContain("暂无");
+    expect(userPrompt).not.toContain("no stale hooks");
+    expect(userPrompt).not.toContain("## 장르의 중심");
+  });
+
+  it("keeps Korean retry feedback inside the inferred Korean planner route", async () => {
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion")
+      .mockResolvedValueOnce({
+        content: "메모 형식이 아님",
+        usage: ZERO_USAGE,
+      } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>)
+      .mockResolvedValueOnce({
+        content: validMemoRaw(1),
+        usage: ZERO_USAGE,
+      } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+    const koreanGenreBook: BookConfig = {
+      ...makeBook(),
+      title: "IMF를 독식한 재벌 3세",
+      genre: "현대판타지 재벌물",
+      language: undefined,
+    };
+
+    await makePlanner().planChapter({
+      book: koreanGenreBook,
+      bookDir,
+      chapterNumber: 1,
+    });
+
+    const messages = chatSpy.mock.calls[1]![2] as ReadonlyArray<{ role: string; content: string }>;
+    const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
+    expect(userPrompt).toContain("## 직전 출력 오류");
+    expect(userPrompt).toContain("오류를 고쳐 같은 형식으로 다시 출력하세요.");
+    expect(userPrompt).not.toContain("## Error from previous output");
+    expect(userPrompt).not.toContain("Fix and re-emit.");
+  });
+
+  it("keeps an omitted-language Korean profile inside the three-chapter opening boundary", async () => {
+    vi.spyOn(llmProvider, "chatCompletion")
+      .mockResolvedValueOnce({
+        content: validMemoRaw(3),
+        usage: ZERO_USAGE,
+      } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>)
+      .mockResolvedValueOnce({
+        content: validMemoRaw(4),
+        usage: ZERO_USAGE,
+      } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+    const koreanGenreBook: BookConfig = {
+      ...makeBook(),
+      title: "IMF를 독식한 재벌 3세",
+      genre: "현대판타지 재벌물",
+      language: undefined,
+    };
+
+    const chapterThree = await makePlanner().planChapter({
+      book: koreanGenreBook,
+      bookDir,
+      chapterNumber: 3,
+    });
+    const chapterFour = await makePlanner().planChapter({
+      book: koreanGenreBook,
+      bookDir,
+      chapterNumber: 4,
+    });
+
+    expect(chapterThree.memo.isGoldenOpening).toBe(true);
+    expect(chapterFour.memo.isGoldenOpening).toBe(false);
+  });
+
   it("routes only the current Arc future-advantage move into chapter intent", async () => {
     vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
       content: validMemoRaw(1),
@@ -375,7 +486,7 @@ ${VALID_EN_BODY}
 
     expect(chatSpy).toHaveBeenCalledTimes(1);
     expect(result.memo.chapter).toBe(1);
-    expect(result.memo.isGoldenOpening).toBe(true); // ch1 en → also golden (≤5)
+    expect(result.memo.isGoldenOpening).toBe(true); // ch1 en → also inside the shared first-three boundary
 
     // System prompt must be the English variant
     const callArgs = chatSpy.mock.calls[0]!;
@@ -400,6 +511,59 @@ ${VALID_EN_BODY}
     expect(userMsg?.content).not.toContain("黄金三章规划指引");
   });
 
+  it("infers English prompts end-to-end from an English genre profile when language is omitted", async () => {
+    const validEnRaw = `# Chapter 1 memo
+
+## Chapter goal
+Make the system advantage visible
+
+## Thread refs
+none
+
+## Current task
+Use the system once and show a concrete result.
+
+## What the reader is waiting for right now
+The reader is waiting to see whether the advantage works.
+
+## To pay off / to keep buried
+Pay off the first use; keep the larger system origin buried.
+
+## What the slow / transitional beats carry
+The aftermath shows the practical cost.
+
+## Three-question check on the key choice
+The choice has a reason, serves the protagonist's interest, and matches their persona.
+
+## Required end-of-chapter change
+The protagonist confirms one usable ability.
+
+## Hook ledger for this chapter
+defer: system origin — review later.
+
+## Do not
+Do not invent an unrelated quest.
+`;
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validEnRaw,
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const result = await makePlanner().planChapter({
+      book: { ...makeBook(), genre: "litrpg", language: undefined },
+      bookDir,
+      chapterNumber: 1,
+    });
+
+    const messages = chatSpy.mock.calls[0]![2] as ReadonlyArray<{ role: string; content: string }>;
+    const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+    const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
+    expect(systemPrompt).toContain("editor-in-chief");
+    expect(systemPrompt).not.toContain("你是这本小说的创作总编");
+    expect(userPrompt).toContain("# Chapter 1 memo request");
+    expect(result.intentMarkdown).toContain("# Chapter Intent");
+  });
+
   it("returns a degraded memo instead of throwing when all 3 attempts fail", async () => {
     vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
       content: "permanently broken",
@@ -416,7 +580,32 @@ ${VALID_EN_BODY}
     expect(result.memo.goal.length).toBeGreaterThan(0);
     expect(result.memo.body).toContain("## 当前任务");
     expect(result.memo.body).toContain("## Planner warning");
+    expect(result.memo.body).toContain("完整收束不需要新造压力");
+    expect(result.memo.body).not.toContain("章尾至少要在信息、压力、关系、目标或风险上发生一个明确变化");
     expect(result.intentMarkdown).toContain("Planner warning");
+  });
+
+  it("keeps degraded Korean and English memos payoff-first without forced next pressure", async () => {
+    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: "permanently broken",
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const korean = await makePlanner().planChapter({
+      book: { ...makeBook(), genre: "현대판타지 재벌물", language: undefined },
+      bookDir,
+      chapterNumber: 2,
+    });
+    const english = await makePlanner().planChapter({
+      book: { ...makeBook(), genre: "litrpg", language: undefined },
+      bookDir,
+      chapterNumber: 2,
+    });
+
+    expect(korean.memo.body).toContain("완전 수습이면 새 압력을 만들 필요가 없다");
+    expect(korean.memo.body).not.toContain("다음 화를 당긴다");
+    expect(english.memo.body).toContain("Full settlement does not need fresh pressure");
+    expect(english.memo.body).not.toContain("so the chapter is not only summary");
   });
 
   // Phase hotfix 5: planner.intent.mustAvoid must come from the Phase 5

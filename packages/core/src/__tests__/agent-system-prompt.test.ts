@@ -482,7 +482,12 @@ describe("buildAgentSystemPrompt", () => {
       expect(prompt).toContain("## 기획서 작업 계약");
       expect(prompt).toContain("처음부터 한국어로 구상하고 씁니다");
       expect(prompt).toContain("독자가 다음 화를 누를 이유");
-      expect(prompt).toContain("주인공의 행동, 상대의 대응, 눈에 보이는 보상");
+      expect(prompt).toContain("주인공의 행동과 상대의 대응 뒤 눈에 보이는 보상");
+      expect(prompt).toContain("눈에 보이는 보상을 먼저 지급하고");
+      expect(prompt).toContain("자연스럽게 생기는 선택·후과·압력 또는 완결된 결산");
+      expect(prompt).not.toContain("그 보상으로 생긴 다음 문제");
+      expect(prompt).not.toContain("그 보상 때문에 생긴 다음 문제");
+      expect(prompt).not.toContain("보상 뒤의 새 압력");
       expect(prompt).toContain("project_pitch.md를 쓰거나 고칠 때");
       expect(prompt).toContain("현재 작품에 연결된 레퍼런스 기록만 사용합니다");
       expect(prompt).toContain("추상 명사가 스스로 움직이게 쓰지 않습니다");

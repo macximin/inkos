@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: true
 powerScaling: false
 eraResearch: false
-pacingRule: "Alternate dungeon POV (planning/building) with adventurer POV (exploration/combat) every 1-2 chapters. Expansion milestone every 5-8 chapters."
+pacingRule: "Use dungeon and adventurer viewpoints when their contrast adds dramatic value; alternation and expansion cadence are diagnostics, not quotas. Let milestones arrive when strategy, resistance, and payoff have earned them."
 satisfactionTypes: ["Trap Success", "Floor Expansion", "Minion Evolution", "Adventurer Defeated", "Resource Milestone", "Core Upgrade"]
 auditDimensions: [1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -36,5 +36,5 @@ auditDimensions: [1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,24,25,26]
 - Late: Sprawling complex, hundreds of minions, political relationships with other dungeons/factions, regional economic impact
 - Dungeon POV chapters (2-3k words): internal monologue, planning, resource management, strategy
 - Adventurer POV chapters (2-3k words): exploration, discovery, combat, adaptation
-- End dungeon chapters on suspense (adventurers approaching); end adventurer chapters revealing dungeon's plan
+- Let each viewpoint chapter end on the function its result earns: payoff, aftermath, a completed decision, suspense, or a natural plan reveal. Neither viewpoint requires a cliffhanger
 - Each room/trap/creature must feel purposeful — readers enjoy creative dungeon design with clear strategic reasoning

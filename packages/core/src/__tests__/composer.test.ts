@@ -157,6 +157,30 @@ describe("ComposerAgent", () => {
     expect(result.trace.notes).toContain("book-reference-context-selected");
   });
 
+  it("uses an explicitly resolved profile language when book.language is omitted", async () => {
+    const requests: Array<{ readonly surface: string; readonly language: string }> = [];
+    await composeGovernedChapter({
+      book: { ...book, language: undefined },
+      language: "en",
+      bookDir,
+      chapterNumber: 4,
+      plan,
+      outlineSectionSelector: async (request) => {
+        requests.push({ surface: "outline", language: request.language });
+        return request.candidates.map((candidate) => candidate.source);
+      },
+      referenceContextProvider: async (request) => {
+        requests.push({ surface: "reference", language: request.language });
+        return { entries: [], notes: [] };
+      },
+    });
+
+    expect(requests).toEqual(expect.arrayContaining([
+      { surface: "outline", language: "en" },
+      { surface: "reference", language: "en" },
+    ]));
+  });
+
   it("uses the English compatibility prompt instead of Chinese for Korean reference selection", async () => {
     const composer = new ComposerAgent({
       client: {} as ConstructorParameters<typeof ComposerAgent>[0]["client"],

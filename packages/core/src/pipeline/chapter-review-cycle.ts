@@ -31,7 +31,6 @@ export interface ChapterReviewCycleResult {
 }
 
 const DEFAULT_MAX_REVIEW_ITERATIONS = 1;
-const PASS_SCORE_THRESHOLD = 85;
 const NET_IMPROVEMENT_EPSILON = 3;
 
 interface ReviewSnapshot {
@@ -143,6 +142,7 @@ export async function runChapterReviewCycle(params: {
   const normalizedBeforeAudit = await normalizeIfHardDrift(finalContent);
   finalContent = params.normalizePostWriteSurface?.(normalizedBeforeAudit.content) ?? normalizedBeforeAudit.content;
   finalWordCount = countChapterLength(finalContent, params.lengthSpec.countingMode);
+  const preAuditNormalizedWordCount = finalWordCount;
   normalizeApplied = normalizeApplied || normalizedBeforeAudit.applied;
   params.assertChapterContentNotEmpty(finalContent, "draft generation");
 
@@ -194,17 +194,17 @@ export async function runChapterReviewCycle(params: {
     // Length is NOT added to reviser issues — normalize handles it as a dedicated step.
     // lengthInRange is only used in isPassed() as a hard gate.
 
-    // Deterministic post-write and AI-tell warnings are actionable revision
-    // findings, not advisory reviewer prose. Keep them as warnings in the
-    // report, but do not let a high LLM score hide them from the repair gate.
-    const hasDeterministicStyleBlocker = [...postWriteIssues, ...aiTellsResult.issues].some(
-      (issue) => issue.severity === "critical" || issue.severity === "warning",
-    );
+    // Verdicts are derived from the trusted issue envelope, not from an LLM's
+    // free-standing boolean. This keeps warnings advisory even when a model
+    // returns `passed: false`, while still refusing a contradictory
+    // `passed: true` whenever a creative critical issue is present.
+    const hasCreativeCritical = allIssues.some(isAutomaticRevisionIssue);
+    const creativePassed = !llmAudit.parseFailed
+      && !hasBlockedWords
+      && !hasCreativeCritical;
     const auditResult: AuditResult = {
-      passed: (hasBlockedWords || hasDeterministicStyleBlocker) ? false : llmAudit.passed,
-      creativePassed: (hasBlockedWords || hasDeterministicStyleBlocker)
-        ? false
-        : (llmAudit.creativePassed ?? llmAudit.passed),
+      passed: creativePassed,
+      creativePassed,
       researchStatus: llmAudit.researchStatus ?? "not-applicable",
       issues: allIssues,
       summary: llmAudit.summary,
@@ -217,12 +217,13 @@ export async function runChapterReviewCycle(params: {
     return { auditResult, score, lengthInRange };
   };
 
-  const isPassed = (assessment: { auditResult: AuditResult; score: number; lengthInRange: boolean }): boolean =>
-    assessment.auditResult.passed && assessment.score >= PASS_SCORE_THRESHOLD && assessment.lengthInRange;
+  const isPassed = (assessment: { auditResult: AuditResult; lengthInRange: boolean }): boolean =>
+    assessment.auditResult.passed && assessment.lengthInRange;
 
   // ---------------------------------------------------------------------------
-  // Scoring loop: assess → revise → assess. Default is one automatic repair pass;
-  // projects can raise it when they accept slower but more persistent repair.
+  // Trust-gate loop: assess → revise critical findings → assess. The score is
+  // advisory and may compare already-eligible snapshots, but never turns a
+  // warning into an automatic rewrite command.
   // ---------------------------------------------------------------------------
   const maxReviewIterations = Math.max(0, Math.floor(params.maxReviewIterations ?? DEFAULT_MAX_REVIEW_ITERATIONS));
   params.logStage({ zh: "审计草稿", en: "auditing draft" });
@@ -247,7 +248,7 @@ export async function runChapterReviewCycle(params: {
     return {
       finalContent,
       finalWordCount,
-      preAuditNormalizedWordCount: finalWordCount,
+      preAuditNormalizedWordCount,
       revised: false,
       auditResult: initial.auditResult,
       totalUsage,
@@ -267,8 +268,8 @@ export async function runChapterReviewCycle(params: {
       const automaticRevisionIssues = currentAudit.auditResult.issues.filter(isAutomaticRevisionIssue);
       if (automaticRevisionIssues.length === 0) {
         params.logWarn({
-          zh: "当前只有研究状态或信息级提示，跳过自动修稿",
-          en: "Only research-status or informational findings remain; skipping automatic prose revision.",
+          zh: "当前没有创作性严重问题；警告、研究状态与信息提示保留为建议，不自动修稿",
+          en: "No creative critical findings remain; warnings, research status, and informational findings stay advisory, so automatic prose revision is skipped.",
         });
         break;
       }
@@ -306,6 +307,14 @@ export async function runChapterReviewCycle(params: {
       // the earlier in-range version. No in-loop normalize needed.
       const nextAssessment = await assess(revisedContent, { temperature: 0 });
 
+      if (nextAssessment.auditResult.parseFailed) {
+        params.logWarn({
+          zh: `修复轮次 ${iteration + 1} 的复审输出解析失败，保留上一份已验证正文`,
+          en: `repair iteration ${iteration + 1} produced an unparseable re-audit; preserving the last verified draft`,
+        });
+        break;
+      }
+
       snapshots.push({
         content: revisedContent,
         wordCount: revisedWordCount,
@@ -317,8 +326,8 @@ export async function runChapterReviewCycle(params: {
       // Check if passed
       if (isPassed(nextAssessment)) {
         params.logStage({
-          zh: `修复后达到通过线（${nextAssessment.score} 分），退出循环`,
-          en: `repair reached pass threshold (${nextAssessment.score}), exiting loop`,
+          zh: `修复后通过硬门槛（参考分 ${nextAssessment.score}），退出循环`,
+          en: `repair cleared hard gates (advisory score: ${nextAssessment.score}), exiting loop`,
         });
         finalContent = revisedContent;
         finalWordCount = revisedWordCount;
@@ -327,8 +336,12 @@ export async function runChapterReviewCycle(params: {
         break;
       }
 
-      // Check net improvement
-      if (nextAssessment.score >= currentAudit.score + NET_IMPROVEMENT_EPSILON) {
+      // Continue only when the automatic hard-gate debt shrinks. Advisory
+      // scores may rise or fall, but cannot halt a repair that removed a
+      // critical reader-trust failure.
+      const currentCriticalCount = currentAudit.auditResult.issues.filter(isAutomaticRevisionIssue).length;
+      const nextCriticalCount = nextAssessment.auditResult.issues.filter(isAutomaticRevisionIssue).length;
+      if (nextCriticalCount < currentCriticalCount) {
         finalContent = revisedContent;
         finalWordCount = revisedWordCount;
         postReviseCount = revisedWordCount;
@@ -336,8 +349,8 @@ export async function runChapterReviewCycle(params: {
         // Continue to next iteration
       } else {
         params.logWarn({
-          zh: `修复轮次 ${iteration + 1} 未净提升（${currentAudit.score} → ${nextAssessment.score}），退出循环`,
-          en: `repair iteration ${iteration + 1} no net improvement (${currentAudit.score} → ${nextAssessment.score}), exiting loop`,
+          zh: `修复轮次 ${iteration + 1} 未减少关键问题（${currentCriticalCount} → ${nextCriticalCount}），退出循环`,
+          en: `repair iteration ${iteration + 1} did not reduce critical findings (${currentCriticalCount} → ${nextCriticalCount}), exiting loop`,
         });
         break;
       }
@@ -345,25 +358,31 @@ export async function runChapterReviewCycle(params: {
   }
 
   // ---------------------------------------------------------------------------
-  // Pick the best scoring snapshot for final output
+  // Pick the safest eligible snapshot. Hard length and creative pass outrank
+  // the advisory score. If every repair still fails, preserve the earliest
+  // draft instead of silently adopting a different but still-blocked rewrite.
   // ---------------------------------------------------------------------------
-  const bestSnapshot = snapshots.reduce((best, snap) => {
-    if (snap.lengthInRange !== best.lengthInRange) {
-      return snap.lengthInRange ? snap : best;
-    }
-    return snap.score >= best.score + NET_IMPROVEMENT_EPSILON ? snap : best;
-  });
-
-  // If best snapshot differs from current content (repair made things worse
-  // but an earlier version was better), roll back to the best version.
-  const shouldRestoreBestSnapshot = bestSnapshot.content !== finalContent && (
-    (bestSnapshot.lengthInRange && !currentAudit.lengthInRange)
-    || bestSnapshot.score >= currentAudit.score + NET_IMPROVEMENT_EPSILON
+  const eligibleSnapshots = snapshots.filter((snapshot) =>
+    snapshot.lengthInRange
+    && snapshot.auditResult.passed
+    && !snapshot.auditResult.parseFailed
   );
+  const bestSnapshot = eligibleSnapshots.length === 0
+    ? snapshots[0]!
+    : eligibleSnapshots.slice(1).reduce(
+        (best, snapshot) => snapshot.score >= best.score + NET_IMPROVEMENT_EPSILON
+          ? snapshot
+          : best,
+        eligibleSnapshots[0]!,
+      );
+
+  // If the working copy is not the safest eligible snapshot, restore the
+  // selected version. This also rejects a repair that remains hard-blocked.
+  const shouldRestoreBestSnapshot = bestSnapshot.content !== finalContent;
   if (shouldRestoreBestSnapshot) {
     params.logWarn({
-      zh: `回退到最高分版本（${bestSnapshot.score} 分 vs 当前 ${currentAudit.score} 分）`,
-      en: `rolling back to highest-scoring version (${bestSnapshot.score} vs current ${currentAudit.score})`,
+      zh: `回退到最安全的合格版本（参考分 ${bestSnapshot.score} vs 当前 ${currentAudit.score}）`,
+      en: `rolling back to the safest eligible version (advisory score: ${bestSnapshot.score} vs ${currentAudit.score})`,
     });
     finalContent = bestSnapshot.content;
     finalWordCount = bestSnapshot.wordCount;
@@ -377,7 +396,7 @@ export async function runChapterReviewCycle(params: {
   return {
     finalContent,
     finalWordCount,
-    preAuditNormalizedWordCount: finalWordCount,
+    preAuditNormalizedWordCount,
     revised: snapshots.length > 1 && finalContent !== params.initialOutput.content,
     auditResult: currentAudit.auditResult,
     totalUsage,

@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: false
 eraResearch: false
-pacingRule: "Romance beats at every act break. Chemistry scenes every 2-3 chapters. Fantasy romance: consummation at 60-75%. Romantic fantasy: romance resolution aligned with plot resolution."
+pacingRule: "Use act breaks and recent chapters as diagnostics for whether the central relationship has vanished. Place chemistry, intimacy, and resolution where character choices and plot consequences earn them, not at fixed chapter or percentage quotas."
 satisfactionTypes: ["Chemistry Moment", "Vulnerability Shared", "Obstacle Overcome Together", "First Kiss", "Relationship Defined", "HEA/HFN Achieved"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -38,7 +38,7 @@ auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 
 - Fantasy romance: heavy romance focus early, building to consummation around 60-75%, resolution after romance established
 - Romantic fantasy: romance subplot woven through action plot, key romantic moments at act breaks, romance resolution aligned with plot resolution
-- Chemistry scenes every 2-3 chapters minimum — readers came for the relationship
+- Keep the central relationship recognizably alive through choices, friction, intimacy, or consequence; do not insert chemistry scenes by chapter quota
 - Sexual tension can heighten during/after action (adrenaline, relief, protective instincts)
 - Break up long dialogue-heavy romance scenes with physical action or setting detail
 - Enemies-to-lovers needs slow burn: opposition -> forced proximity -> grudging respect -> attraction -> surrender

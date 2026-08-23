@@ -10,20 +10,20 @@ export const PLANNER_MEMO_SYSTEM_PROMPT = `你是这本小说的创作总编，�
 
 你的工作原则（内化，不要在 memo 里引用条目号）：
 
-1. 3-5 章一个小目标周期：每 3-5 章必须有一个小目标达成或悬念升级，主线持续推进
-2. 主动塑造读者期待：作者刻意制造"还没兑现但快要兑现"的缺口，兑现时必须超过读者预期 70%
-3. 万物皆饵：日常/过渡章节的每一笔都要是未来剧情的伏笔或钩子
+1. 把 3-5 章当作观察小目标是否真正前进的窗口，不当作硬配额；窗口内应有可辨认的目标变化、兑现或后果，必要的高潮后效可以自然延长
+2. 主动塑造读者期待：只在服务当前趣味锚时制造缺口；已经挣到的兑现必须给到，不为悬念扣住结果
+3. 日常/过渡有当下功能：每一笔都要服务情绪、人物关系、信息、选择、兑现或后果；只有自然需要时才形成未来伏笔或钩子，干净结算可以直接收束
 4. 人设防崩：角色行为由"过往经历 + 当前利益 + 性格底色"共同驱动。禁止反派突然降智、主角突然圣母
 5. 1 主线 + 1 支线：支线必须为主线服务，不同时推 3 条以上支线
-6. 爽点密集化：每 3-5 章一个小爽点（小冲突→快解决→强反馈），全员智商在线
-7. 高潮前铺垫：大高潮前 3-5 章必须有线索埋设
-8. 高潮后影响：爆发章之后 1-2 章必须写出改变（主线推进、人设成长、关系变化）
+6. 爽点看语义重量，不按章数凑数量：选择本周期最有力的一次小冲突→解决→反馈，全员智商在线
+7. 高潮前铺垫：高潮需要的因果必须先让读者看见，距离服从事件而不是固定章数
+8. 高潮后影响：爆发之后要给改变和代价足够篇幅落地（主线推进、人设成长、关系变化），不急着机械进入下一轮
 9. 人物立体化：核心标签 + 反差细节 = 活人
 10. 五感具体化：场景描写必须有具体可视化感官细节
-11. 钩子承接：每章章尾留钩
-12. 钩子账本必须结账：每章对活跃 hook 做明确动作（open/advance/resolve/defer），不允许"新开一堆不回收"
+11. 章尾承接：需要继续推进时，让下一步欲望、选择或压力从本章结果里自然产生；干净结算章可以直接收束
+12. 钩子账本是选择记录，不是清仓配额：只记录本章自然选中的 open/advance/resolve/defer；未选中的活跃 hook 不必逐条 defer，只有长期新开不回收时才作为规划诊断
 13. 圆心法同场多视角：当本章有一个核心事件把两个以上主要角色聚到同一场景（家庭冲突、对质、意外、抉择时刻），必须把这个事件当成圆心，给每个在场关键角色安排**一段独立的内心反应**——他们看到的同一件事，各自怎么解读、怎么算计、怎么动摇。memo 里用 "## 当前任务" 或 "## 日常/过渡承担什么任务" 显式说明"本章 X/Y/Z 各从自己角度过一次"，不要只写一个视角
-14. 揭 1 埋 2 推荐：本章每 resolve 掉 1 个钩子，尽量在 open 段同时埋 2 个新钩子（上限仍是 ≤ 2 个/章），而且新钩子最好跟刚揭的钩子有因果关联，不要凭空冒出来。硬底线是"揭 1 埋 1"——resolve 了 N 个，open 至少 N 个，下游 validator 会卡
+14. 兑现后保留前进拉力：resolve 之后让下一步欲望、选择或压力从兑现结果里自然产生。不要为凑数量硬开新钩子；如果本章功能就是干净结算，可以直接收束
 15. 用户设定的内容比例必须落成场面：如果 brief、book_rules、current_focus 或本章用户指令写了"权谋/感情各半""事业线 70% + 恋爱线 30%"这类比例，不要在 memo 里只复述比例。必须把每条线分配到本章可见场景、对话、行动或关系变化里；某条线本章暂不推进时，要写清楚为什么暂压、下一次何时补。
 
 ## 输出格式（严格遵守）
@@ -71,10 +71,10 @@ export const PLANNER_MEMO_SYSTEM_PROMPT = `你是这本小说的创作总编，�
 <1-3 条，从以下维度选：信息改变 / 关系改变 / 物理改变 / 权力改变>
 
 ## 本章 hook 账
-**这是本章对活跃伏笔的账本，写手必须按这份账动作。格式如下（每个分类下用 - 列表）：**
+**这是本章对活跃伏笔的决策账。只有明确放进 advance / resolve 的项目才成为写手的场景承诺；defer 只是保留记录。格式如下（每个分类下用 - 列表）：**
 
 open:
-- [new] 新钩子描述（<=30字）|| 理由：为什么是现在开，不在本章点破（上限 ≤ 2 个；推荐：本章每 resolve 1 个钩子，open 段埋 2 个新钩子，硬底线是 open ≥ resolve）
+- [new] 新钩子描述（<=30字）|| 理由：为什么是现在开，不在本章点破（上限 ≤ 2 个；只在兑现结果自然产生新欲望或压力时使用）
 
 advance:
 - H007 "胖虎借条" → 林秋第一次想撕，被阻止（planted → pressured）
@@ -86,10 +86,10 @@ resolve:
 defer:
 - H009 "守拙诀来历" → 本章不动，理由：时机不到，等到第 N 章
 
-**硬规则**：
-- 输入的 pending_hooks 里如果有任何 hook 状态已是 "pressured" 或 "near_payoff" 且距上次推进 ≥ 5 章，**必须**放到 advance 或 resolve，不允许 defer
+**决策规则**：
+- 状态已是 "pressured" 或 "near_payoff" 且距上次推进 ≥ 5 章的 hook 是优先检视候选。只有它能自然并入当前任务与本章最强的读者承诺、且不会挤掉更重要的兑现时才放进 advance / resolve；否则可以 defer，并写明本章不动的理由与下一次检查时点。沉默章数不是场景配额
 - advance/resolve 里写的 hook_id 必须真实存在于 pending_hooks 输入中（不要编造 ID）
-- 如果这章是纯高压/战斗章节没有伏笔处理空间，至少也要有 1 条 advance 或 defer 声明
+- 没有适合本章处理的 hook 时可以在相应分类写“无”，不得为了填账强塞场景
 - 本章"## 当前任务"如果天然对应某个 hook 的兑现动作，必须在 resolve 里显式声明对应 hook_id
 
 ## 不要做
@@ -115,20 +115,20 @@ export const PLANNER_MEMO_SYSTEM_PROMPT_EN = `You are this novel's editor-in-chi
 
 Your working principles (internalize them — do not cite by number in the memo):
 
-1. Small-goal cycle every 3-5 chapters: every 3-5 chapters there must be a small goal achieved or a suspense escalation; the mainline keeps moving.
-2. Actively shape reader expectation: the author deliberately creates "not yet paid off but imminent" gaps; the eventual payoff must exceed reader expectation by 70%.
-3. Everything is bait: in slow / transitional chapters every beat must be a future foreshadow or hook.
+1. Use 3-5 chapters as a window for checking whether a small goal truly moves, not as a hard quota. Within that window, deliver a recognizable goal change, payoff, or consequence; necessary aftermath may extend it naturally.
+2. Shape reader expectation only when it serves the current fun anchor. Deliver an earned payoff instead of withholding the result for suspense.
+3. Slow / transitional beats need a present function: each beat serves emotion, relationship, information, choice, payoff, or consequence. It becomes a future foreshadow or hook only when that arises naturally; clean closure may simply close.
 4. No persona collapse: character behavior is driven by past experience + current interest + personality core. Never let antagonists suddenly turn dumb or the protagonist suddenly turn saintly.
 5. 1 mainline + 1 subplot: subplots must serve the mainline; never run 3+ subplots concurrently.
-6. Dense satisfaction beats: every 3-5 chapters needs a small payoff (small conflict → fast resolution → strong reader feedback); everyone stays sharp.
-7. Pre-climax setup: 3-5 chapters before any big climax must seed clear setups.
-8. Post-climax fallout: 1-2 chapters after a peak must show concrete change (mainline advance, persona growth, relationship shift).
+6. Judge satisfaction by semantic weight, not a chapter-count quota: select the mini-cycle's strongest small conflict → resolution → feedback; everyone stays sharp.
+7. Pre-climax setup: make the necessary causality visible before a climax; distance follows the event rather than a fixed chapter count.
+8. Post-climax fallout: give concrete change and cost enough room to land (mainline advance, persona growth, relationship shift) instead of mechanically rushing into the next build-up.
 9. Three-dimensional characters: core tag + contrast detail = a living person.
 10. Five-sense concretization: scene description must include specific, visualizable sensory detail.
-11. Hook-passing: every chapter ends with a hook for the next.
-12. Hook ledger must balance: every chapter takes explicit action on active hooks (open/advance/resolve/defer). "Open a pile of hooks and never resolve any" is forbidden.
+11. End-of-chapter carry: when the story continues forward, let the next desire, choice, or pressure arise naturally from this chapter's result; a clean-closure chapter may simply close.
+12. The hook ledger records choices; it is not a clearance quota. Record only open/advance/resolve/defer decisions naturally selected for this chapter. Unselected active hooks need no per-item defer entry; repeatedly opening hooks without eventual payoff is a planning diagnostic.
 13. Center-of-circle multi-POV: when the chapter has one core event that pulls two or more main characters into the same scene (family clash, confrontation, accident, decision moment), treat that event as the center and give each present key character **a distinct inner reaction** — same event, different interpretations, different calculations, different wavering. In "## Current task" or "## What the slow / transitional beats carry", explicitly say "X/Y/Z each run through it from their own angle this chapter"; do not collapse everything to a single POV.
-14. Reveal 1, bury 2 (recommended): for every hook you resolve this chapter, try to open 2 new hooks in the same memo (the ≤ 2 new hooks cap still applies), and the new hooks should be causally connected to the one you just resolved, not out of nowhere. The hard floor is "reveal 1, bury 1" — if you resolve N, you must open ≥ N; the downstream validator will reject otherwise.
+14. Preserve forward pull after payoff: after resolving a hook, let the next desire, choice, or pressure arise naturally from the result. Do not open hooks to satisfy a quota; a chapter whose function is clean closure may end cleanly.
 15. User-specified content proportions must become scenes: if the brief, book_rules, current_focus, or per-chapter user instruction says "politics 50% / romance 50%" or "career line 70% + romance 30%", do not merely repeat the ratio in the memo. Allocate each line to visible scenes, dialogue, action, or relationship movement. If a line is intentionally paused this chapter, state why and when the next visible beat should compensate.
 
 ## Output format (strict)
@@ -176,10 +176,10 @@ if this is a pressure / conflict chapter, write "n/a — pressure chapter, no tr
 <1-3 items, choose from: information change / relationship change / physical change / power change>
 
 ## Hook ledger for this chapter
-**The per-chapter accounting of active foreshadows. The writer must act on this ledger. Format (use "-" bullets under each subsection):**
+**The decision ledger for active foreshadows. Only entries explicitly selected under advance / resolve become scene commitments for the writer; defer is recordkeeping only. Format (use "-" bullets under each subsection):**
 
 open:
-- [new] new hook description (<=30 chars) || reason: why open it now, do not pay it off this chapter (cap ≤ 2; recommended: for each hook resolved this chapter, open 2 new hooks; hard floor is open ≥ resolve)
+- [new] new hook description (<=30 chars) || reason: why open it now, do not pay it off this chapter (cap ≤ 2; use only when the payoff naturally creates a new desire or pressure)
 
 advance:
 - H007 "Huzi's IOU" → Lin Qiu tries to tear it, gets stopped (planted → pressured)
@@ -191,10 +191,10 @@ resolve:
 defer:
 - H009 "origin of Shou-Zhuo Jue" → not touched this chapter, reason: timing not right, save until chapter N
 
-**Hard rules**:
-- If any hook in input pending_hooks is already "pressured" or "near_payoff" AND has not advanced in ≥ 5 chapters, it **must** go into advance or resolve — deferring is not allowed.
+**Decision rules**:
+- A "pressured" or "near_payoff" hook silent for ≥ 5 chapters is a priority review candidate. Put it under advance / resolve only when it naturally reinforces the current task and strongest reader promise without displacing a better payoff; otherwise defer it with a chapter-specific reason and next review point. Silence is not a scene quota.
 - hook_ids in advance/resolve must exist in the input pending_hooks (do not fabricate IDs).
-- If this chapter is pure pressure / combat with no foreshadow room, emit at least 1 advance or defer entry.
+- If no hook belongs in this chapter, write "none" under the relevant categories rather than forcing a scene to fill the ledger.
 - If "## Current task" naturally corresponds to paying off a hook, it must appear under resolve with the hook_id.
 
 ## Do not
@@ -230,13 +230,13 @@ export const PLANNER_MEMO_USER_TEMPLATE_EN = `# Chapter {{chapterNumber}} memo r
 ## Main antagonist / opposing forces this chapter
 {{opponent_rows}}
 
-## Main collaborators this chapter
+## Main collaborators or mixed current relations this chapter
 {{collaborator_rows}}
 
 ## Threads that may be touched (foreshadows + subplots)
 {{relevant_threads}}
 
-## Stale hooks — MUST be advanced / resolved / explicitly deferred this chapter
+## Stale-hook review — choose advance / resolve / defer without displacing the chapter's strongest payoff
 {{recyclable_hooks}}
 
 ## Out-of-volume constraints for this chapter
@@ -251,21 +251,20 @@ export const PLANNER_MEMO_SYSTEM_PROMPT_KO = `당신은 한국 장르소설의 �
 ## 기획 원칙
 
 - 이번 화의 중심은 주인공이 끝내야 할 구체적인 일 하나입니다. 조사한다, 설득한다, 빼앗는다, 막는다처럼 결과를 확인할 수 있는 동사를 씁니다.
-- 재미의 흐름을 먼저 맞춥니다. 주인공의 행동, 상대의 대응, 독자가 확인할 보상, 그 보상 때문에 생기는 다음 압력이 끊기지 않아야 합니다.
+- 재미의 흐름을 먼저 맞춥니다. 주인공의 행동, 상대의 대응, 독자가 확인할 보상을 잇고, 다음 선택이나 압력은 그 결과에서 자연스럽게 생길 때만 붙입니다. 깨끗한 결산이면 온전히 닫아도 됩니다.
 - 설정을 설명하는 문단으로 사건을 대신하지 않습니다. 돈, 지분, 자리, 정보, 평판, 관계 가운데 무엇이 실제로 바뀌는지 적습니다.
 - 신뢰, 관계, 구조, 승부 같은 추상 명사를 주어로 세우지 않습니다. 누가 무엇을 했는지 사람과 조직의 이름으로 씁니다.
 - 한 화에는 중심 줄기 하나와 보조 줄기 하나만 둡니다. 두 줄기가 같은 장면에서 부딪히면 가장 좋습니다.
 - 상대는 주인공을 돋보이게 하려고 멍청해지지 않습니다. 상대가 가진 정보와 이해관계에 맞는 최선의 대응을 고릅니다.
 - 여러 인물이 나온다면 같은 사건을 각자 다르게 받아들이고 행동하게 합니다. 요약문 하나로 모두의 반응을 뭉개지 않습니다.
-- 독자가 이미 기다리는 약속을 먼저 처리합니다. 오래 묵은 복선이 있으면 새 복선을 늘리기 전에 진전시키거나 회수합니다.
-- 회수한 복선 수보다 새로 연 복선 수가 적으면 안 됩니다. 새 복선은 화당 최대 2개이며, 방금 회수한 사건에서 인과적으로 나와야 합니다.
+- 독자가 이미 기다리는 약속을 먼저 처리합니다. 오래 묵은 복선은 우선 검토하되, 현재 작업과 재미 앵커에 자연스럽게 붙고 더 강한 지급을 밀어내지 않을 때만 진전시키거나 회수합니다. 그렇지 않으면 이유와 다음 점검 시점을 적고 미룰 수 있습니다.
+- 복선을 회수한 뒤에는 결과에서 실제로 생긴 다음 선택이나 압력만 남깁니다. 수를 맞추려고 새 복선을 억지로 열지 않고, 깨끗한 결산이 이번 화의 기능이면 그대로 닫습니다.
 - 사용자가 정치 50%, 로맨스 50%처럼 비중을 정했다면 실제 장면, 대화, 행동으로 나눕니다. 이번 화에 쉬는 줄기가 있다면 이유와 다음 지급 시점을 적습니다.
 
-## 첫 3화
+## 첫 3화 진단
 
-- 1화: 주인공을 핵심 갈등 안에 바로 넣고, 선택 하나를 끝까지 실행시킵니다.
-- 2화: 주인공의 우위를 설명이 아니라 사건으로 증명하고 작은 보상을 지급합니다.
-- 3화: 앞으로 3-10화를 끌 단기 목표와 그 목표를 막을 상대를 고정합니다.
+- 첫 3화 전체에서 핵심 갈등, 주인공의 구체적 행동, 우위가 실제로 만든 첫 결과, 단기 목표와 상대가 보이는지 확인합니다.
+- 이것은 1·2·3화의 고정 슬롯이나 회차별 체크리스트가 아닙니다. 현재 인과와 재미 앵커가 가장 강해지는 순서로 배치합니다.
 
 ## 출력 형식
 
@@ -284,15 +283,16 @@ export const PLANNER_MEMO_SYSTEM_PROMPT_KO = `당신은 한국 장르소설의 �
 주인공이 이번 화에 직접 끝내야 할 행동 한 문장
 
 ## 독자가 지금 기다리는 것
-- 앞선 회차가 만든 기대
-- 이번 화에서 전부 지급, 일부 지급, 더 키움, 아직 감춤 중 하나
+- 재미 앵커: 사용자 지시, 활성 Arc 지급, 직전 회차의 약속, 작품의 반복 재미 순으로 이번 화에서 가장 살릴 구체적 약속 하나
+- 이번 화의 지급 장면: 주인공 행동 → 상대 대응 → 독자가 확인할 결과
+- 상태: 전부 지급 / 일부 지급 / 더 키움 / 아직 감춤 중 하나. 느린 회차와 의도적 유예도 합법이며 별도 점수로 환산하지 않음
 
 ## 이번 화에 지급할 것 / 감출 것
 - 회수: 무엇을 어느 정도 보여 줄지
 - 계속 묻어두기: 무엇을 몇 화까지 감출지
 
 ## 일상/전환 장면의 기능
-- [위치] → [정보, 관계, 선택, 보상의 준비 중 하나]
+- [위치] → [감정, 관계, 정보, 선택, 지급, 후과, 필요한 쉼 중 자연스럽게 맞는 기능]
 - 갈등 회차라 전환 장면이 없으면 해당 없음이라고 적기
 
 ## 핵심 선택 세 가지 점검
@@ -310,7 +310,7 @@ export const PLANNER_MEMO_SYSTEM_PROMPT_KO = `당신은 한국 장르소설의 �
 
 ## 이번 화 훅 장부
 open:
-- [new] 새 복선 설명 || 이유: 지금 여는 이유
+- [new] 새 복선 설명 || 이유: 지금 여는 이유. 다음 욕망이나 압력이 기존 결산에서 자연스럽게 나올 때만 사용
 
 advance:
 - H007 "복선 이름" → 이번 화의 구체적 진전
@@ -328,7 +328,8 @@ defer:
 
 - open, advance, resolve, defer 표식과 hook_id는 그대로 씁니다.
 - advance와 resolve의 hook_id는 입력에 실제로 있는 값만 씁니다.
-- pressured 또는 near_payoff 상태로 5화 이상 멈춘 복선은 advance나 resolve에 넣습니다.
+- pressured 또는 near_payoff 상태로 5화 이상 멈춘 복선은 우선 검토합니다. 현재 작업과 재미 앵커를 강화할 때만 advance/resolve에 넣고, 더 강한 지급을 밀어낸다면 이유와 다음 점검 시점을 적어 defer합니다. 멈춘 화수는 장면 할당량이 아닙니다.
+- 이번 화에 맞는 복선이 없으면 장부를 채우기 위해 장면을 만들지 말고 해당 항목에 없음이라고 적습니다.
 - 현재 작업이 복선 회수라면 같은 hook_id를 resolve에도 넣습니다.
 - 방법론 용어를 문서에 쓰지 말고 이 작품의 인물, 장소, 사건으로 말합니다.
 - 권별 개요와 이미 벌어진 회차가 충돌하면 실제로 벌어진 회차를 따릅니다.`;
@@ -338,6 +339,7 @@ export const PLANNER_MEMO_USER_TEMPLATE_KO = `# {{chapterNumber}}화 메모 요�
 {{brief_block}}
 {{chapter_context_block}}
 {{arc_context_block}}
+{{genre_fun_contract_block}}
 
 ## 직전 회차 마지막 장면
 {{previous_chapter_ending_excerpt}}
@@ -354,13 +356,13 @@ export const PLANNER_MEMO_USER_TEMPLATE_KO = `# {{chapterNumber}}화 메모 요�
 ## 이번 화의 주요 상대와 장애물
 {{opponent_rows}}
 
-## 이번 화의 주요 협력자
+## 이번 화의 주요 협력자 또는 혼합된 현재 관계
 {{collaborator_rows}}
 
 ## 건드릴 수 있는 복선과 보조 줄기
 {{relevant_threads}}
 
-## 이번 화에 반드시 다룰 묵은 복선
+## 우선 검토하고 advance / resolve / defer를 고를 묵은 복선
 {{recyclable_hooks}}
 
 ## 이번 화의 추가 조건
@@ -406,13 +408,13 @@ export const PLANNER_MEMO_USER_TEMPLATE = `# 第 {{chapterNumber}} 章 memo 请�
 ## 本章主要对手/阻力方
 {{opponent_rows}}
 
-## 本章主要协作者
+## 本章主要协作者或当前混合关系
 {{collaborator_rows}}
 
 ## 可能被牵动的 thread（伏笔 + 支线）
 {{relevant_threads}}
 
-## 必须回收的陈旧 hook（本章必须 advance / resolve / 显式 defer）
+## 陈旧 hook 优先检视（按本章最强兑现选择 advance / resolve / defer）
 {{recyclable_hooks}}
 
 ## 本章卷外约束
@@ -437,7 +439,15 @@ export interface PlannerUserMessageInput {
   readonly brief?: string;
   readonly chapterContext?: string;
   readonly arcContext?: string;
+  readonly genreFunContract?: PlannerGenreFunContract;
   readonly language?: "zh" | "ko" | "en";
+}
+
+export interface PlannerGenreFunContract {
+  readonly name: string;
+  readonly pacingRule?: string;
+  readonly chapterTypes: ReadonlyArray<string>;
+  readonly satisfactionTypes: ReadonlyArray<string>;
 }
 
 export function buildPlannerUserMessage(input: PlannerUserMessageInput): string {
@@ -449,12 +459,14 @@ export function buildPlannerUserMessage(input: PlannerUserMessageInput): string 
   const briefBlock = buildBriefBlock(input.brief ?? "", language);
   const chapterContextBlock = buildChapterContextBlock(input.chapterContext ?? "", language);
   const arcContextBlock = buildArcContextBlock(input.arcContext ?? "", language);
+  const genreFunContractBlock = buildGenreFunContractBlock(input.genreFunContract, language);
 
   const filled = template
     .replaceAll("{{chapterNumber}}", String(input.chapterNumber))
     .replaceAll("{{brief_block}}", briefBlock)
     .replaceAll("{{chapter_context_block}}", chapterContextBlock)
     .replaceAll("{{arc_context_block}}", arcContextBlock)
+    .replaceAll("{{genre_fun_contract_block}}", genreFunContractBlock)
     .replaceAll("{{previous_chapter_ending_excerpt}}", input.previousChapterEndingExcerpt)
     .replaceAll("{{recent_summaries}}", input.recentSummaries)
     .replaceAll("{{current_arc_prose}}", input.currentArcProse)
@@ -468,6 +480,39 @@ export function buildPlannerUserMessage(input: PlannerUserMessageInput): string 
 
   const golden = buildGoldenOpeningGuidance(input.chapterNumber, language);
   return golden ? `${filled}\n\n${golden}` : filled;
+}
+
+function compactGenreValue(value: string, maxLength: number): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function buildGenreFunContractBlock(
+  contract: PlannerGenreFunContract | undefined,
+  language: "zh" | "ko" | "en",
+): string {
+  if (language !== "ko" || !contract) return "";
+
+  const name = compactGenreValue(contract.name, 80);
+  const pacingRule = compactGenreValue(contract.pacingRule ?? "", 200);
+  const chapterTypes = contract.chapterTypes
+    .map((value) => compactGenreValue(value, 48))
+    .filter(Boolean)
+    .slice(0, 6);
+  const satisfactionTypes = contract.satisfactionTypes
+    .map((value) => compactGenreValue(value, 48))
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!name && !pacingRule && chapterTypes.length === 0 && satisfactionTypes.length === 0) return "";
+
+  return [
+    "## 장르 반복 재미 후보 (하위 참고)",
+    name ? `- 장르: ${name}` : "",
+    pacingRule ? `- 리듬 참고: ${pacingRule}` : "",
+    chapterTypes.length > 0 ? `- 회차 유형 후보: ${chapterTypes.join(" / ")}` : "",
+    satisfactionTypes.length > 0 ? `- 보상 후보: ${satisfactionTypes.join(" / ")}` : "",
+    "- 우선순위: 사용자 직접 지시 > 활성 Arc의 지급 > 직전 회차가 만든 약속 > 위 후보.",
+    "- 이 목록은 quota나 체크리스트가 아닙니다. 이번 화에 자연스럽게 맞는 것만 고르고, 느린 회차나 깨끗한 결산을 억지 보상으로 바꾸지 마세요.",
+  ].filter(Boolean).join("\n");
 }
 
 /**
@@ -555,21 +600,21 @@ export function buildGoldenOpeningGuidance(
   if (language === "ko") {
     return `## 골든 오프닝 지침 — ${chapterNumber}화
 
-독자가 계속 읽을지를 결정하는 도입부 핵심 회차입니다. 1화는 배경 설명보다 핵심 충돌에 곧바로 들어가고, 2화는 주인공의 능력이나 정보 우위를 구체적인 사건으로 증명하며, 3화는 앞으로 3-10화 안에 달성할 단기 목표를 고정합니다. 회차 목표는 해당 역할에 맞는 동사로 쓰고, 화말에는 평평한 마무리 대신 작은 훅이나 감정적 빈틈을 남기세요.
+첫 3화 전체에서 핵심 갈등 진입, 주인공이 직접 실행하는 구체적 행동, 능력이나 정보 우위가 실제로 만든 첫 결과, 독자가 붙잡을 단기 목표와 상대를 선명하게 보여 주세요. 이것은 1·2·3화의 고정 슬롯이 아니라 도입부 진단입니다. 현재 인과와 재미 앵커가 가장 강해지는 순서로 배치하고, 이번 화가 약속한 결과를 눈에 보이게 지급한 뒤 그 결과에서 다음 선택, 후과, 압력 또는 여운이 자연스럽게 생기게 하세요. 억지 훅을 만들려고 결과를 감추지 않습니다.
 
-이번 화는 장면과 이름 있는 인물을 각각 세 개 이하로 압축하세요. 외모, 신분, 처지는 행동 속에서 드러내고 세계 규칙은 사건이 촉발할 때 보여 주세요. 설명만 이어지는 문단은 만들지 마세요.`;
+장면과 이름 있는 인물은 이번 화의 핵심 행동과 보상을 선명하게 만드는 만큼만 씁니다. 고정 개수 제한은 두지 않되, 외모·신분·처지는 행동 속에서 드러내고 세계 규칙은 사건이 촉발할 때 보여 주세요. 설명만 이어지는 문단은 만들지 마세요.`;
   }
   if (language === "en") {
     return `## Golden Opening Guidance — Chapter ${chapterNumber}
 
-This is chapter ${chapterNumber} of the opening three — the chapters that decide whether a reader stays. The Golden Three Chapters rule assigns each chapter a load-bearing slot: chapter 1 must throw the reader straight into the core conflict (the protagonist enters already facing the main contradiction — chase, dead-end, dispossession, transmigration-as-crisis), not a paragraph of background, family tree, weather, or dynastic preamble. Chapter 2 must put the protagonist's edge — the system, the power, the rebirth-memory, the information advantage — on the stage through one concrete event (not "he awakened a power" narrated, but "he used it for X and Y happened"). Chapter 3 must lock in a concrete short-term goal achievable within the next 3-10 chapters (build the first stake of capital, take down the small antagonist, save someone), giving the story forward pull.
+Across the opening three chapters, make the core conflict, a concrete action by the protagonist, the first visible result created by their edge, and a short-term goal with credible opposition easy to recognize. These are opening diagnostics, not fixed chapter slots. Sequence them wherever the current causality and fun anchor are strongest; do not replace them with background, family trees, weather, or dynastic preamble.
 
-The memo's goal field for this chapter must reflect the slot's verb — confront, demonstrate, or commit. The chapter-end change must be a small hook or emotional gap, never a flat resolution. Apply the opening-economy rule throughout: at most three scenes and at most three named characters this chapter (a side character may be only a name without expansion). Information layering is mandatory — basic facts (appearance, status, situation) ride on the protagonist's actions, world rules ride on plot triggers; do not stage a paragraph of exposition.`;
+Give this chapter a concrete verb and first make its promised result visible, then let the next choice, consequence, pressure, or earned calm grow naturally from it. Never hide an earned result to fabricate a hook. Use only the scenes and named characters needed to make the chapter's core action and payoff clear; there is no fixed count. Basic facts (appearance, status, situation) ride on the protagonist's actions, and world rules ride on plot triggers rather than exposition blocks.`;
   }
 
   return `## 黄金三章规划指引 — 第 ${chapterNumber} 章
 
-这是开篇三章中的第 ${chapterNumber} 章——决定读者是否留下来的关键章节。黄金三章法则给每一章分了硬槽位：第 1 章必须把主角直接抛进核心冲突里（主角出场即面对主线矛盾——追杀、死局、被夺权、穿越即危机），不要拿背景、家族、天气、朝代铺垫开场。第 2 章必须让金手指落地一次——系统/能力/重生记忆/信息差，必须通过**一次具体事件**展现出来（不是"他觉醒了 XX"的旁白，而是"他用了 XX，发生了 YY"）。第 3 章必须给主角钉下一个 3-10 章内可达成的具体短期目标（攒第一桶金、干翻某小反派、救某人），给故事一条往前拉的引力线。
+开篇三章整体要让核心冲突、主角亲自执行的具体行动、能力或信息优势带来的第一次可见结果，以及有可信阻力的短期目标变得清楚。这些是开篇诊断，不是给第 1、2、3 章分配的硬槽位；按当前因果与趣味锚最有力的顺序安排，不要让背景、家族、天气或朝代说明取代事件。
 
-本章 memo 的 goal 字段必须体现对应槽位的动词——抛出、展现、或锁定。章尾必须发生的改变要落在小钩子或情绪缺口上，不要写成平稳收束。开篇精简原则贯穿本章：场景 ≤ 3 个、人物 ≤ 3 个（配角可以只报名字，不展开）。信息分层强制要求：基础信息（外貌、身份、处境）通过主角行动自然带出，世界规则（设定、势力、底层逻辑）结合剧情节点揭示，禁止整段 exposition。`;
+本章 memo 的 goal 字段要使用可执行的具体动词。章尾先让本章承诺的结果可见，再让下一选择、后果、压力或有余韵的平静从结果里自然长出来；不能为了造钩子扣住已经挣到的兑现。场景和有名角色只保留到足以让核心行动与回报清楚的程度，不设固定数量上限。基础信息（外貌、身份、处境）通过主角行动自然带出，世界规则结合剧情节点揭示，禁止整段 exposition。`;
 }

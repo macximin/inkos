@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: true
 eraResearch: false
-pacingRule: "Tier advancement every 2-4 chapters early, every 8-15 mid-story, every 20+ late-story. Each tier must feel fundamentally different."
+pacingRule: "Use tier cadence as a diagnostic, not a quota: early progress is usually easier to see, while later breakthroughs take longer and carry more weight. Each tier must feel fundamentally different, but every chapter need not advance a tier."
 satisfactionTypes: ["Tier Breakthrough", "Technique Mastery", "Rival Surpassed", "Mentor Transcended", "Power Combination Discovered", "Impossible Challenge Overcome"]
 auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -33,7 +33,7 @@ auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 
 ## Pacing Guidance
 
-- Chapter structure: Training/learning -> Application/testing -> Breakthrough trigger -> Advancement or cliffhanger
+- Possible chapter shape: training/learning -> application/testing -> a visible gain, setback, insight, aftermath, clean settlement, or natural next pressure. Do not force a breakthrough or cliffhanger every chapter
 - Maintain tension as MC grows: introduce enemies/challenges that scale differently or present new threat types
 - Internal struggle must escalate with power — new power unlocks pride, responsibility, temptation, enemies
 - Strongest threats need not be physical: political, magical, spiritual, temporal

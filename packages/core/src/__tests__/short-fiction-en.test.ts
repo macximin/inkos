@@ -101,6 +101,16 @@ describe("short-fiction English prompt branch", () => {
     expect(prompt).toContain("650 words per chapter");
   });
 
+  it("lets the final short-fiction chapter close cleanly instead of forcing continuation", () => {
+    const outline = buildShortFictionOutlineUserPrompt(OUTLINE_INPUT, "en");
+    const writer = buildShortFictionWriterSystemPrompt("en");
+    expect(outline).toContain("the final chapter must land the promised payoff");
+    expect(outline).toContain("may close cleanly without manufacturing continuation");
+    expect(writer).toContain("the final chapter must complete the story and may end cleanly");
+    expect(writer).toContain("Never hide an earned payoff to force continuation");
+    expect(writer).not.toContain("Every chapter needs drama happening on the page: character action, dialogue or reaction, a shift in the situation, and a reason to keep reading at the chapter break");
+  });
+
   it("keeps the zh default identical to the explicit zh branch", () => {
     expect(buildShortFictionWriterSystemPrompt()).toBe(buildShortFictionWriterSystemPrompt("zh"));
     expect(buildShortFictionOutlineSystemPrompt()).toBe(buildShortFictionOutlineSystemPrompt("zh"));

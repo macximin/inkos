@@ -13,7 +13,11 @@ import { ComposerAgent, composeGovernedChapter, contextBudgetFromClient, type Co
 import { WriterAgent, type WriteChapterInput, type WriteChapterOutput } from "../agents/writer.js";
 import { LengthNormalizerAgent } from "../agents/length-normalizer.js";
 import { ChapterAnalyzerAgent } from "../agents/chapter-analyzer.js";
-import { ContinuityAuditor, isAutomaticRevisionIssue } from "../agents/continuity.js";
+import {
+  ContinuityAuditor,
+  isAutomaticRevisionIssue,
+  isRevisionCandidateIssue,
+} from "../agents/continuity.js";
 import { ReviserAgent, DEFAULT_REVISE_MODE, type ReviseMode } from "../agents/reviser.js";
 import { StateValidatorAgent, type ValidationResult, type ValidationWarning } from "../agents/state-validator.js";
 import { RadarAgent } from "../agents/radar.js";
@@ -130,6 +134,7 @@ function preserveCurrentFutureAdvantageExecution(
     || existing.chapterNumber !== chapter.number
     || existing.arcId !== provenance.arcId
     || existing.moveId !== provenance.futureAdvantageMove.moveId
+    || JSON.stringify(existing.move) !== JSON.stringify(provenance.futureAdvantageMove)
     || existing.contentSha256 !== hashFutureAdvantageChapterContent(chapterContent)
   ) return undefined;
   return existing;
@@ -331,8 +336,8 @@ export function buildImportFoundationSource(
 
 /** Human-readable description of each manual-revision gate, surfaced in revisionDiagnostics. */
 const REVISION_GATE_STANDARDS: Record<RevisionGate, string> = {
-  strict: "A revision is applied only when blocking, critical, and AI-tell counts do not worsen, and at least one blocking issue is removed.",
-  lenient: "A revision is applied whenever blocking, critical, and AI-tell counts do not worsen; no improvement is required (lenient gate).",
+  strict: "Within the hard length range, a revision is applied when critical issues decrease, when critical issues stay level and at least one advisory revision candidate is removed, or when an explicit user edit remains creatively clean after re-audit.",
+  lenient: "Within the hard length range, a revision is applied when critical issues do not worsen; advisory candidates must not increase unless a critical issue was removed. An explicit user edit may also apply when its post-audit remains creatively clean (lenient gate).",
   always: "Manual revisions are always applied; audit counts are recorded for reference only (always gate).",
 };
 
@@ -351,9 +356,13 @@ export interface PipelineConfig {
   readonly chapterReviewMode?: "auto" | "manual";
   /**
    * Gate for applying manual revisions (default "strict"):
-   * - "strict": apply only when blocking/critical/AI-tell counts do not worsen
-   *   AND at least one of blocking or AI-tell improves.
-   * - "lenient": apply whenever the counts do not worsen (no improvement required).
+   * Non-"always" revisions must remain inside the chapter's hard length range.
+   * - "strict": apply when critical issues decrease, or when critical issues
+   *   stay level and at least one advisory revision candidate is removed. An
+   *   explicit user edit may also apply when its post-audit remains creatively clean.
+   * - "lenient": apply when critical issues do not worsen; advisory candidates
+   *   may increase only when the revision removed a critical issue. As with
+   *   strict, an explicit user edit may apply when its post-audit remains clean.
    * - "always": always apply; audit counts are recorded but never block.
    */
   readonly revisionGate?: RevisionGate;
@@ -379,7 +388,7 @@ export interface ChapterPipelineResult {
   readonly wordCount: number;
   readonly auditResult: AuditResult;
   readonly revised: boolean;
-  readonly status: "ready-for-review" | "audit-failed" | "state-degraded";
+  readonly status: "drafted" | "ready-for-review" | "audit-failed" | "state-degraded";
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
@@ -1171,6 +1180,7 @@ export class PipelineRunner {
   async writeDraft(bookId: string, context?: string, wordCount?: number): Promise<DraftResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
+      await this.assertNoPendingStateRepair(bookId);
       await this.assertChapterProductionReadyWithinBookLock(bookId);
       await this.state.ensureControlDocuments(bookId);
       const book = await this.state.loadBookConfig(bookId);
@@ -1379,6 +1389,16 @@ export class PipelineRunner {
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const language = book.language ?? gp.language;
+    const persistedPlanCandidate = (this.config.inputGovernanceMode ?? "v2") === "legacy"
+      ? null
+      : await loadPersistedPlan(bookDir, targetChapter);
+    const persistedPlan = persistedPlanCandidate
+      && sameArcProvenance(persistedPlanCandidate.arcProvenance, chapterMeta?.arcProvenance)
+      ? persistedPlanCandidate
+      : null;
+    const arcContext = chapterMeta?.arcProvenance
+      ? renderChapterArcProvenance(chapterMeta.arcProvenance)
+      : undefined;
     this.logStage(language, {
       zh: `审计第${targetChapter}章`,
       en: `auditing chapter ${targetChapter}`,
@@ -1390,8 +1410,12 @@ export class PipelineRunner {
       chapterContent: content,
       chapterNumber: targetChapter,
       language,
-      auditOptions: chapterMeta?.arcProvenance
-        ? { arcContext: renderChapterArcProvenance(chapterMeta.arcProvenance) }
+      auditOptions: persistedPlan || arcContext
+        ? {
+            chapterIntent: persistedPlan?.intentMarkdown,
+            chapterMemo: persistedPlan?.memo,
+            arcContext,
+          }
         : undefined,
     });
     const result = evaluation.auditResult;
@@ -1414,6 +1438,9 @@ export class PipelineRunner {
             status: (result.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
             updatedAt: new Date().toISOString(),
             auditIssues: result.issues.map((i) => `[${i.severity}] ${i.description}`),
+            pendingAuditReason: result.passed && !result.parseFailed
+              ? undefined
+              : ch.pendingAuditReason,
             futureAdvantageExecution,
           }
         : ch,
@@ -1421,10 +1448,10 @@ export class PipelineRunner {
     await this.state.saveChapterIndex(bookId, updated);
     const latestChapter = index.length > 0 ? Math.max(...index.map((chapter) => chapter.number)) : targetChapter;
     if (targetChapter === latestChapter) {
-      await this.persistAuditDriftGuidance({
+      await this.persistValidAuditDriftGuidance({
         bookDir,
         chapterNumber: targetChapter,
-        issues: result.issues.filter((issue) => issue.severity === "critical" || issue.severity === "warning"),
+        auditResult: result,
         language,
       }).catch(() => undefined);
       const settledChapter = updated.find((chapter) => chapter.number === targetChapter);
@@ -1476,7 +1503,6 @@ export class PipelineRunner {
       const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
       const { profile: gp } = await this.loadGenreProfile(book.genre);
       const language = book.language ?? gp.language;
-      const countingMode = resolveLengthCountingMode(language);
       const persistedChapterBrief = await readChapterUserBrief(bookDir, targetChapter);
       const requestedRevisionContext = mergeChapterRevisionInstructions(
         persistedChapterBrief,
@@ -1516,32 +1542,78 @@ export class PipelineRunner {
           : arcProvenanceContext ? { arcContext: arcProvenanceContext } : undefined,
       });
 
+      // A chapter's persisted telemetry is its length contract. Book language
+      // can change later, but an old zh_chars/ko_chars/en_words chapter must be
+      // re-counted and gated in the exact unit and bands it was produced with.
+      const lengthSpec: LengthSpec = chapterMeta.lengthTelemetry
+        ? {
+            target: chapterMeta.lengthTelemetry.target,
+            softMin: chapterMeta.lengthTelemetry.softMin,
+            softMax: chapterMeta.lengthTelemetry.softMax,
+            hardMin: chapterMeta.lengthTelemetry.hardMin,
+            hardMax: chapterMeta.lengthTelemetry.hardMax,
+            countingMode: chapterMeta.lengthTelemetry.countingMode,
+            normalizeMode: "none",
+          }
+        : buildLengthSpec(book.chapterWordCount, language);
+      const revisionBaseCount = countChapterLength(content, lengthSpec.countingMode);
+      const persistOriginalAuditState = async (evaluation: MergedAuditEvaluation): Promise<void> => {
+        const retainedLengthWarnings = this.buildLengthWarnings(
+          targetChapter,
+          revisionBaseCount,
+          lengthSpec,
+        );
+        const retainedIndex = index.map((chapter) => chapter.number === targetChapter
+          ? {
+              ...chapter,
+              status: (evaluation.auditResult.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+              wordCount: revisionBaseCount,
+              updatedAt: new Date().toISOString(),
+              auditIssues: evaluation.auditResult.issues.map((issue) => `[${issue.severity}] ${issue.description}`),
+              lengthWarnings: retainedLengthWarnings,
+              pendingAuditReason: evaluation.auditResult.passed && !evaluation.auditResult.parseFailed
+                ? undefined
+                : chapter.pendingAuditReason,
+            }
+          : chapter);
+        await this.state.saveChapterIndex(bookId, retainedIndex);
+        if (isLatestChapter) {
+          await this.persistValidAuditDriftGuidance({
+            bookDir,
+            chapterNumber: targetChapter,
+            auditResult: evaluation.auditResult,
+            language,
+          }).catch(() => undefined);
+        }
+      };
+
       const explicitRevisionRequested = Boolean(requestedRevisionContext?.trim())
-        || mode === "rewrite"
-        || mode === "rework";
-      if (
-        preRevision.blockingCount === 0
-        && preRevision.aiTellCount === 0
-        && !explicitRevisionRequested
-      ) {
+        || mode !== "auto";
+      if (preRevision.auditResult.parseFailed && !explicitRevisionRequested) {
+        await persistOriginalAuditState(preRevision);
         return {
           chapterNumber: targetChapter,
-          wordCount: countChapterLength(content, countingMode),
+          wordCount: revisionBaseCount,
           fixedIssues: [],
           applied: false,
           status: "unchanged",
-          skippedReason: "No warning, critical, or AI-tell issues to fix.",
+          skippedReason: "Audit output could not be parsed; the original chapter was preserved and no revision was attempted.",
         };
       }
-
-      const chapterLengthTarget = chapterMeta.lengthTelemetry?.target ?? book.chapterWordCount;
-      const lengthLanguage = chapterMeta.lengthTelemetry?.countingMode === "en_words"
-        ? "en"
-        : language;
-      const lengthSpec = buildLengthSpec(
-        chapterLengthTarget,
-        lengthLanguage,
-      );
+      if (
+        preRevision.blockingCount === 0
+        && !explicitRevisionRequested
+      ) {
+        await persistOriginalAuditState(preRevision);
+        return {
+          chapterNumber: targetChapter,
+          wordCount: revisionBaseCount,
+          fixedIssues: [],
+          applied: false,
+          status: "unchanged",
+          skippedReason: "No creative critical issue requires revision. Warnings remain advisory unless the user explicitly requests an edit.",
+        };
+      }
 
       const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
       this.logStage(stageLanguage, {
@@ -1552,7 +1624,7 @@ export class PipelineRunner {
         bookDir,
         content,
         targetChapter,
-        preRevision.auditResult.issues,
+        preRevision.auditResult.parseFailed ? [] : preRevision.revisionBlockingIssues,
         mode,
         book.genre,
         reviseControlInput
@@ -1564,12 +1636,39 @@ export class PipelineRunner {
               ruleStack: reviseControlInput.composed.ruleStack,
               lengthSpec,
               arcProvenanceContext,
+              allowAdvisoryIssues: true,
+              explicitRevisionRequested,
+              revisionInstruction: requestedRevisionContext,
             }
-          : { lengthSpec, arcProvenanceContext },
+          : {
+              lengthSpec,
+              arcProvenanceContext,
+              allowAdvisoryIssues: true,
+              explicitRevisionRequested,
+              revisionInstruction: requestedRevisionContext,
+            },
       );
 
       if (reviseOutput.revisedContent.length === 0) {
         throw new Error("Reviser returned empty content");
+      }
+      if (
+        reviseOutput.parseFailed
+        || reviseOutput.applied === false
+        || reviseOutput.revisedContent === content
+      ) {
+        await persistOriginalAuditState(preRevision);
+        return {
+          chapterNumber: targetChapter,
+          wordCount: revisionBaseCount,
+          fixedIssues: [],
+          applied: false,
+          status: "unchanged",
+          skippedReason: reviseOutput.failureReason
+            ?? (reviseOutput.parseFailed
+              ? "Revision output could not be parsed; the original chapter was preserved."
+              : "The reviser produced no safe text change; the original chapter was preserved."),
+        };
       }
       const normalizedRevision = await this.normalizeDraftLengthIfNeeded({
         bookId,
@@ -1608,11 +1707,21 @@ export class PipelineRunner {
               },
             },
       });
+      if (postRevision.auditResult.parseFailed) {
+        await persistOriginalAuditState(preRevision);
+        return {
+          chapterNumber: targetChapter,
+          wordCount: revisionBaseCount,
+          fixedIssues: [],
+          applied: false,
+          status: "unchanged",
+          skippedReason: "Post-revision audit output could not be parsed; the original chapter was preserved.",
+        };
+      }
       const effectivePostRevision = this.restoreActionableAuditIfLost(
         preRevision,
         postRevision,
       );
-      const revisionBaseCount = countChapterLength(content, lengthSpec.countingMode);
       const lengthWarnings = this.buildLengthWarnings(
         targetChapter,
         normalizedRevision.wordCount,
@@ -1631,14 +1740,21 @@ export class PipelineRunner {
       const improvedBlocking = effectivePostRevision.blockingCount < preRevision.blockingCount;
       const blockingDidNotWorsen = effectivePostRevision.blockingCount <= preRevision.blockingCount;
       const criticalDidNotWorsen = effectivePostRevision.criticalCount <= preRevision.criticalCount;
-      const aiDidNotWorsen = effectivePostRevision.aiTellCount <= preRevision.aiTellCount;
-      const didNotWorsen = blockingDidNotWorsen && criticalDidNotWorsen && aiDidNotWorsen;
+      const criticalImproved = effectivePostRevision.criticalCount < preRevision.criticalCount;
+      const didNotWorsen = criticalDidNotWorsen && (criticalImproved || blockingDidNotWorsen);
+      const improved = criticalImproved
+        || (effectivePostRevision.criticalCount === preRevision.criticalCount && improvedBlocking);
+      const explicitCreativeEditIsSafe = explicitRevisionRequested
+        && effectivePostRevision.auditResult.passed
+        && effectivePostRevision.criticalCount === 0;
+      const revisionLengthIsSafe = !isOutsideHardRange(normalizedRevision.wordCount, lengthSpec);
       const revisionGate = this.config.revisionGate ?? "strict";
       const shouldApplyRevision = revisionGate === "always"
         ? true
-        : revisionGate === "lenient"
-          ? didNotWorsen
-          : didNotWorsen && improvedBlocking;
+        : revisionLengthIsSafe && (
+            explicitCreativeEditIsSafe
+            || (revisionGate === "lenient" ? didNotWorsen : didNotWorsen && improved)
+          );
 
       if (!shouldApplyRevision) {
         const remainingIssues = effectivePostRevision.revisionBlockingIssues
@@ -1650,32 +1766,7 @@ export class PipelineRunner {
             description: issue.description,
             ...(issue.suggestion ? { suggestion: issue.suggestion } : {}),
           }));
-        const retainedLengthWarnings = this.buildLengthWarnings(
-          targetChapter,
-          revisionBaseCount,
-          lengthSpec,
-        );
-        const retainedIndex = index.map((chapter) => chapter.number === targetChapter
-          ? {
-              ...chapter,
-              status: (preRevision.auditResult.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
-              wordCount: revisionBaseCount,
-              updatedAt: new Date().toISOString(),
-              auditIssues: preRevision.auditResult.issues.map((issue) => `[${issue.severity}] ${issue.description}`),
-              lengthWarnings: retainedLengthWarnings,
-            }
-          : chapter);
-        await this.state.saveChapterIndex(bookId, retainedIndex);
-        if (isLatestChapter) {
-          await this.persistAuditDriftGuidance({
-            bookDir,
-            chapterNumber: targetChapter,
-            issues: preRevision.auditResult.issues.filter(
-              (issue) => issue.severity === "critical" || issue.severity === "warning",
-            ),
-            language,
-          }).catch(() => undefined);
-        }
+        await persistOriginalAuditState(preRevision);
         return {
           chapterNumber: targetChapter,
           wordCount: revisionBaseCount,
@@ -1768,6 +1859,10 @@ export class PipelineRunner {
               lengthWarnings,
               lengthTelemetry,
               reviewNote: undefined,
+              pendingAuditReason: effectivePostRevision.auditResult.passed
+                && !effectivePostRevision.auditResult.parseFailed
+                ? undefined
+                : ch.pendingAuditReason,
               futureAdvantageExecution: revisedFutureAdvantageExecution,
             };
         }
@@ -1787,12 +1882,10 @@ export class PipelineRunner {
       });
       await this.state.saveChapterIndex(bookId, updatedIndex);
       if (isLatestChapter) {
-        await this.persistAuditDriftGuidance({
+        await this.persistValidAuditDriftGuidance({
           bookDir,
           chapterNumber: targetChapter,
-          issues: effectivePostRevision.auditResult.issues.filter(
-            (issue) => issue.severity === "critical" || issue.severity === "warning",
-          ),
+          auditResult: effectivePostRevision.auditResult,
           language,
         }).catch(() => undefined);
       }
@@ -2557,14 +2650,40 @@ export class PipelineRunner {
         bookDir,
         targetChapter,
         this.config.externalContext,
-        { reuseExistingIntentWhenContextMissing: true },
+        {
+          reuseExistingIntentWhenContextMissing: true,
+          includeActiveArc: false,
+          arcProvenance: targetMeta.arcProvenance,
+        },
       );
-    const resyncedArcProvenance = reducedControlInput?.plan.arcProvenance ?? targetMeta.arcProvenance;
-    const resyncedFutureAdvantageExecution = targetMeta.futureAdvantageExecution
-      && resyncedArcProvenance
-      && targetMeta.futureAdvantageExecution.arcId === resyncedArcProvenance.arcId
-      && targetMeta.futureAdvantageExecution.moveId === resyncedArcProvenance.futureAdvantageMove?.moveId
-      ? targetMeta.futureAdvantageExecution
+    const resyncedArcProvenance = targetMeta.arcProvenance;
+    const resyncedFutureAdvantageExecution = preserveCurrentFutureAdvantageExecution(
+      { ...targetMeta, arcProvenance: resyncedArcProvenance },
+      content,
+    );
+    const resyncLengthSpec: LengthSpec = targetMeta.lengthTelemetry
+      ? {
+          target: targetMeta.lengthTelemetry.target,
+          softMin: targetMeta.lengthTelemetry.softMin,
+          softMax: targetMeta.lengthTelemetry.softMax,
+          hardMin: targetMeta.lengthTelemetry.hardMin,
+          hardMax: targetMeta.lengthTelemetry.hardMax,
+          countingMode: targetMeta.lengthTelemetry.countingMode,
+          normalizeMode: "none",
+        }
+      : buildLengthSpec(book.chapterWordCount, pipelineLang);
+    const resyncedWordCount = countChapterLength(content, resyncLengthSpec.countingMode);
+    const resyncedLengthWarnings = this.buildLengthWarnings(
+      targetChapter,
+      resyncedWordCount,
+      resyncLengthSpec,
+    );
+    const resyncedLengthTelemetry = targetMeta.lengthTelemetry
+      ? {
+          ...targetMeta.lengthTelemetry,
+          finalCount: resyncedWordCount,
+          lengthWarning: resyncedLengthWarnings.length > 0,
+        }
       : undefined;
 
     const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
@@ -2634,48 +2753,39 @@ export class PipelineRunner {
     await this.state.snapshotState(bookId, targetChapter);
     await this.syncCurrentStateFactHistory(bookId, targetChapter);
 
-    const finalStatus: "ready-for-review" | "audit-failed" = targetMeta.status === "state-degraded"
-      ? resolveStateDegradedBaseStatus(targetMeta)
-      : "ready-for-review";
-
-    if (targetMeta.status === "state-degraded") {
-      const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
-      const injectedIssues = new Set(degradedMetadata?.injectedIssues ?? []);
-      index[targetIndex] = {
-        ...targetMeta,
-        status: finalStatus,
-        updatedAt: new Date().toISOString(),
-        auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
-        reviewNote: undefined,
-        arcProvenance: resyncedArcProvenance,
-        futureAdvantageExecution: resyncedFutureAdvantageExecution,
-      };
-    } else {
-      index[targetIndex] = {
-        ...targetMeta,
-        status: "ready-for-review",
-        updatedAt: new Date().toISOString(),
-        arcProvenance: resyncedArcProvenance,
-        futureAdvantageExecution: resyncedFutureAdvantageExecution,
-      };
-    }
+    // Resync updates truth files from a manually edited body; it is not a
+    // continuity audit. Previous audit conclusions belong to the old body, so
+    // the chapter returns to drafted and must pass auditDraft explicitly.
+    const finalStatus = "drafted" as const;
+    index[targetIndex] = {
+      ...targetMeta,
+      status: finalStatus,
+      wordCount: resyncedWordCount,
+      updatedAt: new Date().toISOString(),
+      auditIssues: [],
+      lengthWarnings: resyncedLengthWarnings,
+      lengthTelemetry: resyncedLengthTelemetry,
+      reviewNote: undefined,
+      pendingAuditReason: "resynced-manual-edit",
+      arcProvenance: resyncedArcProvenance,
+      futureAdvantageExecution: resyncedFutureAdvantageExecution,
+    };
     await this.state.saveChapterIndex(bookId, index);
     await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
     return {
       chapterNumber: targetChapter,
       title: targetMeta.title,
-      wordCount: targetMeta.wordCount,
+      wordCount: resyncedWordCount,
       auditResult: {
-        passed: finalStatus !== "audit-failed",
+        passed: false,
+        creativePassed: false,
         issues: [],
-        summary: finalStatus === "audit-failed"
-          ? "chapter truth/state resynced from edited body, but chapter still needs audit fixes"
-          : "chapter truth/state resynced from edited body",
+        summary: "chapter truth/state resynced from edited body; re-audit required",
       },
       revised: false,
       status: finalStatus,
-      lengthWarnings: targetMeta.lengthWarnings,
-      lengthTelemetry: targetMeta.lengthTelemetry,
+      lengthWarnings: resyncedLengthWarnings,
+      lengthTelemetry: resyncedLengthTelemetry,
       tokenUsage: targetMeta.tokenUsage,
     };
   }
@@ -3318,13 +3428,16 @@ ${matrix}`,
   private async assertNoPendingStateRepair(bookId: string): Promise<void> {
     const existingIndex = await this.state.loadChapterIndex(bookId);
     const latestChapter = [...existingIndex].sort((left, right) => right.number - left.number)[0];
-    if (latestChapter?.status !== "state-degraded") {
-      return;
+    if (latestChapter?.status === "state-degraded") {
+      throw new Error(
+        `Latest chapter ${latestChapter.number} is state-degraded. Repair state or rewrite that chapter before continuing.`,
+      );
     }
-
-    throw new Error(
-      `Latest chapter ${latestChapter.number} is state-degraded. Repair state or rewrite that chapter before continuing.`,
-    );
+    if (latestChapter?.pendingAuditReason === "resynced-manual-edit") {
+      throw new Error(
+        `Latest chapter ${latestChapter.number} was resynced from a manual edit and requires auditDraft before continuing.`,
+      );
+    }
   }
 
   /**
@@ -3716,7 +3829,11 @@ ${matrix}`,
   }
 
   private async persistStoryRailTruthReceipt(bookId: string, chapter: ChapterMeta): Promise<void> {
-    if (!chapter.arcProvenance?.storyRail || chapter.status === "state-degraded") return;
+    if (
+      !chapter.arcProvenance?.storyRail
+      || chapter.status === "state-degraded"
+      || chapter.pendingAuditReason
+    ) return;
     try {
       await writeChapterTruthReceipt(this.state.bookDir(bookId), bookId, chapter);
     } catch (error) {
@@ -4025,6 +4142,25 @@ ${matrix}`,
     await writeFile(driftPath, block, "utf-8");
   }
 
+  private selectAuditDriftIssues(auditResult: AuditResult): ReadonlyArray<AuditIssue> {
+    return auditResult.issues.filter(isAutomaticRevisionIssue);
+  }
+
+  private async persistValidAuditDriftGuidance(params: {
+    readonly bookDir: string;
+    readonly chapterNumber: number;
+    readonly auditResult: AuditResult;
+    readonly language: LengthLanguage;
+  }): Promise<void> {
+    if (params.auditResult.parseFailed) return;
+    await this.persistAuditDriftGuidance({
+      bookDir: params.bookDir,
+      chapterNumber: params.chapterNumber,
+      issues: this.selectAuditDriftIssues(params.auditResult),
+      language: params.language,
+    });
+  }
+
   private stripAuditDriftCorrectionBlock(currentState: string): string {
     const headers = [
       "## 审计纠偏（自动生成，下一章写作前参照）",
@@ -4131,6 +4267,7 @@ ${matrix}`,
     const { profile } = await this.loadGenreProfile(params.book.genre);
     const { readBookRules } = await import("../agents/rules-reader.js");
     const { validatePostWrite } = await import("../agents/post-write-validator.js");
+    const { validateHookLedger } = await import("../utils/hook-ledger-validator.js");
     const parsedBookRules = (await readBookRules(params.bookDir))?.rules ?? null;
     const postWriteIssues: ReadonlyArray<AuditIssue> = validatePostWrite(
       params.chapterContent,
@@ -4143,6 +4280,9 @@ ${matrix}`,
       description: violation.description,
       suggestion: violation.suggestion,
     }));
+    const hookLedgerIssues: ReadonlyArray<AuditIssue> = params.auditOptions?.chapterMemo
+      ? validateHookLedger(params.auditOptions.chapterMemo.body, params.chapterContent)
+      : [];
     const longSpanFatigue = await analyzeLongSpanFatigue({
       bookDir: params.bookDir,
       chapterNumber: params.chapterNumber,
@@ -4155,39 +4295,45 @@ ${matrix}`,
       ...aiTells.issues,
       ...sensitiveResult.issues,
       ...postWriteIssues,
+      ...hookLedgerIssues,
       ...longSpanFatigue.issues,
     ];
     // revisionBlockingIssues excludes long-span-fatigue issues by
     // construction (not by category name) so that an LLM-reported issue
     // sharing a category label with a long-span issue is still counted.
+    // Manual revise is an explicit editorial action, so warnings remain valid
+    // candidates there even though only critical issues fail creative review
+    // or trigger the automatic write-time repair loop.
     const revisionBlockingIssues: ReadonlyArray<AuditIssue> = [
-      ...llmAudit.issues.filter(isAutomaticRevisionIssue),
+      ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
       ...postWriteIssues,
-    ];
-    const hasDeterministicBlocker = [...aiTells.issues, ...postWriteIssues].some(
-      (issue) => issue.severity === "warning" || issue.severity === "critical",
-    );
-    const hasBlockingIssue = revisionBlockingIssues.some(
-      (issue) => issue.severity === "warning" || issue.severity === "critical",
-    );
+      ...hookLedgerIssues,
+    ].filter(isRevisionCandidateIssue);
+    // Derive the creative verdict from the trusted merged issue envelope.
+    // A model's standalone boolean cannot turn advisory warnings into a stop,
+    // nor can it wave through a contradictory creative critical finding.
+    const hasCreativeCritical = issues.some(isAutomaticRevisionIssue);
+    const creativePassed = !llmAudit.parseFailed
+      && !hasBlockedWords
+      && !hasCreativeCritical;
 
     return {
       auditResult: {
-        passed: (hasBlockedWords || hasDeterministicBlocker || hasBlockingIssue) ? false : llmAudit.passed,
-        creativePassed: (hasBlockedWords || hasDeterministicBlocker || hasBlockingIssue)
-          ? false
-          : (llmAudit.creativePassed ?? llmAudit.passed),
+        passed: creativePassed,
+        creativePassed,
         researchStatus: llmAudit.researchStatus ?? "not-applicable",
         futureAdvantageExecution: llmAudit.futureAdvantageExecution,
         issues,
         summary: llmAudit.summary,
+        parseFailed: llmAudit.parseFailed,
+        overallScore: llmAudit.overallScore,
         tokenUsage: llmAudit.tokenUsage,
       },
       aiTellCount: aiTells.issues.length,
-      blockingCount: revisionBlockingIssues.filter((issue) => issue.severity === "warning" || issue.severity === "critical").length,
-      criticalCount: revisionBlockingIssues.filter((issue) => issue.severity === "critical").length,
+      blockingCount: revisionBlockingIssues.length,
+      criticalCount: revisionBlockingIssues.filter(isAutomaticRevisionIssue).length,
       revisionBlockingIssues,
     };
   }
@@ -4218,10 +4364,13 @@ ${matrix}`,
     composed: ComposeChapterOutput;
   }> {
     const plan = await this.resolveGovernedPlan(book, bookDir, chapterNumber, externalContext, options);
+    const { profile: genreProfile } = await this.loadGenreProfile(book.genre);
+    const resolvedLanguage = book.language ?? genreProfile.language;
     const composerCtx = this.agentCtxFor("composer", book.id);
     const composer = new ComposerAgent(composerCtx);
     const composed = await composeGovernedChapter({
       book,
+      language: resolvedLanguage,
       bookDir,
       chapterNumber,
       plan,

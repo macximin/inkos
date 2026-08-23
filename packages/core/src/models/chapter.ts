@@ -120,6 +120,8 @@ export const ChapterMetaSchema = z.object({
   auditIssues: z.array(z.string()).default([]),
   lengthWarnings: z.array(z.string()).default([]),
   reviewNote: z.string().optional(),
+  /** Host-owned gate for a body whose truth was rebuilt but prose was not re-audited. */
+  pendingAuditReason: z.enum(["resynced-manual-edit"]).optional(),
   detectionScore: z.number().min(0).max(1).optional(),
   detectionProvider: z.string().optional(),
   detectedAt: z.string().datetime().optional(),

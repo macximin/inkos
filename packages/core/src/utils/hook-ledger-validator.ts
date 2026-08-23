@@ -1,7 +1,6 @@
 /**
- * Phase 9-3: hard gate that a chapter draft actually acts on the hook ledger
- * the planner declared in the memo's "## 本章 hook 账" / "## Hook ledger for
- * this chapter" section.
+ * Phase 9-3: advisory check that a chapter draft actually acts on the hook
+ * ledger declared in the memo's Chinese, Korean, or English section.
  *
  * The planner commits, per chapter, to:
  *   - advance: <hook_id> "name" → state-change
@@ -25,7 +24,7 @@ export interface HookLedgerEntry {
   readonly id: string;
   /** Raw text of the ledger line after the hook_id. */
   readonly descriptor: string;
-  /** 2+ char CJK sequences and 3+ letter ASCII words extracted from descriptor. */
+  /** 2+ char Han/Hangul sequences and 3+ letter ASCII words extracted from descriptor. */
   readonly keywords: ReadonlyArray<string>;
 }
 
@@ -38,14 +37,15 @@ export interface HookLedger {
    * Count of `[new] ...` placeholder lines in the `open:` subsection. These
    * are brand-new hooks declared by the planner that have no pre-existing
    * hook_id (extractLedgerEntry rejects them because they carry no id to
-   * match downstream), but they still count as "a new hook opened" for the
-   * 揭 1 埋 1 floor check.
+   * match downstream). The count is retained as parsed ledger information;
+   * it is never compared with resolve count or treated as a quota.
    */
   readonly newOpenCount: number;
 }
 
 const LEDGER_HEADING_PATTERNS = [
   /^#{2,3}\s*本章\s*hook\s*账\s*$/im,
+  /^#{2,3}\s*이번\s*화\s*훅\s*장부\s*$/im,
   /^#{2,3}\s*Hook\s+ledger\s+for\s+this\s+chapter\s*$/im,
 ];
 
@@ -90,9 +90,9 @@ export function parseHookLedger(memoBody: string): HookLedger {
     if (!current) continue;
     if (!line.startsWith("-")) continue;
 
-    // `[new]` placeholder lines have no hook_id but still count as a new hook
-    // opened (揭 1 埋 1 floor check). extractLedgerEntry filters them out for
-    // advance/resolve evidence matching; we tally them separately here.
+    // `[new]` placeholder lines have no hook_id. extractLedgerEntry filters
+    // them out for advance/resolve evidence matching; tally them separately
+    // without assigning any minimum or resolve/open balance requirement.
     const cleaned = line.replace(/^-+\s*/, "").trim();
     if (current === "open" && /^\[new\]/i.test(cleaned)) {
       newOpenCount += 1;
@@ -112,13 +112,8 @@ export function parseHookLedger(memoBody: string): HookLedger {
  * a pre-existing id/descriptor to echo) or `defer` (deferred = deliberately
  * not touched).
  *
- * Additionally enforces the "揭 1 埋 1" hard floor (Xu Er Jia De Mao, 番茄文章
- * 10): whenever a chapter resolves one or more hooks, it must open at least
- * as many new hooks in the same memo. "Resolve without opening" leaves the
- * reader feeling "解完即索然无味" — the story loses forward pull. The softer
- * "揭 1 埋 2" rule is a planner-prompt recommendation, not a hard gate here,
- * because enforcing ×2 would conflict with the "≤ 2 new hooks per chapter"
- * cap on the planner side when resolve=2.
+ * Resolve/open counts are deliberately not compared. A chapter may close more
+ * hooks than it opens and end in clean settlement without any advisory.
  */
 export function validateHookLedger(
   memoBody: string,
@@ -126,6 +121,11 @@ export function validateHookLedger(
 ): ReadonlyArray<HookLedgerViolation> {
   const ledger = parseHookLedger(memoBody);
   const violations: HookLedgerViolation[] = [];
+  const language = /이번\s*화\s*훅\s*장부/i.test(memoBody)
+    ? "ko"
+    : /Hook\s+ledger\s+for\s+this\s+chapter/i.test(memoBody)
+      ? "en"
+      : "zh";
 
   // Evidence check for everything the memo committed to land in prose.
   const committed = dedupeById([...ledger.advance, ...ledger.resolve]);
@@ -133,27 +133,19 @@ export function validateHookLedger(
     if (!draftEchoesEntry(draftContent, entry)) {
       violations.push({
         severity: "warning",
-        category: "hook 账需语义复核",
-        description: `memo 在 advance/resolve 里声明要处理 ${entry.id}，但确定性关键词检查没有找到对应落点`,
-        suggestion: `复核正文是否已经用动作、对话、物件或信息变化推进了 ${entry.id}；若没有，请补具体场景，若已推进，可忽略这条确定性提示`,
+        category: language === "ko" ? "훅 장부 의미 확인" : language === "en" ? "Hook ledger semantic review" : "hook 账需语义复核",
+        description: language === "ko"
+          ? `memo의 advance/resolve에 ${entry.id} 처리가 적혀 있지만 결정적 키워드 검사에서 대응 장면을 찾지 못했습니다.`
+          : language === "en"
+            ? `The memo commits to advance/resolve ${entry.id}, but the deterministic keyword check found no matching prose beat.`
+            : `memo 在 advance/resolve 里声明要处理 ${entry.id}，但确定性关键词检查没有找到对应落点`,
+        suggestion: language === "ko"
+          ? `${entry.id}가 행동, 대사, 물건, 정보 변화로 실제 진행됐는지 확인하세요. 이미 다른 표현으로 구현됐다면 이 권고는 무시할 수 있습니다.`
+          : language === "en"
+            ? `Check whether ${entry.id} advances through action, dialogue, an object, or an information change. Ignore this advisory if the prose already implements it in different words.`
+            : `复核正文是否已经用动作、对话、物件或信息变化推进了 ${entry.id}；若没有，请补具体场景，若已推进，可忽略这条确定性提示`,
       });
     }
-  }
-
-  // "揭 1 埋 1" hard floor: when anything was resolved, at least the same
-  // number of new hooks must have been opened. We count both `[new]`
-  // placeholder lines (newOpenCount — the normal way planners declare fresh
-  // hooks without an id) and any id-bearing lines under `open:` (rare, but
-  // legal if a planner re-opens a previously paused hook).
-  const resolvedCount = ledger.resolve.length;
-  const openedCount = ledger.open.length + ledger.newOpenCount;
-  if (resolvedCount > 0 && openedCount < resolvedCount) {
-    violations.push({
-      severity: "critical",
-      category: "hook 账揭 1 埋 1 违规",
-      description: `本章 resolve 了 ${resolvedCount} 个钩子，但 open 只有 ${openedCount} 个新钩子。只揭不埋会让读者豁然开朗后索然无味，本书的前进拉力被削弱。`,
-      suggestion: `在 memo 的 open 段下至少再埋 ${resolvedCount - openedCount} 个与本章已揭钩子相关的新钩子。新钩子最好与已揭钩子彼此关联，不要凭空冒出来。`,
-    });
   }
 
   return violations;
@@ -211,7 +203,7 @@ function extractKeywords(descriptor: string): ReadonlyArray<string> {
   const quotedMatch = descriptor.match(/[""]([^""\n]+)[""]/);
   const source = quotedMatch ? quotedMatch[1]! : descriptor.split(/[→]|->/, 1)[0]!;
 
-  const cjkRuns = source.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
+  const cjkRuns = source.match(/[\u4e00-\u9fff\uac00-\ud7a3]{2,}/g) ?? [];
   const cjkTokens: string[] = [];
   for (const run of cjkRuns) {
     cjkTokens.push(run);

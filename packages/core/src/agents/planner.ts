@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterArcProvenance } from "../models/chapter.js";
-import { readBookRules as readAuthoritativeBookRules } from "./rules-reader.js";
+import {
+  readBookRules as readAuthoritativeBookRules,
+  readGenreProfile,
+} from "./rules-reader.js";
 import {
   ChapterIntentSchema,
   type ChapterIntent,
@@ -21,6 +24,7 @@ import { parseMemo, PlannerParseError } from "../utils/chapter-memo-parser.js";
 import {
   buildPlannerUserMessage,
   getPlannerMemoSystemPrompt,
+  type PlannerGenreFunContract,
 } from "./planner-prompts.js";
 import {
   composeCurrentArcProse,
@@ -82,10 +86,23 @@ export class PlannerAgent extends BaseAgent {
     const runtimeDir = join(storyDir, "runtime");
     await mkdir(runtimeDir, { recursive: true });
 
-    const seedMaterials = await loadPlanningSeedMaterials({
-      bookDir: input.bookDir,
-      chapterNumber: input.chapterNumber,
-    });
+    const [seedMaterials, genreProfile] = await Promise.all([
+      loadPlanningSeedMaterials({
+        bookDir: input.bookDir,
+        chapterNumber: input.chapterNumber,
+      }),
+      readGenreProfile(this.ctx.projectRoot, input.book.genre),
+    ]);
+    const plannerLanguage = input.book.language ?? genreProfile.profile.language;
+    const genreFunContract: PlannerGenreFunContract | undefined = plannerLanguage === "ko"
+      && genreProfile.profile.language === "ko"
+      ? {
+          name: genreProfile.profile.name,
+          pacingRule: genreProfile.profile.pacingRule,
+          chapterTypes: genreProfile.profile.chapterTypes,
+          satisfactionTypes: genreProfile.profile.satisfactionTypes,
+        }
+      : undefined;
     const outlineNode = this.findOutlineNode(seedMaterials.volumeOutline, input.chapterNumber);
     const goal = this.deriveGoal(
       input.externalContext,
@@ -118,7 +135,7 @@ export class PlannerAgent extends BaseAgent {
     ).length;
 
     const arcContext = this.buildArcContext(
-      input.book.language,
+      plannerLanguage,
       seedMaterials.volumeOutline,
       outlineNode,
     );
@@ -140,7 +157,7 @@ export class PlannerAgent extends BaseAgent {
         : {}),
     });
 
-    const isGoldenOpening = this.isGoldenOpeningChapter(input.book.language, input.chapterNumber);
+    const isGoldenOpening = this.isGoldenOpeningChapter(plannerLanguage, input.chapterNumber);
     const memo = await this.planChapterMemo({
       storyDir,
       bookDir: input.bookDir,
@@ -153,10 +170,11 @@ export class PlannerAgent extends BaseAgent {
       chapterContext: input.externalContext,
       arcContext: input.arcContext,
       recyclableHooks: memorySelection.recyclableHooks,
+      genreFunContract,
       // Phase hotfix 4: thread book language through so the planner uses
       // English prompts (system + user template + golden opening guidance)
       // for English books instead of always-Chinese.
-      language: input.book.language ?? "zh",
+      language: plannerLanguage,
     });
 
     // memo.goal is LLM-produced and specific (<=50 chars, validated).
@@ -168,9 +186,9 @@ export class PlannerAgent extends BaseAgent {
     const intentMarkdown = this.renderIntentMarkdown(
       intent,
       memo,
-      input.book.language ?? "zh",
-      renderHookSnapshot(memorySelection.hooks, input.book.language ?? "zh"),
-      renderSummarySnapshot(memorySelection.summaries, input.book.language ?? "zh"),
+      plannerLanguage,
+      renderHookSnapshot(memorySelection.hooks, plannerLanguage),
+      renderSummarySnapshot(memorySelection.summaries, plannerLanguage),
       activeHookCount,
     );
     await writeFile(runtimePath, intentMarkdown, "utf-8");
@@ -202,6 +220,7 @@ export class PlannerAgent extends BaseAgent {
     readonly chapterContext?: string;
     readonly arcContext?: string;
     readonly recyclableHooks?: ReadonlyArray<StoredHook>;
+    readonly genreFunContract?: PlannerGenreFunContract;
     readonly language?: "zh" | "ko" | "en";
   }): Promise<ChapterMemo> {
     const [characterMatrix, subplotBoard, emotionalArcs, pendingHooks, bookRulesRaw] = await Promise.all([
@@ -213,30 +232,38 @@ export class PlannerAgent extends BaseAgent {
     ]);
 
     const language = input.language ?? "zh";
-    const noPriorChapter = language !== "zh"
-      ? "(this is the opening chapter — no prior chapter)"
-      : "（本章为起始章，无前章）";
-    const noBookRules = language !== "zh"
-      ? "(no book_rules entries)"
-      : "（暂无 book_rules 条目）";
-    const retryFeedbackHeader = language !== "zh"
-      ? "## Error from previous output"
-      : "## 上次输出的错误";
-    const retryFeedbackTrailer = language !== "zh"
-      ? "Fix and re-emit."
-      : "请修正后重新输出。";
+    const noPriorChapter = language === "ko"
+      ? "(첫 회차라 직전 회차 없음)"
+      : language === "en"
+        ? "(this is the opening chapter — no prior chapter)"
+        : "（本章为起始章，无前章）";
+    const noBookRules = language === "ko"
+      ? "(작품 규칙 항목 없음)"
+      : language === "en"
+        ? "(no book_rules entries)"
+        : "（暂无 book_rules 条目）";
+    const retryFeedbackHeader = language === "ko"
+      ? "## 직전 출력 오류"
+      : language === "en"
+        ? "## Error from previous output"
+        : "## 上次输出的错误";
+    const retryFeedbackTrailer = language === "ko"
+      ? "오류를 고쳐 같은 형식으로 다시 출력하세요."
+      : language === "en"
+        ? "Fix and re-emit."
+        : "请修正后重新输出。";
 
     const userMessage = buildPlannerUserMessage({
       chapterNumber: input.chapterNumber,
       previousChapterEndingExcerpt: input.previousEndingExcerpt?.trim()
         ? input.previousEndingExcerpt.trim()
         : noPriorChapter,
-      recentSummaries: formatRecentSummaries(input.chapterSummariesRaw, input.chapterNumber, 3),
-      currentArcProse: composeCurrentArcProse(subplotBoard, emotionalArcs, input.chapterNumber),
-      protagonistMatrixRow: extractProtagonistRow(characterMatrix),
-      opponentRows: extractOpponentRows(characterMatrix, 3),
-      collaboratorRows: extractCollaboratorRows(characterMatrix, 3),
-      relevantThreads: extractRelevantThreads(pendingHooks, subplotBoard),
+      recentSummaries: formatRecentSummaries(input.chapterSummariesRaw, input.chapterNumber, 3, language),
+      currentArcProse: composeCurrentArcProse(subplotBoard, emotionalArcs, input.chapterNumber, language),
+      protagonistMatrixRow: extractProtagonistRow(characterMatrix, language),
+      opponentRows: extractOpponentRows(characterMatrix, 3, language),
+      collaboratorRows: extractCollaboratorRows(characterMatrix, 3, language),
+      relevantThreads: extractRelevantThreads(pendingHooks, subplotBoard, language),
       recyclableHooks: formatRecyclableHooks(
         input.recyclableHooks ?? [],
         input.chapterNumber,
@@ -247,6 +274,7 @@ export class PlannerAgent extends BaseAgent {
       brief: input.brief ?? "",
       chapterContext: input.chapterContext ?? "",
       arcContext: input.arcContext ?? "",
+      genreFunContract: input.genreFunContract,
       language,
     });
 
@@ -312,22 +340,24 @@ export class PlannerAgent extends BaseAgent {
         `현재 회차 목표와 작품 정본을 따라 ${input.chapterNumber}화를 진행하고 임의의 새 방향을 만들지 않는다.`,
         "",
         "## 독자가 지금 기다리는 것",
-        "개요와 직전 회차가 만든 기대를 유지하고 현재 압력, 증거, 관계, 목표 가운데 하나를 실제로 전진시킨다.",
+        "- 재미 앵커: 개요와 직전 회차가 만든 가장 가까운 구체적 약속 하나",
+        "- 이번 화의 지급 장면: 주인공 행동 → 상대 대응 → 독자가 확인할 결과",
+        "- 상태: 현재 목표가 약속한 결과를 먼저 독자가 알아볼 수 있게 지급한다. 완전히 수습하는 회차라면 새 압력을 만들지 않고 완결 상태를 기록한다.",
         "",
         "## 이번 화에 지급할 것 / 감출 것",
-        "근거가 있는 가까운 약속만 지급하고 더 큰 비밀과 종결 정보는 개요가 요구할 때까지 감춘다.",
+        "근거가 있는 가까운 약속은 이번 화 목표가 요구하는 만큼 지급한다. 더 큰 비밀만 개요가 명시적으로 보류할 때 감춘다.",
         "",
         "## 일상/전환 장면의 기능",
-        "느린 장면도 압력, 증거, 관계 변화 또는 다음 행동을 준비하는 구체 기능을 맡긴다.",
+        "느린 장면도 감정, 관계, 정보, 선택, 지급 또는 후과 가운데 이 회차에 맞는 구체 기능을 맡긴다.",
         "",
         "## 핵심 선택 세 가지 점검",
         "주인공의 핵심 선택에는 이유가 있고 현재 이익과 기존 인물성에 맞아야 한다.",
         "",
         "## 화말에 반드시 바뀔 것",
-        "정보, 압력, 관계, 목표, 위험 가운데 하나를 명확히 바꾸어 다음 화를 당긴다.",
+        "이번 화 행동의 결과를 분명히 보여 준 뒤, 완전 수습·후과·자연스러운 다음 선택이나 압력 가운데 장면에 맞는 기능으로 끝낸다. 완전 수습이면 새 압력을 만들 필요가 없다.",
         "",
         "## 이번 화 훅 장부",
-        "advance: 가까운 약속을 전진시킨다. resolve: 근거가 있는 복선만 결제한다. defer: 큰 줄기는 다음 회차에 유지한다.",
+        "advance/resolve: 이번 화 목표가 실제로 고른 약속만 장면으로 다룬다. defer: 나머지는 이유와 다음 점검 시점을 남기며, 묵었다는 이유만으로 장면 의무를 만들지 않는다.",
         "",
         "## 금지",
         "기존 사실과 사용자 지시를 어기거나 fallback 메모를 새 장거리 개요로 확대하지 않는다.",
@@ -353,19 +383,19 @@ export class PlannerAgent extends BaseAgent {
         "Keep the reader's active expectation from the outline and previous chapter in focus; do not replace it with a generic scene.",
         "",
         "## To pay off / to keep buried",
-        "Pay off only the near-term promises already supported by context; keep larger secrets buried unless the outline explicitly asks for them.",
+        "Deliver the result promised by the current task to the degree this chapter calls for. Keep only larger secrets that the outline explicitly says to withhold.",
         "",
         "## What the slow / transitional beats carry",
-        "If a slower beat is needed, make it carry pressure, evidence, relationship movement, or a concrete setup for the next action.",
+        "If a slower beat is needed, let it carry emotion, relationship movement, information, choice, payoff, or consequence that belongs to this chapter.",
         "",
         "## Three-question check on the key choice",
         "The protagonist's main choice must have a reason, match current interest, and stay consistent with the established persona.",
         "",
         "## Required end-of-chapter change",
-        "End with a concrete change in information, pressure, relationship, objective, or risk so the chapter is not only summary.",
+        "Show the concrete result of this chapter's action, then choose the ending function that honestly fits: full settlement, aftermath, a natural next choice, or pressure. Full settlement does not need fresh pressure.",
         "",
         "## Hook ledger for this chapter",
-        "advance: keep the active promise moving; resolve: only settle what has evidence; defer: preserve larger threads for later chapters.",
+        "advance/resolve: stage only promises selected by this chapter's task; defer: record a reason and next review point for the rest. Staleness alone is not a scene obligation.",
         "",
         "## Do not",
         "Do not contradict established facts, ignore the user's current instruction, or turn the fallback memo into a new outline.",
@@ -388,22 +418,22 @@ export class PlannerAgent extends BaseAgent {
       `沿用当前章节目标和权威设定推进第 ${input.chapterNumber} 章，不临时改方向，也不把章节写成泛泛过渡。`,
       "",
       "## 读者此刻在等什么",
-      "延续大纲和上一章形成的读者期待，优先回应当前已经建立的压力、证据、关系或目标变化。",
+      "延续大纲和上一章形成的读者期待，先让当前任务承诺的结果变得可见；如果本章适合完整收束，就不要另造压力。",
       "",
       "## 该兑现的 / 暂不掀的",
-      "只兑现已有上下文支撑的近端承诺；更大的秘密、身份、幕后主使或终局信息，除非大纲明确要求，否则继续压住。",
+      "按本章目标所需兑现已有上下文支撑的近端承诺；只压住大纲明确要求暂不揭开的更大秘密。",
       "",
       "## 日常/过渡承担什么任务",
-      "如果需要日常或过渡，它必须承担压力、证据、人物关系、目标变化或下一步行动铺垫，不能只是闲聊和气氛。",
+      "如果需要日常或过渡，让它承担情绪、关系、信息、选择、兑现或后效中适合本章的一项具体功能。",
       "",
       "## 关键抉择过三连问",
       "主角本章的关键选择必须有原因、符合当前利益，并且不背离已经建立的人设和行为逻辑。",
       "",
       "## 章尾必须发生的改变",
-      "章尾至少要在信息、压力、关系、目标或风险上发生一个明确变化，避免只有剧情摘要没有推进。",
+      "先写清本章行动产生的具体结果，再从完整收束、后效、自然的下一选择或压力中选择最诚实的章尾功能；完整收束不需要新造压力。",
       "",
       "## 本章 hook 账",
-      "advance: 推进当前活跃承诺；resolve: 只结清已有证据支撑的线索；defer: 大线继续保留到更合适的位置。",
+      "advance/resolve: 只处理本章任务实际选中的承诺；defer: 其余条目写明理由和下次检查点。仅仅陈旧不会产生本章场景义务。",
       "",
       "## 不要做",
       "不要违背既成事实，不要无视用户当前指令，不要把 fallback memo 当成新大纲重写整本书。",
@@ -414,8 +444,11 @@ export class PlannerAgent extends BaseAgent {
   }
 
   private isGoldenOpeningChapter(language: string | undefined, chapterNumber: number): boolean {
-    const isZh = (language ?? "zh").toLowerCase().startsWith("zh");
-    return isZh ? chapterNumber <= 3 : chapterNumber <= 5;
+    // Planner, Writer, and narrative-control all implement the Golden Three
+    // Chapters contract. Keep the boundary identical after language inference;
+    // otherwise an omitted-language Korean profile accidentally marks chapters
+    // 4-5 as opening chapters and forces opening-density guidance downstream.
+    return chapterNumber <= 3;
   }
 
   private buildArcContext(

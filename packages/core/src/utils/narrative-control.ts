@@ -72,7 +72,7 @@ export function renderMemoAsNarrativeBlock(
 
   if (memo.isGoldenOpening) {
     sections.push(
-      `## ${label("黄金开场", "골든 오프닝", "Golden Opening")}\n- ${label("本章是黄金开场章——优先钩子密集、高节奏。", "도입부 핵심 회차입니다. 복선 밀도와 빠른 전개를 우선하세요.", "This is a golden opening chapter — prioritize hook-dense, high-tempo pacing.")}`,
+      `## ${label("黄金开场", "골든 오프닝", "Golden Opening")}\n- ${label("本章是黄金开场章——优先让核心冲突、主角选择和具体兑现可见；节奏服从场景，不增加钩子密度，也不扣住已经挣到的结果。", "도입부 핵심 회차입니다. 핵심 갈등, 주인공의 선택, 구체적 지급을 먼저 보이세요. 전개 속도는 장면에 맞추고 복선 밀도를 늘리거나 이미 얻은 결과를 감추지 않습니다.", "This is a golden opening chapter: make the core conflict, protagonist choice, and concrete payoff visible first. Let tempo fit the scene; do not increase hook density or withhold an earned result.")}`,
     );
   }
 

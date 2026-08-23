@@ -16,6 +16,53 @@ export function buildWritingMethodologySection(language: "zh" | "ko" | "en"): st
   return buildChineseMethodology();
 }
 
+/**
+ * Existing books may already contain the pre-fun-first methodology in their
+ * persisted style guide. Keep the user's file untouched, but neutralize the
+ * exact legacy boilerplate before it reaches Writer / Auditor / Reviser.
+ */
+export function sanitizeLegacyFunFirstMethodology(styleGuide: string): string {
+  const replacements: ReadonlyArray<readonly [string, string]> = [
+    [
+      "5. 회차 끝에 다음 회차를 당기는 변화나 질문이 남는가?",
+      "5. 이번 회차가 약속한 결과를 보여 주고, 완전 수습·후과·자연스러운 다음 선택이나 압력 가운데 의도한 종결 기능을 수행하는가?",
+    ],
+    [
+      "6. 일상 장면도 복선, 관계, 대비 가운데 하나를 수행하는가?",
+      "6. 일상 장면도 감정, 관계, 정보, 선택, 지급, 후과 가운데 하나를 실제로 바꾸는가? 새 복선은 의무가 아니다.",
+    ],
+    [
+      "3. **日常必须为主线服务**：万物皆为\"饵\"。日常段要么埋伏笔，要么推关系，要么建立反差",
+      "3. **日常必须有当下功能**：改变情绪、关系、信息、选择、兑现或后果都成立，不必把万物变成未来伏笔",
+    ],
+    [
+      "   - 主动欲望（期待感）：作者刻意制造的情绪缺口→读者期待释放→释放超过预期",
+      "   - 主动欲望（期待感）：把读者正在等待的东西摆上台面，由本章兑现、加深或有意识地延后；不得扣住已经挣到的结果",
+    ],
+    [
+      "6. 章尾是否留了钩子？",
+      "6. 章尾是否完成了完整收束、兑现后果或从结果自然生出的下一选择/压力？是否为了造钩子扣住了已挣到的兑现？",
+    ],
+    [
+      "3. **Daily serves mainline**: Every quiet scene must plant a hook, advance a relationship, or build contrast.",
+      "3. **Quiet scenes need a present function**: changing emotion, relationship, information, choice, payoff, or consequence is enough; planting a hook is not required.",
+    ],
+    [
+      "5. **Desire engine**: Create emotional gap → reader anticipates release → release exceeds expectation",
+      "5. **Desire engine**: Stage what the reader is waiting for, then satisfy, deepen, or consciously carry it forward; never withhold an earned result",
+    ],
+    [
+      "6. Does the chapter end with a hook?",
+      "6. Does the ending perform its intended clean settlement, payoff fallout, or natural next choice/pressure without withholding an earned result?",
+    ],
+  ];
+
+  return replacements.reduce(
+    (current, [legacy, funFirst]) => current.replaceAll(legacy, funFirst),
+    styleGuide,
+  );
+}
+
 function buildKoreanMethodology(): string {
   return `---
 
@@ -48,8 +95,8 @@ function buildKoreanMethodology(): string {
 2. 주인공의 선택이 현재 이익과 인물성에 맞는가?
 3. 상대에게 명확한 요구와 대응이 있는가?
 4. 정보 경계를 어긴 인물이 없는가?
-5. 회차 끝에 다음 회차를 당기는 변화나 질문이 남는가?
-6. 일상 장면도 복선, 관계, 대비 가운데 하나를 수행하는가?`;
+5. 이번 회차가 약속한 결과를 보여 주고, 완전 수습·후과·자연스러운 다음 선택이나 압력 가운데 의도한 종결 기능을 수행하는가?
+6. 일상 장면도 감정, 관계, 정보, 선택, 지급, 후과 가운데 하나를 실제로 바꾸는가? 새 복선은 의무가 아닙니다.`;
 }
 
 function buildChineseMethodology(): string {
@@ -111,7 +158,7 @@ function buildChineseMethodology(): string {
 4. **共鸣**：主角的困境必须有普遍性——被欺压、不公待遇、被低估
 5. **欲望驱动**：
    - 基础欲望（被动）：不劳而获、高人一等、扬眉吐气
-   - 主动欲望（期待感）：作者刻意制造的情绪缺口→读者期待释放→释放超过预期
+   - 主动欲望（期待感）：把读者正在等待的东西摆上台面，由本章兑现、加深或有意识地延后；不得扣住已经挣到的结果
 6. **五感描写**：视觉、听觉、嗅觉、触觉、味觉——"潮湿的短袖黏在后背上"
 
 ## 五、强情绪升级法（避免流水账）
@@ -120,7 +167,7 @@ function buildChineseMethodology(): string {
 
 1. **加入前因后果**：下班回家→加上"催债电话刚打来"→日常有了紧迫感
 2. **情绪递进**：坏事叠坏事——被骂→赶不上公交→手机掉了→直播课结束了→包子噎住了。每层比上一层过分
-3. **日常必须为主线服务**：万物皆为"饵"。日常段要么埋伏笔，要么推关系，要么建立反差
+3. **日常必须有当下功能**：改变情绪、关系、信息、选择、兑现或后果都成立，不必把万物变成未来伏笔
 
 ## 六、写前自检清单
 
@@ -129,7 +176,7 @@ function buildChineseMethodology(): string {
 3. 冲突是谁先动手，为什么非做不可？
 4. 配角/反派是否有明确诉求和反制？
 5. 反派当前掌握了哪些信息？有无信息越界？
-6. 章尾是否留了钩子？
+6. 章尾是否完成了完整收束、兑现后果或从结果自然生出的下一选择/压力？是否为了造钩子扣住了已挣到的兑现？
 7. 有没有流水账？如有，加前因后果或强情绪
 8. 本章是否推进了主线目标？`;
 }
@@ -180,7 +227,7 @@ For every important character action:
 2. **Concrete/visual**: "The back seat of a taxi stuck in traffic for forty minutes" not "a big city"
 3. **Familiarity**: Scenes readers have lived through carry natural immersion
 4. **Resonance**: Protagonist's struggle must feel universal — injustice, being underestimated
-5. **Desire engine**: Create emotional gap → reader anticipates release → release exceeds expectation
+5. **Desire engine**: Stage what the reader is waiting for, then satisfy, deepen, or consciously carry it forward; never withhold an earned result
 6. **Five senses**: Wet shirt on the back, hospital disinfectant, rain puddles at the bus stop
 
 ## 5. Emotional Escalation (Anti-Flowchart)
@@ -188,7 +235,7 @@ For every important character action:
 Fix boring daily scenes by adding fuel:
 1. **Add causality**: Coming home → add "debt collector just called" → instant urgency
 2. **Progressive escalation**: Stack bad things — scolded → missed bus → phone fell in drain → livestream ended → choked on stale bread. Each layer worse.
-3. **Daily serves mainline**: Every quiet scene must plant a hook, advance a relationship, or build contrast.
+3. **Quiet scenes need a present function**: changing emotion, relationship, information, choice, payoff, or consequence is enough; planting a hook is not required.
 
 ## 6. Pre-Write Checklist
 
@@ -197,7 +244,7 @@ Fix boring daily scenes by adding fuel:
 3. Who starts the conflict and why must they?
 4. Do antagonists have clear motives and countermoves?
 5. What information does each character have? Any boundary violations?
-6. Does the chapter end with a hook?
+6. Does the ending perform its intended clean settlement, payoff fallout, or natural next choice/pressure without withholding an earned result?
 7. Any flowchart passages? If so, add causality or strong emotion.
 8. Does this chapter advance the main plotline?`;
 }

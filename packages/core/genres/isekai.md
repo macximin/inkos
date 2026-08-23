@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: true
 eraResearch: false
-pacingRule: "Establish new world rules by chapter 3. Cultural adaptation and fish-out-of-water moments every 2-3 chapters early. Skip tutorial-town syndrome — no 50 pages hitting rats."
+pacingRule: "Make the new world's usable rules visible early through action. Use cultural adaptation and fish-out-of-water beats when they sharpen character or conflict, not by chapter quota; avoid tutorial-town stagnation."
 satisfactionTypes: ["World Rule Discovered", "Cultural Clash Resolved", "Real-World Skill Applied", "New Ability Gained", "Relationship Formed", "Identity Established in New World"]
 auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -19,7 +19,7 @@ auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 - MC treating new world's culture as quaint or inferior without narrative consequence
 - No real consequences for cultural misunderstandings — fish-out-of-water must have stakes
 - Pacing too slow in the "culture learning" phase — drip-feed rules through action, not lectures
-- MC's origin world becoming irrelevant after chapter 3 — the contrast is the genre's engine
+- MC's origin world losing all meaningful contrast without a story reason — revisit it when memory, skill, relationship, or identity sharpens the current scene, with no fixed chapter deadline
 - Isekai truck or summoning ritual with zero personality — make the transportation event matter
 
 ## World Transition Rules
@@ -28,14 +28,14 @@ auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 - Brief real-world grounding: who was MC before? What skills, knowledge, relationships do they carry?
 - Arrival scene: disorientation is real — sensory overload, language barriers, physical discomfort
 - First guide/NPC explains world basics through interaction, not monologue
-- By chapter 3, readers must understand the new world's basic operating system
+- Early on, readers should understand enough of the new world's operating rules to follow the protagonist's choices; reveal them through action at the pace the opening conflict earns, not by a chapter-three deadline
 - MC's real-world knowledge creates both advantages and dangerous blind spots
 - New world must feel real: consistent geography, politics, cultures, economics — not a game lobby
 
 ## Pacing Guidance
 
-- Opening: transportation event -> brief real-world grounding -> arrival and disorientation -> first guide -> first concrete goal
-- Early chapters: cultural fish-out-of-water drives comedy and drama (every 2-3 chapters)
+- A useful opening progression can move from transportation and brief real-world grounding into arrival, disorientation, interaction, and a concrete goal; keep only the beats the current causal chain needs
+- Early diagnostic: cultural fish-out-of-water can drive comedy and drama when it changes the scene; it is not a recurring chapter quota
 - MC bringing real-world skills that apply in surprising ways is a core satisfaction — seed these early
 - Learning the new world's magic/power system should feel like genuine discovery, not tutorial text
 - Relationship building with new world characters grounds the MC emotionally

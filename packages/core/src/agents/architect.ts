@@ -183,7 +183,10 @@ export class ArchitectAgent extends BaseAgent {
     const { profile: gp, body: genreBody } =
       await readGenreProfile(this.ctx.projectRoot, book.genre);
     const resolvedLanguage = book.language ?? gp.language;
-    const promptProfile = resolvedLanguage === "ko"
+    // Keep native Korean commercial genre contracts. Only sanitize the old
+    // fallback case where a Korean book resolved to a non-Korean profile.
+    const shouldSanitizeKoreanFallback = resolvedLanguage === "ko" && gp.language !== "ko";
+    const promptProfile = shouldSanitizeKoreanFallback
       ? {
           ...gp,
           name: book.genre.replace(/[_-]+/g, " "),
@@ -191,9 +194,10 @@ export class ArchitectAgent extends BaseAgent {
           chapterTypes: ["일반 회차"],
           fatigueWords: [],
           satisfactionTypes: [],
+          pacingRule: "",
         }
       : gp;
-    const promptGenreBody = resolvedLanguage === "ko" ? "" : genreBody;
+    const promptGenreBody = shouldSanitizeKoreanFallback ? "" : genreBody;
 
     const contextBlock = externalContext
       ? resolvedLanguage === "zh"
@@ -244,7 +248,7 @@ export class ArchitectAgent extends BaseAgent {
       : "";
 
     const systemPrompt = resolvedLanguage === "ko"
-      ? this.buildKoreanFoundationPrompt(book, promptProfile, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock)
+      ? this.buildKoreanFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock)
       : resolvedLanguage === "en"
         ? this.buildEnglishFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock)
         : this.buildChineseFoundationPrompt(book, promptProfile, promptGenreBody, contextBlock, reviewFeedbackBlock, numericalBlock, powerBlock, eraBlock, futureAdvantageBlock);
@@ -398,6 +402,7 @@ ${reviseFrom.userFeedback || "（无）"}
   private buildKoreanFoundationPrompt(
     book: BookConfig,
     gp: GenreProfile,
+    genreBody: string,
     contextBlock: string,
     reviewFeedbackBlock: string,
     numericalBlock: string,
@@ -405,6 +410,13 @@ ${reviseFrom.userFeedback || "（无）"}
     eraBlock: string,
     futureAdvantageBlock: string,
   ): string {
+    const genreContract = [
+      gp.pacingRule ? `- 기본 지급 리듬 참고(통과 할당량 아님): ${gp.pacingRule}` : "",
+      gp.chapterTypes.length > 0 ? `- 회차 전개 후보: ${gp.chapterTypes.join(" / ")}` : "",
+      gp.satisfactionTypes.length > 0 ? `- 반복 보상 후보: ${gp.satisfactionTypes.join(" / ")}` : "",
+      genreBody,
+    ].filter(Boolean).join("\n");
+
     return `당신은 한국 상업 웹소설을 기획하는 작가입니다. 설정집을 만드는 사람이 아니라, 독자가 다음 화를 누르게 할 사건과 보상을 고르는 사람입니다. 기계가 읽는 표지는 영어로 남기되 사람이 읽는 문장은 처음부터 자연스러운 한국어로 씁니다.${contextBlock}${reviewFeedbackBlock}
 
 ## 작품 정보
@@ -417,16 +429,16 @@ ${reviseFrom.userFeedback || "（无）"}
 ## 판단 순서
 1. 사용자가 정한 제목, 장르, 시대, 주인공, 핵심 욕망을 지킵니다.
 2. 주인공이 직접 선택하고 행동하게 합니다. 우연이나 설명이 주인공의 몫을 빼앗으면 다시 고릅니다.
-3. 사건은 주인공의 행동, 상대의 대응, 눈에 보이는 결과, 더 커진 다음 문제로 이어집니다.
+3. 사건은 주인공의 행동과 상대의 대응 뒤 눈에 보이는 보상을 먼저 지급합니다. 그 뒤에는 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 두며, 이미 얻은 보상을 억지로 감추지 않습니다.
 4. 독자는 주인공이 무엇을 얻었고 상대가 무엇을 잃었는지 알아야 합니다. 돈, 자리, 정보, 평판, 관계처럼 장면으로 확인되는 결과를 줍니다.
 5. 사실관계와 인과관계를 지키면서도 더 보고 싶은 선택지를 고릅니다. 설명을 붙여야만 성립하는 사건보다 장면으로 이해되는 사건을 우선합니다.
 
 ## 재미적 정합성
-- 첫 3화 안에 주인공의 결핍, 첫 행동, 첫 성과, 더 큰 위기를 보여 줍니다.
+- 첫 3화 안에 주인공의 결핍, 첫 행동, 첫 성과를 눈에 보이게 먼저 보여 줍니다. 그 뒤에는 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 둡니다.
 - 각 권에는 독자가 기다릴 대표 승부와 대표 보상이 있어야 합니다. 같은 종류의 승리만 반복하지 않습니다.
 - 주인공의 실력은 결정과 실행에서 드러나야 합니다. 주변 인물이 감탄하거나 해설하는 것으로 대신하지 않습니다.
 - 적은 주인공의 계획을 망칠 수단과 이유를 가집니다. 적이 무능해서 이기는 전개를 연속으로 쓰지 않습니다.
-- 큰 보상 뒤에는 그 보상 때문에 생긴 새 부담을 붙입니다. 얻은 것이 다음 사건을 부릅니다.
+- 큰 보상은 얻은 것과 바뀐 상태를 눈에 보이게 먼저 확인시킵니다. 그 뒤에는 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 둡니다.
 - 관계 변화는 말보다 행동으로 확인합니다. 편을 들고, 정보를 넘기고, 자리를 내주고, 배신의 대가를 치르는 장면을 정합니다.
 - 고증은 사건의 제약과 기회로 씁니다. 시대 정보를 전시하기 위해 사건을 멈추지 않습니다.
 
@@ -444,6 +456,7 @@ ${numericalBlock}
 ${powerBlock}
 ${eraBlock}
 ${futureAdvantageBlock}
+${genreContract ? `\n## 장르 전용 약속\n${genreContract}\n- 후보 목록을 채우기 위해 사건이나 보상을 억지로 넣지 않습니다. 작품과 이번 구간에 맞는 것만 고릅니다.` : ""}
 
 ## 출력 계약
 아래 다섯 SECTION을 순서대로 모두 출력합니다. SECTION 표지, ---ROLE---, ---CONTENT---, tier, name과 pending_hooks의 열 이름은 기계 계약이므로 그대로 둡니다. 별도의 rhythm_principles나 current_state SECTION은 만들지 않습니다.
@@ -453,7 +466,7 @@ ${futureAdvantageBlock}
 표나 글머리표 대신 네 개의 읽히는 문단으로 씁니다. 문단마다 아래 제목을 붙입니다. 주인공의 전체 변화는 roles의 주인공 카드에만 둡니다.
 
 ## 01_독자가_기대할_재미
-제목을 보고 들어온 독자가 어떤 장면과 보상을 계속 받는지 적습니다. 첫 3화의 위기, 주인공의 첫 수, 첫 성과, 다음 위기를 구체적으로 잡습니다. 작품의 분위기는 장면의 온도와 속도로 설명합니다.
+제목을 보고 들어온 독자가 어떤 장면과 보상을 계속 받는지 적습니다. 첫 3화의 위기, 주인공의 첫 수, 눈에 보이는 첫 성과를 먼저 구체적으로 잡고, 그 뒤에는 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 둡니다. 작품의 분위기는 장면의 온도와 속도로 설명합니다.
 
 ## 02_주인공의_승부와_적
 주인공이 당장 원하는 것, 그것을 막는 사람, 양쪽이 맞붙는 사건을 적습니다. 주요 적은 이름과 욕망, 가진 수단이 보여야 합니다. 장기 비밀이 필요하다면 매 권의 사건과 어떻게 이어지는지 적되 "전경 이야기"나 "배경 이야기"라는 말을 쓰지 않습니다.
@@ -466,7 +479,7 @@ ${futureAdvantageBlock}
 
 === SECTION: volume_map ===
 
-권 단위로 씁니다. 구체적인 회차 번호를 배정하지 않습니다. 각 권의 승부, 독자 보상, 관계 변화, 권말의 새 문제를 이어서 설명합니다.
+권 단위로 씁니다. 구체적인 회차 번호를 배정하지 않습니다. 각 권의 승부와 관계 변화가 눈에 보이는 독자 보상으로 먼저 이어지게 설명하고, 그 뒤에는 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 권말 흐름을 둡니다.
 
 ## 01_권별_승부와_감정
 각 권에서 주인공이 누구와 무엇을 놓고 싸우는지 적습니다. 압박이 커지는 구간과 독자가 숨을 돌리는 구간, 가장 큰 보상이 터지는 지점을 설명합니다.
@@ -481,7 +494,7 @@ ${futureAdvantageBlock}
 각 권 마지막에 되돌릴 수 없게 바뀌는 사건을 적습니다. 회사의 주인이 바뀌거나, 가족이 갈라서거나, 비밀이 공개되는 식으로 다음 권의 출발점을 실제로 바꿉니다.
 
 ## 05_연재_호흡
-이 작품에 맞는 대형 보상과 소형 보상의 간격, 숨 고르는 회차의 역할, 장기 단서를 진전시키는 주기, 관계 변화의 주기를 정합니다. "완급 조절"처럼 실행할 수 없는 말은 쓰지 않습니다. 첫 30화의 보상 간격은 숫자로 적습니다.
+이 작품에 맞는 대형 보상과 소형 보상의 흐름, 숨 고르는 회차의 역할, 장기 단서의 회수 시점, 관계 변화의 계기를 정합니다. 구체적인 권·사건·독자 약속으로 설명하되 "몇 화마다 훅 하나" 같은 통과 할당량은 만들지 않습니다. 화말은 완전한 수습, 보상의 후과, 다음 선택이나 압력을 작품에 맞게 섞고, 이미 얻은 결과를 감춰 인공적인 절벽을 만들지 않습니다.
 
 === SECTION: roles ===
 
@@ -561,7 +574,7 @@ ${gp.eraResearch ? `## 시대 고증
 - 다섯 SECTION이 모두 있는지 확인합니다.
 - 첫 3화에 주인공의 행동과 첫 성과가 있는지 확인합니다.
 - 각 권에 승부 상대와 눈에 보이는 보상이 있는지 확인합니다.
-- 사건이 주인공의 행동에서 시작해 상대의 대응과 다음 문제로 이어지는지 확인합니다.
+- 사건이 주인공의 행동과 상대의 대응 뒤 눈에 보이는 보상을 먼저 지급하고, 그 뒤 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름으로 이어지는지 확인합니다.
 - 추상 명사가 사람 대신 행동하거나 보고서식 개념명이 생기지 않았는지 확인합니다.
 - "A가 아니라 B" 구조가 반복되지 않았는지 확인합니다.
 - pending_hooks 표의 열을 빼먹지 않았는지 확인합니다.`;
@@ -656,21 +669,21 @@ ${futureAdvantageBlock}
 - **Objective（卷级目标）**：本卷结束时主角必须达成的**可验证状态**，一句话，与全书 Objective 逻辑递进相连（例：全书 O = "成为宗门长老并公开冤案"；卷 1 O = "从杂役转入正式弟子籍并拿到第一份能指向真相的线索"）
 - **Key Results（3 条，可量化/可观察）**：支撑该 O 达成的三个关键子成果，每条必须是外部观察者能判定是否完成的状态变更（例 KR1 = "拿下药园执事位置"、KR2 = "与灵安峰结成稳定盟约"、KR3 = "发现父辈案卷的第一半页残片"）。不要写"变强"、"成长"这类模糊 KR
 
-次要角色的阶段性变化也要点到（师父在第 2 卷会死、对手在第 3 卷会黑化等），写在 KR 条目下作为附注。写阶段性，不写完整弧线（完整弧线在 roles）。**每一卷 3 个 KR 是下游 planner 分解章节任务的直接依据——planner 拿到一卷的 3 个 KR 后，按每 3-5 章推进一个 KR 的节奏排章。**
+次要角色的阶段性变化也要点到（师父在第 2 卷会死、对手在第 3 卷会黑化等），写在 KR 条目下作为附注。写阶段性，不写完整弧线（完整弧线在 roles）。**每一卷 3 个 KR 是下游 planner 分解章节任务的直接依据。planner 把最近 3-5 章当作诊断窗口，按 KR 的事件重量、必要因果和后效决定推进速度；这不是“每 3-5 章推进一个 KR”的固定周期。**
 
 ### 段 4：卷尾必须发生的改变
 每一卷最后一章必须发生什么不可逆的事——权力结构改变、关系破裂、秘密暴露、主角身份重定位。写散文，一卷一段。**只写"必须发生什么"，不指定是第几章**。
 
 ### 段 5：节奏原则（具体化 + 通用）
-**这是节奏原则的唯一归宿，不再有独立 rhythm_principles section。** 本段输出 6 条节奏原则。**至少 3 条必须具体化到本书**（例："前 30 章每 5 章一个小爽点"），其余可保留通用原则（例："拒绝机械降神"、"高潮前 3-5 章埋伏笔"）。具体化 + 通用混合是合法的。反面例子："节奏要张弛有度"（废话）。正面例子："前 30 章每 5 章一个小爽点，且小爽点必须落在章末 300 字内"。6 条各写 2-3 句，覆盖（顺序不强制、可替换同权重议题）：
-1. 高潮间距——本书大高潮之间最长多少章？（具体化优先）
-2. 喘息频率——高压段多长必须插一章喘息？喘息章承担什么任务？
-3. 钩子密度——每章章末留钩数量，主钩最多允许悬多少章？
-4. 信息释放节奏——主线信息在前 1/3、中段、后 1/3 分别释放多少比例？（可通用）
-5. 爽点节奏——爽点间距多少章一个？什么类型为主？（具体化优先）
-6. 情感节点递进——情感关系每多少章必须有一次实质推进？
+**这是节奏原则的唯一归宿，不再有独立 rhythm_principles section。** 本段输出 6 条节奏原则。**至少 3 条必须具体到本书的卷、事件或读者承诺**，但不必强行换算成“每几章一次”的通过配额；其余可保留通用原则（例："拒绝机械降神"、"高潮之前让必要因果先被读者看见"）。具体化 + 通用混合是合法的。反面例子："节奏要张弛有度"（废话）。正面例子："第一卷以债权争夺作为主兑现，小周期先让读者看见所有权变化，再决定完整收束还是从结果里生出下一道压力"。6 条各写 2-3 句，覆盖（顺序不强制、可替换同权重议题）：
+1. 高潮与兑现——本书的大兑现由哪些卷级事件触发，读者会看见什么结果？
+2. 喘息功能——高压事件之后，哪些情绪、关系、信息或后果需要在安静段落落地？
+3. 章末承接 / 完整收束组合——哪些阶段允许完整收束，哪些卷级承诺需要继续承接，主钩最晚在哪一卷回收？不得规定每章章末留钩数量
+4. 信息释放节奏——主线信息在哪些卷级里程碑释放，各阶段保留什么未知？
+5. 爽点节奏——每个小周期的主兑现是什么类型，如何避免为了密度塞入孤立爽点？
+6. 情感节点递进——哪些事件会让关系发生可观察的变化，不按固定章数强推？
 
-如果外部指令给了内容比例（例如权谋线/感情线各半、事业线/恋爱线的权重），必须在本段写成全书节奏承诺：哪些卷偏哪条线、每个 3-5 章小周期里哪条线必须可见、高潮后哪条线要承担后效。不要只写"保持平衡"。
+如果外部指令给了内容比例（例如权谋线/感情线各半、事业线/恋爱线的权重），必须在本段写成全书节奏承诺：哪些卷偏哪条线、以最近 3-5 章为诊断窗口时如何发现某条线长期失踪、高潮后哪条线承担后效。不要只写"保持平衡"，也不要把每个窗口变成逐线打卡配额。
 
 === SECTION: roles ===
 
@@ -864,15 +877,15 @@ Recursive OKR outline that decomposes the Book Objective (root O set at the end 
 - **Objective (volume-level goal)**: a **verifiable state** the protagonist must reach by volume end, one sentence, logically chained to the Book Objective (e.g., if Book O = "become sect elder and vindicate the parental case", then Vol 1 O = "move from errand disciple into the registered disciple roster and recover the first lead pointing to the truth")
 - **Key Results (3 items, quantifiable / observable)**: three concrete sub-achievements whose completion can be checked by an outside observer (e.g., KR1 = "take over the pharmacy garden steward seat", KR2 = "lock in a stable alliance with Lingan Peak", KR3 = "uncover the first half-page fragment of the parental case file"). No vague KRs like "gets stronger" / "matures".
 
-Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are the direct input for the planner: once it sees 3 KRs for a volume, it paces chapter tasks at roughly one KR advanced every 3-5 chapters.**
+Supporting characters' stage changes (master dies end of vol 2, opponent breaks bad in vol 3) go as notes under the relevant KR. Stage only — full arc lives in roles. **The 3 KRs per volume are direct input for the planner. It uses the recent 3-5 chapters as a diagnostic window and advances each KR according to event weight, required causality, and aftermath; this is not a fixed one-KR-per-window cadence.**
 
 ## 04_Volume_End_Mandatory_Changes
 Each volume's last chapter must contain an irreversible event. Prose, one paragraph per volume. **Write what must happen, not which chapter**.
 
 ## 05_Rhythm_Principles (concrete + universal)
-**This is the single home for rhythm principles — no separate rhythm_principles section exists.** Output 6 rhythm principles. **At least 3 must be concretized for this book** (e.g., "every 5 chapters in the first 30, hit one small payoff"); the rest may stay as universal rules (e.g., "no deus ex machina", "plant the foreshadow 3-5 chapters before the climax"). A mix of concrete + universal is valid. Bad: "rhythm must balance tension and release". Good: "every 5 chapters in the first 30 carries a small payoff landing in the last 300 chars of the chapter". Cover (order flexible, substitutions of equal weight are allowed): (1) climax spacing, (2) breath frequency, (3) hook density, (4) information release pacing, (5) payoff rhythm, (6) relationship advancement — each 2-3 sentences.
+**This is the single home for rhythm principles — no separate rhythm_principles section exists.** Output 6 rhythm principles. **At least 3 must be concrete to this book's volumes, events, or reader promises**, but do not turn them into pass/fail quotas such as one hook every N chapters. The rest may stay universal (e.g., "no deus ex machina", "make necessary causality visible before a climax"). A concrete + universal mix is valid. Bad: "rhythm must balance tension and release". Good: "volume 1 uses the debt-ownership fight as its primary payoff; each mini-cycle first makes the ownership change visible, then chooses either clean settlement or pressure that grows from the result". Cover, in any order: (1) climax and payoff triggers, (2) the present function of breathing room, (3) ending carry / clean-closure mix and the volume-level deadline for core promises — never a per-chapter hook count, (4) information-release milestones, (5) dominant payoff types without density stuffing, and (6) event-driven relationship advancement rather than fixed chapter intervals. Give each 2-3 sentences.
 
-If the external instructions specify content proportions (for example politics/romance 50/50 or career/relationship weighting), this paragraph must turn that into a full-book rhythm promise: which volumes lean toward which line, which line must be visible in every 3-5 chapter mini-cycle, and which line carries fallout after climaxes. Do not merely say "keep it balanced."
+If the external instructions specify content proportions (for example politics/romance 50/50 or career/relationship weighting), this paragraph must turn that into a full-book rhythm promise: which volumes lean toward which line, how a recent 3-5 chapter diagnostic window reveals a line that has genuinely disappeared, and which line carries fallout after climaxes. Do not merely say "keep it balanced," and do not turn every window into a per-line checklist.
 
 === SECTION: roles ===
 
@@ -1486,9 +1499,19 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       await readGenreProfile(this.ctx.projectRoot, book.genre);
     const resolvedLanguage = book.language ?? gp.language;
     const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, resolvedLanguage);
-    const promptProfile = resolvedLanguage === "ko"
-      ? { ...gp, name: book.genre.replace(/[_-]+/g, " "), language: "ko" as const }
+    const shouldSanitizeKoreanFallback = resolvedLanguage === "ko" && gp.language !== "ko";
+    const promptProfile = shouldSanitizeKoreanFallback
+      ? {
+          ...gp,
+          name: book.genre.replace(/[_-]+/g, " "),
+          language: "ko" as const,
+          chapterTypes: ["일반 회차"],
+          fatigueWords: [],
+          satisfactionTypes: [],
+          pacingRule: "",
+        }
       : gp;
+    const promptGenreBody = shouldSanitizeKoreanFallback ? "" : genreBody;
 
     const contextBlock = externalContext
       ? (resolvedLanguage === "ko"
@@ -1524,18 +1547,18 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     const continuationDirective = resolvedLanguage === "ko"
       ? (isSeries
           ? `## 후속부 방향
-후속부는 새 갈등, 새 장소, 달라진 시간 조건 가운데 둘 이상을 열어야 합니다. 5화 안에 새 승부를 시작하고, 기존 사건의 이름만 바꿔 반복하지 않습니다.`
+후속부는 새 갈등, 새 장소, 달라진 시간 조건 가운데 둘 이상을 엽니다. 이미 벌어진 사건의 필요한 후과를 먼저 착지시킨 뒤 초반부터 새 승부를 가동하되, 5화 같은 고정 기한을 만들거나 기존 사건의 이름만 바꿔 반복하지 않습니다.`
           : `## 이어쓰기 방향
-기존 인물의 선택과 미회수 단서에서 다음 사건을 시작합니다. 이미 해결된 승부를 되풀이하지 말고, 주인공이 얻은 것 때문에 생긴 새 문제를 붙입니다.`)
+기존 인물의 선택과 미회수 단서에서 다음 사건을 시작합니다. 이미 해결된 승부를 되풀이하지 말고, 주인공이 얻은 것을 눈에 보이게 먼저 확인시킨 뒤 그 결과에서 자연스럽게 생기는 선택·후과·압력 또는 완결된 결산 가운데 맞는 흐름을 둡니다.`)
       : resolvedLanguage === "en"
         ? (isSeries
           ? `## Continuation Direction Requirements
-The continuation portion must open up new narrative space — new conflict vector, new location, new time horizon. Ignite within 5 chapters; at least 50% fresh scenes.`
+The continuation portion must open new narrative space — a new conflict vector, location, or time horizon. After landing necessary fallout, activate the new contest early without a fixed five-chapter deadline; the continuation should be predominantly fresh scenes rather than a renamed replay.`
           : `## Continuation Direction
 Naturally extend the existing arc. Advance existing conflicts, pay off planted hooks, introduce new complications organically.`)
         : (isSeries
           ? `## 续写方向要求
-续写必须引入新叙事空间——新冲突、新地点、新时间。5章内引爆，50%以上场景新鲜。`
+续写必须引入新叙事空间——新冲突、新地点或新的时间条件。先让既有事件的必要后果落地，再尽早启动新的胜负，但不要设置固定五章期限；以原创场景为主，不按新鲜度百分比凑数。`
           : `## 续写方向
 自然延续已有叙事弧线。推进现有冲突、兑现已埋伏笔、引入有机新变数。`);
 
@@ -1543,6 +1566,7 @@ Naturally extend the existing arc. Advance existing conflicts, pay off planted h
       ? `${this.buildKoreanFoundationPrompt(
           book,
           promptProfile,
+          promptGenreBody,
           contextBlock,
           reviewFeedbackBlock,
           numericalBlock,
@@ -1626,7 +1650,24 @@ ${continuationDirective}
   ): Promise<ArchitectOutput> {
     const { profile: gp, body: genreBody } =
       await readGenreProfile(this.ctx.projectRoot, book.genre);
-    const resolvedLanguage = book.language ?? "zh";
+    // Fanfic prompts currently have native Korean and legacy Chinese routes.
+    // Infer Korean from a Korean profile, but preserve the established Chinese
+    // compatibility route for omitted-language English profiles until a native
+    // English fanfic prompt is implemented end to end.
+    const resolvedLanguage = book.language ?? (gp.language === "ko" ? "ko" : "zh");
+    const shouldSanitizeKoreanFallback = resolvedLanguage === "ko" && gp.language !== "ko";
+    const promptProfile = shouldSanitizeKoreanFallback
+      ? {
+          ...gp,
+          name: book.genre.replace(/[_-]+/g, " "),
+          language: "ko" as const,
+          chapterTypes: ["일반 회차"],
+          fatigueWords: [],
+          satisfactionTypes: [],
+          pacingRule: "",
+        }
+      : gp;
+    const promptGenreBody = shouldSanitizeKoreanFallback ? "" : genreBody;
     const reviewFeedbackBlock = this.buildReviewFeedbackBlock(reviewFeedback, resolvedLanguage);
     const futureAdvantageMode = resolveFutureAdvantageFoundationMode({
       title: book.title,
@@ -1653,7 +1694,8 @@ ${continuationDirective}
     const systemPrompt = resolvedLanguage === "ko"
       ? `${this.buildKoreanFoundationPrompt(
           book,
-          { ...gp, name: book.genre.replace(/[_-]+/g, " "), language: "ko" as const },
+          promptProfile,
+          promptGenreBody,
           "",
           reviewFeedbackBlock,
           gp.numericalSystem
@@ -1668,7 +1710,7 @@ ${continuationDirective}
 - 방식: ${fanficMode}
 - ${KO_MODE_INSTRUCTIONS[fanficMode]}
 - 원작에서 확인되는 사실과 인물의 기억을 우선합니다.
-- 원작 사건을 다시 요약하는 데 분량을 쓰지 않습니다. 5화 안에 이 작품만의 승부를 시작합니다.
+- 원작 사건을 다시 요약하는 데 분량을 쓰지 않습니다. 필요한 후과를 건너뛰지 않으면서 초반부터 이 작품만의 승부를 가동하되, 5화 같은 고정 기한은 두지 않습니다.
 - 주요 인물은 원작 인물을 사용합니다. 새 인물을 만들면 이름 옆에 "오리지널 인물"이라고 적습니다.
 - book_rules의 장르 약속 아래에 "원작 기반 방식: ${fanficMode}"를 적습니다.
 
@@ -1683,8 +1725,8 @@ ${MODE_INSTRUCTIONS[fanficMode]}
 必须为这本同人设计原创叙事空间，不是复述原作剧情：
 1. 明确分岔点——story_frame 必须标注本作从原作的哪个节点分岔
 2. 独立核心冲突——volume_map 的核心冲突必须是原创的
-3. 5章内引爆
-4. 场景新鲜度 ≥ 50%
+3. 先承接原作事件的必要后果，再尽早启动本作的核心胜负，不设固定五章期限
+4. 原创场景应占主导，但不按新鲜度百分比凑数
 ${reviewFeedbackBlock}
 ${futureAdvantageBlock}
 

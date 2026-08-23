@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: true
 eraResearch: false
-pacingRule: "Each floor arc spans 3-8 chapters: introduction, exploration, confrontation, advancement. Difficulty must escalate visibly between floors."
+pacingRule: "A floor arc may use introduction, exploration, confrontation, and advancement in whatever span its challenge earns. Arc length is diagnostic rather than fixed; difficulty should change visibly between floors."
 satisfactionTypes: ["Floor Cleared", "Boss Defeated", "New Ability Gained", "Floor Secret Discovered", "Rival Surpassed", "Summit Progress"]
 auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -32,10 +32,10 @@ auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 
 ## Pacing Guidance
 
-- Floor introduction: establish new environment, threats, and rules (1-2 chapters)
-- Exploration and problem-solving: MC adapts to floor's unique challenges (1-3 chapters)
-- Confrontation: floor boss, puzzle, or trial that tests everything learned (1-2 chapters)
+- Floor introduction establishes the new environment, threats, and usable rules without a fixed chapter allocation
+- Exploration and problem-solving last as long as the floor's unique challenge remains dramatically productive
+- Confrontation may be a boss, puzzle, or trial that tests what was learned; its span follows dramatic weight
 - Advancement: reward, brief respite, foreshadowing of next floor (0.5-1 chapter)
-- Early floors move fast (2-3 chapters each) to hook readers with progression
-- Later floors slow down (5-8 chapters) as complexity and stakes increase
+- Early floors usually move faster so readers can recognize progression, but no floor has a fixed chapter quota
+- Later floors may slow as complexity and stakes increase, provided each chapter still delivers visible story value
 - The summit should feel like a destination worth the climb — seed hints about what awaits throughout

@@ -37,9 +37,9 @@ export interface MemorySelection {
   readonly hooks: ReadonlyArray<StoredHook>;
   readonly activeHooks: ReadonlyArray<StoredHook>;
   /**
-   * Hooks with recycling pressure — stale hooks that the planner must
-   * advance/resolve/defer (and if deferred, justify). Sorted by staleness DESC
-   * (most overdue first). See computeRecyclableHooks for the selection rule.
+   * Hooks with recycling pressure — stale candidates the planner should review
+   * before deciding whether advance/resolve/defer fits the current chapter.
+   * Sorted by staleness DESC (most overdue first). See computeRecyclableHooks.
    */
   readonly recyclableHooks: ReadonlyArray<StoredHook>;
   readonly facts: ReadonlyArray<Fact>;
@@ -166,10 +166,10 @@ export async function retrieveMemorySelection(params: {
 }
 
 /**
- * Phase 9-2: Hooks that the planner MUST address this chapter.
+ * Phase 9-2: Hooks that the planner should review as priority candidates.
  *
- * An active hook is "recyclable" (i.e., stale enough to force an
- * advance/resolve/defer decision) when any of the following holds:
+ * An active hook is "recyclable" (i.e., stale enough to deserve an explicit
+ * planning review, without forcing a scene) when any of the following holds:
  *
  *   - pressured / near_payoff / progressing: silent for ≥ 5 chapters
  *   - planted / open: silent for ≥ 10 chapters

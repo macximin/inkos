@@ -6,7 +6,7 @@ fatigueWords: ["冷笑", "蝼蚁", "倒吸凉气", "瞳孔骤缩", "天道", "�
 numericalSystem: true
 powerScaling: true
 eraResearch: false
-pacingRule: "修炼/悟道与战斗交替，每3-5章一次小突破或关键收获"
+pacingRule: "修炼、悟道与战斗按因果和场景重量交替；小突破、关键收获、代价或后效都是有效进展，不按固定章数配给"
 satisfactionTypes: ["悟道突破", "斗法碾压", "法宝收获", "身份揭示", "天劫渡过", "因果了结"]
 auditDimensions: [1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,24,25,26]
 ---

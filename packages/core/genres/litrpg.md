@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: true
 powerScaling: true
 eraResearch: false
-pacingRule: "Every 1-3 chapters early: level-up or stat gain. Mid-story every 5-10 chapters. Late story: tier transitions spaced far apart."
+pacingRule: "Use advancement cadence as a diagnostic, not a quota: early arcs usually show progress more often, while later gains may take longer and carry more weight. A chapter may pay off through mastery, consequence, strategy, relationship, or discovery without a level-up."
 satisfactionTypes: ["Level Up", "Skill Unlock", "Loot Drop", "Boss Kill", "Tier Breakthrough", "System Secret Revealed"]
 auditDimensions: [1,2,3,4,5,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -35,9 +35,9 @@ auditDimensions: [1,2,3,4,5,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ## Pacing Guidance
 
 - Chapter length sweet spot: 2.8k-3.5k words depending on stat density
-- Chapter structure: Hook/recap -> Action/exploration -> System interaction/stat gain -> Cliffhanger
-- Early chapters: frequent level-ups to hook readers (every 1-3 chapters)
-- Mid-story: harder gains, every 5-10 chapters; narrative tension rises
+- Possible chapter shape: action/exploration -> meaningful system interaction -> visible result, aftermath, clean settlement, or natural next pressure. Do not force every chapter through this sequence
+- Early diagnostic: readers should recognize meaningful progress or usable system value often enough to trust the premise, but every chapter need not level up
+- Mid-story diagnostic: gains may take longer and should feel harder-earned; other visible payoffs can carry chapters between advances
 - Late story: tier/rank transitions are rare and climactic
 - Test pacing: Book 3 MC decisively defeats Book 1 version, but challenges never feel trivial
 - Describe stats in narration first (audiobook-friendly), then include stat sheet for detail readers

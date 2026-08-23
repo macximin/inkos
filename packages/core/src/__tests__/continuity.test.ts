@@ -44,6 +44,74 @@ describe("ContinuityAuditor", () => {
     ]);
   });
 
+  it("does not trust a truncated passed=true fragment as a completed audit", () => {
+    const auditor = new ContinuityAuditor({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-auditor-truncated-pass-test",
+    });
+
+    const result = (auditor as any).parseAuditResult(
+      'partial response\n"passed": true\n"issues": [',
+      "en",
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.creativePassed).toBe(false);
+    expect(result.parseFailed).toBe(true);
+    expect(result.issues).toEqual([
+      expect.objectContaining({ severity: "critical", category: "System Error" }),
+    ]);
+
+    const incompleteJson = (auditor as any).parseAuditResult('{"passed":true}', "en");
+    expect(incompleteJson).toMatchObject({
+      passed: false,
+      creativePassed: false,
+      parseFailed: true,
+    });
+
+    const invalidSeverity = (auditor as any).parseAuditResult(JSON.stringify({
+      passed: true,
+      issues: [{
+        severity: "error",
+        category: "Timeline",
+        description: "Broken order",
+        suggestion: "Restore order",
+      }],
+      summary: "invalid severity",
+    }), "en");
+    expect(invalidSeverity).toMatchObject({
+      passed: false,
+      creativePassed: false,
+      parseFailed: true,
+    });
+
+    const partialWarning = (auditor as any).parseAuditResult(
+      '{"passed":false,"issues":[{"severity":"warning","category":"Pacing","description":"The ending could pull harder.","suggestion":"Consider a sharper consequence."}],"summary":"partial recovery"',
+      "en",
+    );
+    expect(partialWarning).toMatchObject({
+      passed: false,
+      creativePassed: false,
+      parseFailed: true,
+      summary: "partial recovery",
+    });
+    expect(partialWarning.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "critical", category: "System Error" }),
+      expect.objectContaining({ severity: "warning", category: "Pacing" }),
+    ]));
+  });
+
   it("parses typed repair_scope from audit JSON", () => {
     const auditor = new ContinuityAuditor({
       client: {
@@ -164,6 +232,24 @@ describe("ContinuityAuditor", () => {
           summary: "정보 경계 위반",
         }),
         usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          passed: false,
+          creative_passed: false,
+          research_status: "not-applicable",
+          overall_score: 58,
+          issues: [{
+            severity: "critical",
+            track: "creative",
+            repair_scope: "local",
+            category: "Information Boundary",
+            description: "The protagonist uses a confidential research report before receiving it.",
+            suggestion: "Restore the missing acquisition step.",
+          }],
+          summary: "information boundary breach",
+        }),
+        usage: ZERO_USAGE,
       });
     const arcContext = [
       "## Future Advantage Move",
@@ -176,7 +262,16 @@ describe("ContinuityAuditor", () => {
     ].join("\n");
 
     try {
-      const researchOnly = await auditor.auditChapter(bookDir, "시험 라인이 돌아갔다.", 1, "other", { arcContext });
+      const researchOnly = await auditor.auditChapter(bookDir, "시험 라인이 돌아갔다.", 1, "other", {
+        arcContext,
+        chapterMemo: {
+          chapter: 1,
+          goal: "시험 라인의 첫 증거를 지급한다",
+          isGoldenOpening: true,
+          body: "## 독자가 지금 기다리는 것\n- 재미 앵커: 첫 수율 개선을 눈앞에서 증명한다\n- 상태: 전부 지급",
+          threadRefs: [],
+        },
+      });
       expect(researchOnly.passed).toBe(true);
       expect(researchOnly.creativePassed).toBe(true);
       expect(researchOnly.researchStatus).toBe("needs-research");
@@ -185,6 +280,10 @@ describe("ContinuityAuditor", () => {
 
       const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
       expect(messages[0]?.content).toContain("당신은 엄격한");
+      expect(messages[0]?.content).toContain("이번 화의 재미 앵커");
+      expect(messages[0]?.content).toContain("별도 점수가 아니라");
+      expect(messages[0]?.content).toContain("'전부 지급' 또는 이번 화의 핵심 작업");
+      expect(messages[0]?.content).toContain("장면은 있으나 타격감이 약한 경우 warning");
       expect(messages[0]?.content).toContain("허용된 역사 분기");
       expect(messages[0]?.content).not.toContain("You are a strict");
       expect(messages[1]?.content).toContain("## 감리할 원고");
@@ -193,6 +292,22 @@ describe("ContinuityAuditor", () => {
       expect(boundaryBreach.passed).toBe(false);
       expect(boundaryBreach.creativePassed).toBe(false);
       expect(boundaryBreach.issues[0]).toMatchObject({ severity: "critical", track: "creative" });
+      const legacyMessages = chatSpy.mock.calls[1]?.[0] as ReadonlyArray<{ content: string }>;
+      expect(legacyMessages[0]?.content).not.toContain("이번 화의 재미 앵커");
+
+      const researchReportBreach = await auditor.auditChapter(
+        bookDir,
+        "He quoted the confidential report before anyone handed it to him.",
+        1,
+        "other",
+      );
+      expect(researchReportBreach.passed).toBe(false);
+      expect(researchReportBreach.creativePassed).toBe(false);
+      expect(researchReportBreach.issues[0]).toMatchObject({
+        severity: "critical",
+        track: "creative",
+        category: "Information Boundary",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -481,7 +596,11 @@ describe("ContinuityAuditor", () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-auditor-memo-drift-"));
     const bookDir = join(root, "book");
     const storyDir = join(bookDir, "story");
-    await mkdir(storyDir, { recursive: true });
+    const genresDir = join(root, "genres");
+    await Promise.all([
+      mkdir(storyDir, { recursive: true }),
+      mkdir(genresDir, { recursive: true }),
+    ]);
 
     await Promise.all([
       writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
@@ -491,6 +610,19 @@ describe("ContinuityAuditor", () => {
       writeFile(join(storyDir, "emotional_arcs.md"), "# 情感\n", "utf-8"),
       writeFile(join(storyDir, "character_matrix.md"), "# 矩阵\n", "utf-8"),
       writeFile(join(storyDir, "style_guide.md"), "# Style\n", "utf-8"),
+      writeFile(join(genresDir, "empty-fun.md"), `---
+name: 空候选测试
+id: empty-fun
+chapterTypes: ["推进章", "结算章"]
+fatigueWords: []
+numericalSystem: false
+powerScaling: false
+eraResearch: false
+pacingRule: ""
+satisfactionTypes: []
+auditDimensions: [6, 15]
+---
+`, "utf-8"),
     ]);
 
     const auditor = new ContinuityAuditor({
@@ -541,7 +673,7 @@ describe("ContinuityAuditor", () => {
     ].join("\n");
 
     try {
-      await auditor.auditChapter(bookDir, "Chapter body.", 42, "xuanhuan", {
+      await auditor.auditChapter(bookDir, "Chapter body.", 42, "empty-fun", {
         chapterMemo: {
           chapter: 42,
           goal: "陆焚抢回残刃并离开",
@@ -562,6 +694,21 @@ describe("ContinuityAuditor", () => {
       expect(systemPrompt).toContain("你不审文笔");
       expect(systemPrompt).toContain("稀疏 memo 是合法状态");
       expect(systemPrompt).toContain("章节备忘偏离");
+      expect(systemPrompt).toContain("完整收束和必要后效都合法");
+      expect(systemPrompt).toContain("情绪、关系、信息、选择、兑现或后果");
+      expect(systemPrompt).toContain("干净结算的章尾不必重新点燃好奇心");
+      expect(systemPrompt).toContain("不是逐项打勾的清单");
+      expect(systemPrompt).toContain("只有以下情况可以判 critical");
+      expect(systemPrompt).toContain("只能记 warning，绝不能触发自动重写");
+      expect(systemPrompt).toContain("不得按百分比、新奇度或爽点数量判定通过");
+      expect(systemPrompt).toContain("不是本章场景配额");
+      expect(systemPrompt).toContain("不能仅凭年龄判 critical 或自动改写当前正文");
+      expect(systemPrompt).toContain("本章 chapter_memo 明确把某 hook_id 选为 advance/resolve");
+      expect(systemPrompt).not.toContain("章尾是否重新点燃好奇心");
+      expect(systemPrompt).not.toContain("埋伏笔、推关系、建立反差、准备下一轮蓄压");
+      expect(systemPrompt).not.toContain("任何段落缺失或被写反 → critical");
+      expect(systemPrompt).not.toContain("70%期待");
+      expect(systemPrompt).not.toContain("过期超过 10 章未回收 → warning 升级为 critical");
       expect(systemPrompt).not.toContain("大纲偏离检测");
 
       // User prompt injects the memo for drift-checking.

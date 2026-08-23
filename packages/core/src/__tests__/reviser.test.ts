@@ -12,6 +12,27 @@ const ZERO_USAGE = {
   totalTokens: 0,
 } as const;
 
+const COMPLETE_STATE = [
+  "# Current State",
+  "",
+  "| Field | Value |",
+  "| --- | --- |",
+  "| Current Chapter | 1 |",
+].join("\n");
+const COMPLETE_LEDGER = [
+  "# Resource Ledger",
+  "",
+  "| item | value |",
+  "| --- | --- |",
+  "| balance | 0 |",
+].join("\n");
+const COMPLETE_HOOKS = [
+  "# Pending Hooks",
+  "",
+  "| hook_id | status |",
+  "| --- | --- |",
+].join("\n");
+
 const CRITICAL_ISSUE: AuditIssue = {
   severity: "critical",
   category: "continuity",
@@ -62,16 +83,27 @@ describe("ReviserAgent", () => {
         "=== REVISED_CONTENT ===",
         "윤태겸은 계약서를 덮었다.",
         "=== UPDATED_STATE ===",
-        "# 현재 상태",
+        COMPLETE_STATE,
         "=== UPDATED_LEDGER ===",
         "(장부 없음)",
         "=== UPDATED_HOOKS ===",
-        "(복선 없음)",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
 
     try {
+      const governedControl = {
+        chapterIntent: "# 회차 의도\n\n계약서 공개로 주도권을 뒤집는다.",
+        contextPackage: { chapter: 1, selectedContext: [] },
+        ruleStack: {
+          layers: [{ id: "L4", name: "current_task", precedence: 70, scope: "local" as const }],
+          sections: { hard: [], soft: [], diagnostic: [] },
+          overrideEdges: [],
+          activeOverrides: [],
+        },
+      };
       await agent.reviseChapter(
         bookDir,
         "윤태겸은 계약서를 덮었다.",
@@ -79,7 +111,7 @@ describe("ReviserAgent", () => {
         [{ ...CRITICAL_ISSUE, description: "반복되는 대조문을 고친다" }],
         "auto",
         "현대판타지 재벌물",
-        { lengthSpec: buildLengthSpec(5000, "ko") },
+        { ...governedControl, lengthSpec: buildLengthSpec(5000, "ko") },
       );
 
       const messages = chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>;
@@ -87,7 +119,34 @@ describe("ReviserAgent", () => {
       expect(prompt).toContain("한국 장르소설 수정 편집자");
       expect(prompt).toContain("## 감리 결과");
       expect(prompt).toContain("공백 포함 4319-5681자");
+      expect(prompt).toContain("직전 회차의 약속, 현재 목표");
+      expect(prompt).toContain("주인공의 선택, 반전, 가시적 보상");
+      expect(prompt).toContain("원문의 완급과 필요한 숨 고르기");
+      expect(prompt).toContain("가장 가까운 지급 장면");
+      expect(prompt).not.toContain("chapter_memo의 재미 앵커");
       expect(prompt).not.toMatch(/[\u3400-\u9fff]/u);
+
+      await agent.reviseChapter(
+        bookDir,
+        "윤태겸은 계약서를 덮었다.",
+        1,
+        [{ ...CRITICAL_ISSUE, description: "반복되는 대조문을 고친다" }],
+        "auto",
+        "현대판타지 재벌물",
+        {
+          ...governedControl,
+          chapterMemo: {
+            chapter: 1,
+            goal: "계약서 공개로 주도권을 뒤집는다",
+            isGoldenOpening: true,
+            body: "## 독자가 지금 기다리는 것\n- 재미 앵커: 계약서 공개\n- 상태: 전부 지급",
+            threadRefs: [],
+          },
+          lengthSpec: buildLengthSpec(5000, "ko"),
+        },
+      );
+      const memoSystemPrompt = (chatSpy.mock.calls[1]?.[0] as ReadonlyArray<{ content: string }>)[0]?.content ?? "";
+      expect(memoSystemPrompt).toContain("chapter_memo의 재미 앵커");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -127,9 +186,10 @@ describe("ReviserAgent", () => {
         "=== REVISED_CONTENT ===",
         "윤태겸은 과거의 역사대로 아무 일도 하지 않았다.",
         "=== UPDATED_STATE ===",
-        "# 현재 상태",
+        COMPLETE_STATE,
         "=== UPDATED_HOOKS ===",
-        "# 복선 목록",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -180,10 +240,81 @@ describe("ReviserAgent", () => {
         { arcProvenanceContext: arcContext },
       );
       expect(chatSpy).toHaveBeenCalledTimes(1);
+
       expect((chatSpy.mock.calls[0]?.[0] as ReadonlyArray<{ content: string }>)[0]?.content)
         .toContain("미래 선점 보존 규칙");
       expect(guarded.revisedContent).toBe(original);
       expect(guarded.fixedIssues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps advisory warnings out of auto revision unless a manual caller opts in", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-reviser-advisory-opt-in-test-"));
+    const bookDir = join(root, "book");
+    await mkdir(join(bookDir, "story"), { recursive: true });
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+    const chatSpy = vi.spyOn(ReviserAgent.prototype as never, "chat" as never).mockResolvedValue({
+      content: [
+        "=== FIXED_ISSUES ===",
+        "- 요청한 문장을 수정",
+        "=== REVISED_CONTENT ===",
+        "수정문",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+    const warning: AuditIssue = {
+      severity: "warning",
+      category: "호흡",
+      description: "한 문장이 조금 길다.",
+      suggestion: "필요하면 나눈다.",
+    };
+
+    try {
+      const automatic = await agent.reviseChapter(bookDir, "원문", 1, [warning], "auto", "other");
+      expect(automatic).toMatchObject({ revisedContent: "원문", applied: false });
+      expect(chatSpy).not.toHaveBeenCalled();
+
+      await agent.reviseChapter(
+        bookDir,
+        "원문",
+        1,
+        [warning],
+        "auto",
+        "other",
+        { allowAdvisoryIssues: true },
+      );
+      expect(chatSpy).toHaveBeenCalledTimes(1);
+
+      const explicitClean = await agent.reviseChapter(
+        bookDir,
+        "원문",
+        1,
+        [],
+        "auto",
+        "other",
+        {
+          explicitRevisionRequested: true,
+          revisionInstruction: "문을 여는 동작은 유지하고 마지막 문장만 더 직접적으로 고친다.",
+        },
+      );
+      expect(chatSpy).toHaveBeenCalledTimes(2);
+      expect(explicitClean.applied).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -238,10 +369,11 @@ describe("ReviserAgent", () => {
         "Revised chapter content.",
         "",
         "=== UPDATED_STATE ===",
-        "State card",
+        COMPLETE_STATE,
         "",
         "=== UPDATED_HOOKS ===",
-        "Hooks board",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -296,10 +428,14 @@ describe("ReviserAgent", () => {
         "--- END PATCH ---",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
+        "",
+        "=== UPDATED_LEDGER ===",
+        COMPLETE_LEDGER,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -354,10 +490,14 @@ describe("ReviserAgent", () => {
         "--- END PATCH ---",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
+        "",
+        "=== UPDATED_LEDGER ===",
+        COMPLETE_LEDGER,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -426,10 +566,14 @@ describe("ReviserAgent", () => {
         "--- END PATCH ---",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
+        "",
+        "=== UPDATED_LEDGER ===",
+        COMPLETE_LEDGER,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -453,6 +597,7 @@ describe("ReviserAgent", () => {
         "xuanhuan",
       );
 
+      expect(result.failureReason).toBeUndefined();
       expect(result.revisedContent).toBe([
         "门轴轻轻响了一下。",
         "林越先停在门槛外，侧耳听了一息。",
@@ -467,7 +612,7 @@ describe("ReviserAgent", () => {
     }
   });
 
-  it("ignores REVISED_CONTENT for auto mode when issues are local-only and PATCHES are available", async () => {
+  it("uses PATCHES for auto mode when issues are local-only", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-reviser-auto-local-only-test-"));
     const bookDir = join(root, "book");
     await mkdir(join(bookDir, "story"), { recursive: true });
@@ -501,14 +646,15 @@ describe("ReviserAgent", () => {
         "他听见门外像有一点轻响。",
         "--- END PATCH ---",
         "",
-        "=== REVISED_CONTENT ===",
-        "整章重写后的版本，不应该被局部问题采用。",
-        "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
+        "",
+        "=== UPDATED_LEDGER ===",
+        COMPLETE_LEDGER,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -526,16 +672,16 @@ describe("ReviserAgent", () => {
         }],
         "auto",
         "xuanhuan",
+        { allowAdvisoryIssues: true },
       );
 
       expect(result.revisedContent).toContain("他听见门外像有一点轻响。");
-      expect(result.revisedContent).not.toContain("整章重写后的版本");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("keeps REVISED_CONTENT available for auto mode when issues are whole-chapter", async () => {
+  it("uses REVISED_CONTENT for auto mode when issues are whole-chapter", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-reviser-auto-whole-chapter-test-"));
     const bookDir = join(root, "book");
     await mkdir(join(bookDir, "story"), { recursive: true });
@@ -561,22 +707,18 @@ describe("ReviserAgent", () => {
         "=== FIXED_ISSUES ===",
         "- restructured chapter pacing",
         "",
-        "=== PATCHES ===",
-        "--- PATCH 1 ---",
-        "TARGET_TEXT:",
-        "第一段。",
-        "REPLACEMENT_TEXT:",
-        "第一段（局部修补）。",
-        "--- END PATCH ---",
-        "",
         "=== REVISED_CONTENT ===",
         "整章重写后的版本，处理了整体节奏与结构。",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
+        "",
+        "=== UPDATED_LEDGER ===",
+        COMPLETE_LEDGER,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -637,10 +779,11 @@ describe("ReviserAgent", () => {
         "--- END PATCH ---",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -798,10 +941,11 @@ describe("ReviserAgent", () => {
         "--- END PATCH ---",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -912,10 +1056,11 @@ describe("ReviserAgent", () => {
         "--- END PATCH ---",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -936,6 +1081,7 @@ describe("ReviserAgent", () => {
         ],
         "auto",
         "xuanhuan",
+        { allowAdvisoryIssues: true },
       );
 
       const messages = chatSpy.mock.calls[0]?.[0] as
@@ -949,6 +1095,8 @@ describe("ReviserAgent", () => {
       // Parser rejects stray PATCHES in rewrite-only mode.
       expect(out.revisedContent).toBe("原文。");
       expect(out.fixedIssues).toEqual([]);
+      expect(out.applied).toBe(false);
+      expect(out.parseFailed).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -986,10 +1134,11 @@ describe("ReviserAgent", () => {
         "整章重写的正文。",
         "",
         "=== UPDATED_STATE ===",
-        "状态卡",
+        COMPLETE_STATE,
         "",
         "=== UPDATED_HOOKS ===",
-        "伏笔池",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
       ].join("\n"),
       usage: ZERO_USAGE,
     });
@@ -1010,6 +1159,7 @@ describe("ReviserAgent", () => {
         ],
         "auto",
         "xuanhuan",
+        { allowAdvisoryIssues: true },
       );
 
       const messages = chatSpy.mock.calls[0]?.[0] as
@@ -1022,8 +1172,479 @@ describe("ReviserAgent", () => {
       // Parser rejects REVISED_CONTENT in patch-only mode.
       expect(out.revisedContent).toBe("原文。");
       expect(out.fixedIssues).toEqual([]);
+      expect(out.applied).toBe(false);
+      expect(out.parseFailed).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects ambiguous auto output that contains both patch and rewrite envelopes", () => {
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-reviser-ambiguous-envelope-test",
+    });
+    const content = [
+      "=== FIXED_ISSUES ===",
+      "- ambiguous",
+      "=== PATCHES ===",
+      "--- PATCH 1 ---",
+      "TARGET_TEXT:",
+      "원문",
+      "REPLACEMENT_TEXT:",
+      "패치문",
+      "--- END PATCH ---",
+      "=== REVISED_CONTENT ===",
+      "전체 재작성문",
+    ].join("\n");
+
+    const out = (agent as any).parseOutput(
+      content,
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "patch-only",
+    );
+
+    expect(out.revisedContent).toBe("원문");
+    expect(out.applied).toBe(false);
+    expect(out.parseFailed).toBe(true);
+    expect(out.failureReason).toContain("both PATCHES and REVISED_CONTENT");
+  });
+
+  it("accepts one populated revision payload when the prompt-shaped opposite section is empty", () => {
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-reviser-empty-opposite-envelope-test",
+    });
+    const rewrite = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== PATCHES ===",
+        "",
+        "=== REVISED_CONTENT ===",
+        "수정한 전체 원고",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+    const patch = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- local repair",
+        "=== PATCHES ===",
+        "--- PATCH 1 ---",
+        "TARGET_TEXT:",
+        "원문",
+        "REPLACEMENT_TEXT:",
+        "수정문",
+        "--- END PATCH ---",
+        "=== REVISED_CONTENT ===",
+        "",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "patch-only",
+    );
+
+    expect(rewrite).toMatchObject({
+      revisedContent: "수정한 전체 원고",
+      applied: true,
+      parseFailed: false,
+    });
+    expect(patch).toMatchObject({
+      revisedContent: "수정문",
+      applied: true,
+      parseFailed: false,
+    });
+  });
+
+  it("rejects a non-empty rewrite that reaches EOF before the completion sections", () => {
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-reviser-truncated-rewrite-test",
+    });
+    const out = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "수정하다가 응답이 여기서 끊긴 원고",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+
+    expect(out).toMatchObject({
+      revisedContent: "원문",
+      applied: false,
+      parseFailed: true,
+    });
+    expect(out.failureReason).toContain("UPDATED_STATE");
+    expect(out.failureReason).toContain("UPDATED_HOOKS");
+
+    const reordered = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
+        "=== REVISED_CONTENT ===",
+        "뒤쪽 원고가 여기서 잘림",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+    expect(reordered).toMatchObject({
+      revisedContent: "원문",
+      applied: false,
+      parseFailed: true,
+    });
+  });
+
+  it("rejects empty completion bodies and requires the numerical ledger envelope", () => {
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-reviser-completion-body-test",
+    });
+
+    const emptyHooks = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "수정 원고",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        "",
+        "=== REVISION_COMPLETE ===",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+    expect(emptyHooks).toMatchObject({
+      revisedContent: "원문",
+      applied: false,
+      parseFailed: true,
+    });
+
+    for (const [stateBody, hooksBody] of [
+      ["#", "#"],
+      ["# 현재 상태", "# 복선표"],
+      ["---", "| --- | --- |"],
+      ["Cur", "Pen"],
+    ] as const) {
+      const shellOnlyTruth = (agent as any).parseOutput(
+        [
+          "=== FIXED_ISSUES ===",
+          "- structural repair",
+          "=== REVISED_CONTENT ===",
+          "수정 원고",
+          "=== UPDATED_STATE ===",
+          stateBody,
+          "=== UPDATED_HOOKS ===",
+          hooksBody,
+          "=== REVISION_COMPLETE ===",
+        ].join("\n"),
+        { numericalSystem: false },
+        "auto",
+        "원문",
+        "rewrite-only",
+      );
+      expect(shellOnlyTruth).toMatchObject({
+        revisedContent: "원문",
+        applied: false,
+        parseFailed: true,
+      });
+      expect(shellOnlyTruth.failureReason).toContain("complete Markdown-table");
+    }
+
+    const truncatedTruthTail = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "Revised chapter body.",
+        "=== UPDATED_STATE ===",
+        "Current state is internally consistent.",
+        "=== UPDATED_HOOKS ===",
+        "Pen",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "Original chapter body.",
+      "rewrite-only",
+    );
+    expect(truncatedTruthTail).toMatchObject({
+      revisedContent: "Original chapter body.",
+      applied: false,
+      parseFailed: true,
+    });
+    expect(truncatedTruthTail.failureReason).toContain("REVISION_COMPLETE");
+
+    const completeEmptyHooksTable = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "수정 원고",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        "| hook_id | 상태 |",
+        "| --- | --- |",
+        "=== REVISION_COMPLETE ===",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+    expect(completeEmptyHooksTable).toMatchObject({
+      revisedContent: "수정 원고",
+      applied: true,
+      parseFailed: false,
+    });
+
+    for (const ledgerBody of [undefined, ""] as const) {
+      const sections = [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "수정 원고",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+      ];
+      if (ledgerBody !== undefined) {
+        sections.push("=== UPDATED_LEDGER ===", ledgerBody);
+      }
+      sections.push("=== UPDATED_HOOKS ===", COMPLETE_HOOKS, "=== REVISION_COMPLETE ===");
+      const missingOrEmptyLedger = (agent as any).parseOutput(
+        sections.join("\n"),
+        { numericalSystem: true },
+        "auto",
+        "원문",
+        "rewrite-only",
+      );
+      expect(missingOrEmptyLedger).toMatchObject({
+        revisedContent: "원문",
+        applied: false,
+        parseFailed: true,
+      });
+      expect(missingOrEmptyLedger.failureReason).toContain("UPDATED_LEDGER");
+    }
+
+    const duplicateAfterHooks = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "첫 수정 원고",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_HOOKS ===",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
+        "=== REVISED_CONTENT ===",
+        "뒤에서 다시 시작했지만 잘린 원고",
+      ].join("\n"),
+      { numericalSystem: false },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+    expect(duplicateAfterHooks).toMatchObject({
+      revisedContent: "원문",
+      applied: false,
+      parseFailed: true,
+    });
+
+    for (const [statePlaceholder, hooksPlaceholder] of [
+      ["(수정한 전체 상태표)", "(수정한 전체 복선표)"],
+      ["(Full updated state card)", "(Full updated hooks board)"],
+      ["(更新后的完整状态卡)", "(更新后的完整伏笔池)"],
+    ] as const) {
+      const promptEcho = (agent as any).parseOutput(
+        [
+          "=== FIXED_ISSUES ===",
+          "- structural repair",
+          "=== REVISED_CONTENT ===",
+          "수정 원고",
+          "=== UPDATED_STATE ===",
+          statePlaceholder,
+          "=== UPDATED_HOOKS ===",
+          hooksPlaceholder,
+          "=== REVISION_COMPLETE ===",
+        ].join("\n"),
+        { numericalSystem: false },
+        "auto",
+        "원문",
+        "rewrite-only",
+      );
+      expect(promptEcho).toMatchObject({
+        revisedContent: "원문",
+        applied: false,
+        parseFailed: true,
+      });
+    }
+
+    for (const revisedContentPlaceholder of [
+      "(전체 재작성이 필요할 때만 수정한 전체 한국어 원고를 출력합니다.)",
+      "(수정한 전체 한국어 원고)",
+      "(Full revised chapter content)",
+      "(Full revised chapter content — only when PATCHES cannot solve the problem. Omit this section if using PATCHES)",
+      "(修正后的完整正文)",
+      "(修正后的完整正文——用于字数/结构/节奏等全章级问题。仅局部问题时省略此区块)",
+    ]) {
+      const revisedContentPromptEcho = (agent as any).parseOutput(
+        [
+          "=== FIXED_ISSUES ===",
+          "- structural repair",
+          "=== REVISED_CONTENT ===",
+          revisedContentPlaceholder,
+          "=== UPDATED_STATE ===",
+          COMPLETE_STATE,
+          "=== UPDATED_HOOKS ===",
+          COMPLETE_HOOKS,
+          "=== REVISION_COMPLETE ===",
+        ].join("\n"),
+        { numericalSystem: false },
+        "auto",
+        "원문",
+        "rewrite-only",
+      );
+      expect(revisedContentPromptEcho).toMatchObject({
+        revisedContent: "원문",
+        applied: false,
+        parseFailed: true,
+      });
+    }
+
+    const numericalPromptEcho = (agent as any).parseOutput(
+      [
+        "=== FIXED_ISSUES ===",
+        "- structural repair",
+        "=== REVISED_CONTENT ===",
+        "수정 원고",
+        "=== UPDATED_STATE ===",
+        COMPLETE_STATE,
+        "=== UPDATED_LEDGER ===",
+        "(Full updated resource ledger)",
+        "=== UPDATED_HOOKS ===",
+        COMPLETE_HOOKS,
+        "=== REVISION_COMPLETE ===",
+      ].join("\n"),
+      { numericalSystem: true },
+      "auto",
+      "원문",
+      "rewrite-only",
+    );
+    expect(numericalPromptEcho).toMatchObject({
+      revisedContent: "원문",
+      applied: false,
+      parseFailed: true,
+    });
+  });
+
+  it("preserves clean closure in Chinese and English revision guidance", () => {
+    const agent = new ReviserAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: "/tmp/inkos-reviser-clean-closure-prompt-test",
+    });
+    const common = {
+      langPrefix: "",
+      gp: { name: "test", numericalSystem: false },
+      protagonistBlock: "",
+      numericalRule: "",
+      lengthGuardrail: "",
+      autoOutputMode: "allow-full",
+      hasChapterMemo: false,
+    };
+    const enPrompt = (agent as any).buildAutoSystemPrompt({ ...common, resolvedLanguage: "en" });
+    const zhPrompt = (agent as any).buildAutoSystemPrompt({ ...common, resolvedLanguage: "zh" });
+
+    expect(enPrompt).toContain("Preserve an intentional clean closure");
+    expect(enPrompt).not.toContain('rewrite as "bait"');
+    expect(zhPrompt).toContain("若本章意在干净结算，保留收束");
+    expect(zhPrompt).not.toContain('改写为"饵"');
   });
 });

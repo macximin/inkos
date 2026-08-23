@@ -29,6 +29,8 @@ import type {
 
 export interface ComposeChapterInput {
   readonly book: BookConfig;
+  /** Resolved runtime language when BookConfig.language is omitted. */
+  readonly language?: "zh" | "ko" | "en";
   readonly bookDir: string;
   readonly chapterNumber: number;
   readonly plan: PlanChapterOutput;
@@ -87,15 +89,16 @@ export interface ComposeChapterOutput {
 export async function composeGovernedChapter(input: ComposeChapterInput): Promise<ComposeChapterOutput> {
   const storyDir = join(input.bookDir, "story");
   const runtimeDir = join(storyDir, "runtime");
+  const language = input.language ?? input.book.language ?? "zh";
   await mkdir(runtimeDir, { recursive: true });
 
   const baseContext = await collectSelectedContext(
     storyDir,
     input.plan,
-    input.book.language ?? "zh",
+    language,
     input.outlineSectionSelector,
   );
-  const activeFutureAdvantageContext = buildActiveFutureAdvantageContext(input.plan, input.book.language ?? "zh");
+  const activeFutureAdvantageContext = buildActiveFutureAdvantageContext(input.plan, language);
   const referenceContext = await loadReferenceContext(input);
   const selectedContext = [
     ...baseContext,
@@ -110,7 +113,7 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     contextPackage: initialContextPackage,
     chapterNumber: input.chapterNumber,
     goal: input.plan.intent.goal,
-    language: input.book.language ?? "zh",
+    language,
     contextBudget: input.contextBudget,
     compiler: input.compressibleContextCompiler,
     onContextCompression: input.onContextCompression,
@@ -570,7 +573,7 @@ async function loadReferenceContext(input: ComposeChapterInput): Promise<BookRef
       goal: input.plan.intent.goal,
       outlineNode: input.plan.intent.outlineNode ?? "",
       mustKeep: input.plan.intent.mustKeep,
-      language: input.book.language ?? "zh",
+      language: input.language ?? input.book.language ?? "zh",
     });
   } catch {
     return { entries: [], notes: ["book-reference-context-unavailable"] };

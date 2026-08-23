@@ -7,7 +7,7 @@ fatigueWords: ["순간", "본능적으로", "믿을 수 없었다", "숨을 삼�
 numericalSystem: false
 powerScaling: false
 eraResearch: false
-pacingRule: "2~3화 안에 독자가 확인할 변화나 보상을 한 번 지급한다"
+pacingRule: "최근 몇 화를 진단 구간으로 보고 독자가 확인할 변화나 보상이 실제로 사라졌을 때만 리듬을 조정한다. 회차별 지급 횟수는 할당량이 아니며 완전 수습과 필요한 후과도 유효한 보상이다"
 satisfactionTypes: ["목표 달성", "문제 해결", "진실 확인", "관계 변화", "새 기회 확보"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---

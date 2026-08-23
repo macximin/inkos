@@ -73,6 +73,26 @@ describe("parseHookLedger", () => {
     expect(ledger.defer.map((e) => e.id)).toEqual(["H009"]);
   });
 
+  it("extracts the standard Korean hook-ledger heading", () => {
+    const memo = `## 이번 화 훅 장부
+open:
+- [new] 인수 제안의 숨은 조건 || 결과에서 자연스럽게 생긴 압력
+advance:
+- H007 "부도 어음" → 원본을 확인한다
+resolve:
+- H003 "팩스 사본" → 도경이 사본을 확보한다
+defer:
+- H009 "채권단 배후" → 3화까지 감춘다
+`;
+
+    const ledger = parseHookLedger(memo);
+    expect(ledger.advance.map((entry) => entry.id)).toEqual(["H007"]);
+    expect(ledger.resolve.map((entry) => entry.id)).toEqual(["H003"]);
+    expect(ledger.defer.map((entry) => entry.id)).toEqual(["H009"]);
+    expect(ledger.newOpenCount).toBe(1);
+    expect(ledger.advance[0]?.keywords).toEqual(expect.arrayContaining(["부도", "어음"]));
+  });
+
   it("returns empty lists when no ledger section is present", () => {
     const ledger = parseHookLedger("## 当前任务\n正文\n\n## 不要做\n- 无");
     expect(ledger).toEqual({ open: [], advance: [], resolve: [], defer: [], newOpenCount: 0 });
@@ -122,6 +142,20 @@ defer:
 });
 
 describe("validateHookLedger", () => {
+  it("matches Korean hook names by prose evidence and localizes real misses", () => {
+    const memo = `## 이번 화 훅 장부
+advance:
+- H007 "부도 어음" → 원본을 확인한다
+`;
+
+    expect(validateHookLedger(memo, "한도경은 책상 위에 놓인 부도 어음 원본을 뒤집었다.")).toEqual([]);
+
+    const misses = validateHookLedger(memo, "한도경은 빈 책상을 살핀 뒤 돌아섰다.");
+    expect(misses).toHaveLength(1);
+    expect(misses[0]).toMatchObject({ severity: "warning", category: "훅 장부 의미 확인" });
+    expect(misses[0]?.description).toContain("H007");
+  });
+
   it("passes when draft echoes keyword from each committed ledger entry", () => {
     // Draft mentions 胖虎/借条 (→H007), 雷架 or 焦痕 (→H012), 杂役 or 腰牌 (→H003).
     const draft =
@@ -196,7 +230,7 @@ advance:
     expect(violations).toEqual([]);
   });
 
-  it("flags 揭 1 埋 1 violation when a chapter resolves hooks without opening any", () => {
+  it("accepts resolve-without-open as a clean closure without a numerical advisory", () => {
     const memo = `## 本章 hook 账
 advance:
 - H007 "胖虎借条" → planted
@@ -205,11 +239,10 @@ resolve:
 `;
     const draft = "林秋翻看胖虎借条，随后摘下杂役腰牌。";
     const violations = validateHookLedger(memo, draft);
-    expect(violations).toHaveLength(1);
-    expect(violations[0]!.category).toContain("揭 1 埋 1");
+    expect(violations).toEqual([]);
   });
 
-  it("accepts 揭 1 埋 1 floor when a [new] line balances the resolved hook", () => {
+  it("also accepts a naturally opened hook without imposing an open/resolve balance", () => {
     const memo = `## 本章 hook 账
 open:
 - [new] 母亲留下的半枚玉佩 || 理由：下一卷线索

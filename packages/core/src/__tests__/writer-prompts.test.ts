@@ -73,6 +73,101 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("Play out the climax");
   });
 
+  it("keeps zh/en endings fun-first without hook quotas or forced cliffhangers", () => {
+    for (const inputProfile of ["legacy", "governed"] as const) {
+      const zh = buildWriterSystemPrompt(
+        BOOK, GENRE, null, "", "", "", undefined, 6, "creative", undefined, "zh", inputProfile,
+      );
+      expect(zh).toContain("完整收束和有余韵的平静都是合法结尾");
+      expect(zh).toContain("不按每多少字几个爽点、钩子或未解悬念来凑数");
+      expect(zh).toContain("不得只为制造断章而扣住读者已经挣到的结果");
+      expect(zh).not.toContain("每章结尾设置悬念/伏笔/钩子");
+      expect(zh).not.toContain("每 300 字至少 1 个爽点");
+      expect(zh).not.toContain("每 500 字至少 1 个钩子");
+      expect(zh).not.toContain("每 1000-1500 字至少 1 个完整悬念");
+      expect(zh).not.toContain("永远不要在一章里把本章故事讲完");
+      expect(zh).not.toContain("满足70%");
+      expect(zh).not.toContain("读者期待释放时适当延迟");
+
+      const en = buildWriterSystemPrompt(
+        { ...BOOK, language: "en" },
+        { ...GENRE, language: "en", name: "General" },
+        null,
+        "",
+        "",
+        "",
+        undefined,
+        6,
+        "creative",
+        undefined,
+        "en",
+        inputProfile,
+      );
+      expect(en).toContain("A clean settlement or earned calm is valid");
+      expect(en).toContain("not by a fixed number of payoffs, hooks, or unresolved arcs");
+      expect(en).toContain("Do not postpone an earned result merely to manufacture a cliffhanger");
+      expect(en).not.toContain("Every chapter ending needs a hook");
+      expect(en).not.toContain("A forward hook roughly every");
+      expect(en).not.toContain("A full setup → tension → unresolved arc");
+      expect(en).not.toContain("Never finish the chapter's story inside the chapter");
+      expect(en).not.toContain("70% satisfaction");
+      expect(en).not.toContain("Delay release when the reader craves it");
+    }
+  });
+
+  it("treats the chapter memo as steering rather than a literal prose checklist", () => {
+    const zh = buildWriterSystemPrompt(
+      BOOK, GENRE, null, "", "", "", undefined, 6, "creative", undefined, "zh", "governed",
+    );
+    expect(zh).toContain("不是逐项打勾的清单");
+    expect(zh).toContain("不要求在正文里逐条留下字面痕迹");
+    expect(zh).not.toContain("每一段都要在正文里有对应的兑现痕迹");
+
+    const en = buildWriterSystemPrompt(
+      { ...BOOK, language: "en" },
+      { ...GENRE, language: "en", name: "General" },
+      null,
+      "",
+      "",
+      "",
+      undefined,
+      6,
+      "creative",
+      undefined,
+      "en",
+      "governed",
+    );
+    expect(en).toContain("steering contract, not a checklist");
+    expect(en).toContain("do not require a literal one-to-one trace");
+    expect(en).not.toContain("Every section must leave a visible trace");
+  });
+
+  it("treats hook debt as evidence and only memo-selected hooks as scene obligations", () => {
+    const ko = buildWriterSystemPrompt(
+      { ...BOOK, language: "ko" },
+      { ...GENRE, language: "ko", name: "현대 판타지" },
+      null, "", "", "", undefined, 6, "creative", undefined, "ko", "governed",
+    );
+    expect(ko).toContain("복선 목록은 증거이지 장면 할당량이 아닙니다");
+    expect(ko).toContain("defer 항목과 단순히 오래 묵었다는 이유만으로는 본문 의무가 생기지 않습니다");
+
+    const en = buildWriterSystemPrompt(
+      { ...BOOK, language: "en" },
+      { ...GENRE, language: "en", name: "General" },
+      null, "", "", "", undefined, 6, "creative", undefined, "en", "governed",
+    );
+    expect(en).toContain("Hook Debt Briefs are evidence, not scene quotas");
+    expect(en).toContain("Entries under defer need no prose");
+    expect(en).toContain("Age or stale status alone never creates a scene obligation");
+
+    const zh = buildWriterSystemPrompt(
+      BOOK, GENRE, null, "", "", "", undefined, 6, "creative", undefined, "zh", "governed",
+    );
+    expect(zh).toContain("Hook Debt 简报是证据，不是场景配额");
+    expect(zh).toContain("defer 条目不需要落进正文");
+    expect(zh).toContain("stale，不会自动变成本章场景义务");
+  });
+
   it("enforces narrative person only when the user explicitly set one (#290)", () => {
     const firstPerson = BookRulesSchema.parse({ narrativePerson: "first" });
     const promptFirst = buildWriterSystemPrompt(
@@ -268,11 +363,36 @@ describe("buildWriterSystemPrompt", () => {
     expect(out).not.toMatch(/^\s*1\.\s/m);
     expect(out).not.toMatch(/^\s*-\s/m);
     expect(out).not.toMatch(/^\s*\*\s/m);
-    // Carries the load-bearing slot constraints.
-    expect(out).toContain("800 字");
+    // Carries the load-bearing story-value contract without fixed slots.
+    expect(out).toContain("不靠固定句位公式");
     expect(out).toContain("做出来");
-    expect(out).toContain("说出来");
-    expect(out).toContain("小钩子");
+    expect(out).toContain("看得见的后果");
+    expect(out).toContain("不设固定配额");
+    expect(out).toContain("不能为了伪造悬念扣住已经挣到的兑现");
+    expect(out).not.toContain("前 300 字");
+    expect(out).not.toContain("最后一句必须");
+  });
+
+  it("keeps later golden and genre blocks advisory instead of reintroducing fixed cast or cadence quotas", () => {
+    const zh = buildWriterSystemPrompt(
+      BOOK, { ...GENRE, pacingRule: "三章内必须反馈" }, null,
+      "", "- 每三章必须反转", "", undefined, 1, "creative", undefined, "zh", "governed",
+    );
+    expect(zh).toContain("以下是优先指导，不是固定配额");
+    expect(zh).toContain("不设开篇固定上限");
+    expect(zh).toContain("题材节奏诊断（不是通过配额）");
+    expect(zh).toContain("章数频率、章节形状、回报与章尾例子都只是参考");
+    expect(zh).not.toContain("第 1-2 章有名有姓参与正面冲突的人物 ≤ 2 个");
+
+    const en = buildWriterSystemPrompt(
+      { ...BOOK, language: "en" },
+      { ...GENRE, language: "en", name: "General", pacingRule: "A payoff every three chapters" },
+      null, "", "- Every third chapter must reverse", "", undefined, 1, "creative", undefined, "en", "governed",
+    );
+    expect(en).toContain("rather than fixed caps");
+    expect(en).toContain("Genre rhythm diagnostic (not a pass/fail quota)");
+    expect(en).toContain("Cadence, chapter-shape, payoff, and ending examples");
+    expect(en).not.toContain("ch1-ch2 keep named characters in conflict ≤ 2");
   });
 
   it("buildGoldenOpeningDiscipline returns empty string for ch>=4 / undefined", () => {

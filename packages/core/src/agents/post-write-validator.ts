@@ -121,7 +121,7 @@ export function validatePostWrite(
   if (/不是[^，。！？\n]{0,30}[，,]?\s*而是/.test(content)) {
     violations.push({
       rule: "禁止句式",
-      severity: "error",
+      severity: "warning",
       description: "出现了「不是……而是……」句式",
       suggestion: "改用直述句",
     });
@@ -131,7 +131,7 @@ export function validatePostWrite(
   if (content.includes("——")) {
     violations.push({
       rule: "禁止破折号",
-      severity: "error",
+      severity: "warning",
       description: "出现了破折号「——」",
       suggestion: "用逗号或句号断句",
     });

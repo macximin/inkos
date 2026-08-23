@@ -126,14 +126,14 @@ describe("validatePostWrite", () => {
     const content = "这不是勇气，而是愚蠢。他知道这一点。";
     const result = validatePostWrite(content, baseProfile, null);
     expect(findRule(result, "禁止句式")).toBeDefined();
-    expect(findRule(result, "禁止句式")!.severity).toBe("error");
+    expect(findRule(result, "禁止句式")!.severity).toBe("warning");
   });
 
   it("detects dash '——'", () => {
     const content = "他走了过去——然后停下来。";
     const result = validatePostWrite(content, baseProfile, null);
     expect(findRule(result, "禁止破折号")).toBeDefined();
-    expect(findRule(result, "禁止破折号")!.severity).toBe("error");
+    expect(findRule(result, "禁止破折号")!.severity).toBe("warning");
   });
 
   it("skips Chinese-only rules when the book language override is English", () => {

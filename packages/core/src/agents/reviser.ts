@@ -2,10 +2,15 @@ import { BaseAgent } from "./base.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import type { LengthSpec } from "../models/length-governance.js";
-import { isAutomaticRevisionIssue, type AuditIssue } from "./continuity.js";
+import {
+  isAutomaticRevisionIssue,
+  isRevisionCandidateIssue,
+  type AuditIssue,
+} from "./continuity.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
 import { countChapterLength } from "../utils/length-metrics.js";
+import { sanitizeLegacyFunFirstMethodology } from "../utils/writing-methodology.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
 import { filterSummaries } from "../utils/context-filter.js";
 import {
@@ -40,6 +45,11 @@ export interface ReviseOutput {
   readonly updatedState: string;
   readonly updatedLedger: string;
   readonly updatedHooks: string;
+  /** Whether the model output produced a concrete text edit. */
+  readonly applied?: boolean;
+  /** True when the response violated the required patch/rewrite envelope. */
+  readonly parseFailed?: boolean;
+  readonly failureReason?: string;
   readonly tokenUsage?: {
     readonly promptTokens: number;
     readonly completionTokens: number;
@@ -184,6 +194,12 @@ export class ReviserAgent extends BaseAgent {
       ruleStack?: RuleStack;
       lengthSpec?: LengthSpec;
       arcProvenanceContext?: string;
+      /** Explicit manual revise may opt into advisory warnings. */
+      allowAdvisoryIssues?: boolean;
+      /** Allows an explicit manual request to proceed even when the audit is clean. */
+      explicitRevisionRequested?: boolean;
+      /** Direct user instruction, especially for legacy input governance. */
+      revisionInstruction?: string;
     },
   ): Promise<ReviseOutput> {
     const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon] = await Promise.all([
@@ -218,11 +234,16 @@ export class ReviserAgent extends BaseAgent {
     const resolvedLanguage = bookLanguage ?? gp.language;
     const usesEnglishControl = resolvedLanguage !== "zh";
     const legacyRulesBody = parsedRules?.body?.trim();
-    const styleGuide = styleGuideRaw !== "(文件不存在)"
+    const persistedStyleGuide = styleGuideRaw !== "(文件不存在)"
       ? styleGuideRaw
       : (legacyRulesBody || (resolvedLanguage === "ko" ? "(문체 지침 없음)" : "(无文风指南)"));
+    const styleGuide = sanitizeLegacyFunFirstMethodology(persistedStyleGuide);
 
-    if (mode === "auto" && issues.every((issue) => !isAutomaticRevisionIssue(issue))) {
+    const revisionIssues = mode === "auto"
+      ? issues.filter(options?.allowAdvisoryIssues ? isRevisionCandidateIssue : isAutomaticRevisionIssue)
+      : issues;
+
+    if (mode === "auto" && revisionIssues.length === 0 && !options?.explicitRevisionRequested) {
       const wordCount = options?.lengthSpec
         ? countChapterLength(chapterContent, options.lengthSpec.countingMode)
         : chapterContent.length;
@@ -233,13 +254,19 @@ export class ReviserAgent extends BaseAgent {
         updatedState: currentState,
         updatedLedger: gp.numericalSystem ? ledger : "",
         updatedHooks: hooks,
+        applied: false,
         tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       };
     }
 
     const issueList = mode === "auto"
-      ? buildTieredIssueList(issues, resolvedLanguage)
-      : issues
+      ? (buildTieredIssueList(revisionIssues, resolvedLanguage)
+          || (resolvedLanguage === "ko"
+            ? "- 감리상 치명적 문제는 없습니다. 아래 사용자의 직접 수정 요청만 안전한 범위에서 수행합니다."
+            : usesEnglishControl
+              ? "- No critical audit issue is active. Follow only the explicit user revision request below within its safe scope."
+              : "- 当前没有关键审稿问题。仅在安全范围内执行下方用户明确提出的修改要求。"))
+      : revisionIssues
           .map((i) => `- [${i.severity}] ${i.category}: ${i.description}\n  ${resolvedLanguage === "ko" ? "수정 제안" : usesEnglishControl ? "Suggestion" : "建议"}: ${i.suggestion}`)
           .join("\n");
 
@@ -276,6 +303,7 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
       ? `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS) MUST be in English.\n\n`
       : "";
     const governedMode = Boolean(options?.chapterIntent && options?.contextPackage && options?.ruleStack);
+    const hasChapterMemo = Boolean(options?.chapterMemo);
     const hooksWorkingSet = governedMode && options?.contextPackage
       ? buildGovernedHookWorkingSet({
           hooksMarkdown: hooks,
@@ -296,9 +324,9 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
         })
       : characterMatrix;
 
-    const autoOutputMode = mode === "auto" ? resolveAutoOutputMode(issues) : "allow-full";
+    const autoOutputMode = mode === "auto" ? resolveAutoOutputMode(revisionIssues) : "allow-full";
     const systemPromptBase = mode === "auto"
-      ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode })
+      ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode, hasChapterMemo })
       : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
     const futureAdvantageGuard = options?.arcProvenanceContext?.includes("## Future Advantage Move")
       ? resolvedLanguage === "ko"
@@ -364,11 +392,18 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
     const arcProvenanceBlock = options?.arcProvenanceContext?.trim()
       ? `\n${options.arcProvenanceContext.trim()}\n`
       : "";
+    const directRevisionBlock = options?.revisionInstruction?.trim()
+      ? resolvedLanguage === "ko"
+        ? `\n## 사용자 직접 수정 요청\n${options.revisionInstruction.trim()}\n`
+        : usesEnglishControl
+          ? `\n## Explicit user revision request\n${options.revisionInstruction.trim()}\n`
+          : `\n## 用户明确修改要求\n${options.revisionInstruction.trim()}\n`
+      : "";
 
     const userPrompt = resolvedLanguage === "ko" ? `제${chapterNumber}화를 수정하세요.
 
 ## 감리 결과
-${issueList}
+${issueList}${directRevisionBlock}
 
 ## 현재 상태
 ${currentState === "(文件不存在)" ? "(현재 상태 없음)" : currentState}
@@ -379,7 +414,7 @@ ${sanitizeNarrativeEvidenceBlock(hookDebtBlock, resolvedLanguage) ?? ""}${saniti
 ${chapterContent}` : `请修正第${chapterNumber}章。
 
 ## 审稿问题
-${issueList}
+${issueList}${directRevisionBlock}
 
 ## 当前状态卡
 ${currentState}
@@ -422,6 +457,8 @@ ${chapterContent}`;
           updatedState: currentState,
           updatedLedger: gp.numericalSystem ? ledger : "",
           updatedHooks: hooks,
+          applied: false,
+          failureReason: "Revision would erase an implemented future-advantage anchor.",
         }
       : mergedOutput;
     const wordCount = options?.lengthSpec
@@ -437,6 +474,71 @@ ${chapterContent}`;
     originalChapter: string,
     autoOutputMode: AutoOutputMode = "allow-full",
   ): ReviseOutput {
+    const hasTag = (tag: string): boolean => new RegExp(`=== ${tag} ===`).test(content);
+    const tagCount = (tag: string): number => content.match(new RegExp(`=== ${tag} ===`, "g"))?.length ?? 0;
+    const promptPlaceholders = new Set([
+      "(전체 재작성이 필요할 때만 수정한 전체 한국어 원고를 출력합니다.)",
+      "(수정한 전체 한국어 원고)",
+      "(Full revised chapter content)",
+      "(Full revised chapter content — only when PATCHES cannot solve the problem. Omit this section if using PATCHES)",
+      "(修正后的完整正文)",
+      "(修正后的完整正文——用于字数/结构/节奏等全章级问题。仅局部问题时省略此区块)",
+      "(수정한 전체 상태표, 완전한 Markdown 표)",
+      "(수정한 전체 자원 장부, 완전한 Markdown 표)",
+      "(수정한 전체 복선표, hook_id 머리글을 포함한 완전한 Markdown 표)",
+      "(Full updated state card as a complete Markdown table)",
+      "(Full updated resource ledger as a complete Markdown table)",
+      "(Full updated hooks board as a complete Markdown table with a hook_id header)",
+      "(更新后的完整状态卡，必须是完整 Markdown 表格)",
+      "(更新后的完整资源账本，必须是完整 Markdown 表格)",
+      "(更新后的完整伏笔池，必须是含 hook_id 表头的完整 Markdown 表格)",
+    ]);
+    const isCompletedEnvelopePayload = (value: string): boolean =>
+      value.length > 0 && !promptPlaceholders.has(value.trim());
+    const isMeaningfulTruthEnvelopePayload = (value: string): boolean => {
+      if (!isCompletedEnvelopePayload(value)) return false;
+
+      const semanticBody = value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        // A heading or Markdown divider alone is only an envelope shell. Keep
+        // table headers and real rows so an intentionally empty ledger can
+        // still be represented by its complete schema.
+        .filter((line) => !/^#{1,6}(?:\s+.*)?$/u.test(line))
+        .filter((line) => !/^(?:[-*_]\s*){3,}$/u.test(line))
+        .filter((line) => !/^\|?[\s:|-]+\|?$/u.test(line))
+        .join("\n");
+      const semanticCharacters = semanticBody.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+      return semanticCharacters >= 3;
+    };
+    const parseTableRow = (line: string): string[] =>
+      line.trim().split("|").slice(1, -1).map((cell) => cell.trim());
+    const isCompleteTruthTablePayload = (
+      value: string,
+      kind: "state" | "ledger" | "hooks",
+    ): boolean => {
+      if (!isMeaningfulTruthEnvelopePayload(value)) return false;
+      const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
+      const headerIndex = lines.findIndex((line, index) => {
+        if (!line.startsWith("|") || !lines[index + 1]?.startsWith("|")) return false;
+        const header = parseTableRow(line);
+        const divider = parseTableRow(lines[index + 1]!);
+        return header.length >= 2
+          && divider.length === header.length
+          && divider.every((cell) => /^:?-{3,}:?$/u.test(cell));
+      });
+      if (headerIndex < 0) return false;
+
+      const header = parseTableRow(lines[headerIndex]!);
+      if (kind === "hooks" && !/^(?:hook_?id|id)$/iu.test(header[0] ?? "")) return false;
+      const rows = lines
+        .slice(headerIndex + 2)
+        .filter((line) => line.startsWith("|"))
+        .map(parseTableRow);
+      if (rows.some((row) => row.length !== header.length)) return false;
+      return kind === "hooks" || rows.length > 0;
+    };
     const extract = (tag: string): string => {
       const regex = new RegExp(
         `=== ${tag} ===\\s*([\\s\\S]*?)(?==== [A-Z_]+ ===|$)`,
@@ -450,8 +552,16 @@ ${chapterContent}`;
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
+    const patchesRaw = extract("PATCHES");
+    const parsedPatches = parseSpotFixPatches(patchesRaw);
+    const revisedContent = extract("REVISED_CONTENT");
 
-    const makeResult = (revisedContent: string, applied: boolean): ReviseOutput => ({
+    const makeResult = (
+      revisedContent: string,
+      applied: boolean,
+      parseFailed = false,
+      failureReason?: string,
+    ): ReviseOutput => ({
       revisedContent,
       wordCount: revisedContent.length,
       fixedIssues: applied ? fixedIssues : [],
@@ -460,63 +570,155 @@ ${chapterContent}`;
         ? (extract("UPDATED_LEDGER") || "(账本未更新)")
         : "",
       updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
+      applied,
+      parseFailed,
+      ...(failureReason ? { failureReason } : {}),
     });
+
+    const makeAppliedResult = (
+      nextContent: string,
+      payloadTag: "PATCHES" | "REVISED_CONTENT",
+    ): ReviseOutput => {
+      // REVISION_COMPLETE is the final required marker in every revision
+      // prompt. Requiring it after every truth envelope proves that a response
+      // did not print boilerplate first and then run to EOF in the middle of a
+      // truncated rewrite or truth-file payload.
+      const payloadIndex = content.indexOf(`=== ${payloadTag} ===`);
+      const stateIndex = content.indexOf("=== UPDATED_STATE ===");
+      const ledgerIndex = content.indexOf("=== UPDATED_LEDGER ===");
+      const hooksIndex = content.indexOf("=== UPDATED_HOOKS ===");
+      const completionIndex = content.indexOf("=== REVISION_COMPLETE ===");
+      const statePayload = extract("UPDATED_STATE");
+      const ledgerPayload = extract("UPDATED_LEDGER");
+      const hooksPayload = extract("UPDATED_HOOKS");
+      const completionTail = completionIndex < 0
+        ? ""
+        : content.slice(completionIndex + "=== REVISION_COMPLETE ===".length);
+      const envelopeOrderValid = gp.numericalSystem
+        ? stateIndex > payloadIndex && ledgerIndex > stateIndex && hooksIndex > ledgerIndex
+          && completionIndex > hooksIndex
+        : stateIndex > payloadIndex && hooksIndex > stateIndex && completionIndex > hooksIndex;
+      const envelopePayloadsComplete = isCompleteTruthTablePayload(statePayload, "state")
+        && isCompleteTruthTablePayload(hooksPayload, "hooks")
+        && (!gp.numericalSystem || isCompleteTruthTablePayload(ledgerPayload, "ledger"));
+      const envelopeMarkersUnique = tagCount(payloadTag) === 1
+        && tagCount("UPDATED_STATE") === 1
+        && tagCount("UPDATED_HOOKS") === 1
+        && tagCount("REVISION_COMPLETE") === 1
+        && (!gp.numericalSystem || tagCount("UPDATED_LEDGER") === 1);
+      const completionIsFinal = completionTail.trim().length === 0;
+      const selectedPayloadComplete = payloadTag !== "REVISED_CONTENT"
+        || isCompletedEnvelopePayload(nextContent);
+      if (
+        payloadIndex < 0
+        || !selectedPayloadComplete
+        || !envelopeOrderValid
+        || !envelopePayloadsComplete
+        || !envelopeMarkersUnique
+        || !completionIsFinal
+      ) {
+        return makeResult(
+          originalChapter,
+          false,
+          true,
+          gp.numericalSystem
+            ? `Revision output did not complete a real ${payloadTag} payload with complete Markdown-table UPDATED_STATE, UPDATED_LEDGER, UPDATED_HOOKS, then REVISION_COMPLETE sections.`
+            : `Revision output did not complete a real ${payloadTag} payload with complete Markdown-table UPDATED_STATE, UPDATED_HOOKS, then REVISION_COMPLETE sections.`,
+        );
+      }
+      return makeResult(nextContent, true);
+    };
 
     // Auto mode: route by issue type — structural issues require REVISED_CONTENT,
     // local-only issues only accept PATCHES, mixed sets accept either.
     if (mode === "auto") {
+      if (parsedPatches.length > 0 && revisedContent) {
+        return makeResult(
+          originalChapter,
+          false,
+          true,
+          "Revision output contained both PATCHES and REVISED_CONTENT payloads.",
+        );
+      }
       if (autoOutputMode === "patch-only") {
-        const patchesRaw = extract("PATCHES");
-        if (patchesRaw) {
-          const patches = parseSpotFixPatches(patchesRaw);
-          if (patches.length > 0) {
-            const patchResult = applySpotFixPatches(originalChapter, patches);
-            if (patchResult.applied && patchResult.appliedPatchCount / patches.length >= 0.5) {
-              return makeResult(patchResult.revisedContent, true);
-            }
+        if (parsedPatches.length > 0) {
+          const patchResult = applySpotFixPatches(originalChapter, parsedPatches);
+          if (patchResult.applied && patchResult.appliedPatchCount / parsedPatches.length >= 0.5) {
+            return makeAppliedResult(patchResult.revisedContent, "PATCHES");
           }
         }
-        return makeResult(originalChapter, false);
+        const wrongBranch = revisedContent.length > 0;
+        return makeResult(
+          originalChapter,
+          false,
+          wrongBranch,
+          wrongBranch ? "Expected PATCHES but received REVISED_CONTENT." : "No safe patch was applied.",
+        );
       }
 
       if (autoOutputMode === "rewrite-only") {
-        const revisedContent = extract("REVISED_CONTENT");
         if (revisedContent) {
-          return makeResult(revisedContent, true);
+          return makeAppliedResult(revisedContent, "REVISED_CONTENT");
         }
         // No rewrite produced — don't fall back to patches; structural issues
         // cannot be safely patched. Return original unchanged.
-        return makeResult(originalChapter, false);
+        const wrongBranch = parsedPatches.length > 0;
+        const missingEnvelope = !hasTag("REVISED_CONTENT") || wrongBranch;
+        return makeResult(
+          originalChapter,
+          false,
+          missingEnvelope,
+          wrongBranch
+            ? "Expected REVISED_CONTENT but received a PATCHES payload."
+            : missingEnvelope
+              ? "Expected REVISED_CONTENT for a structural repair."
+              : "The reviser declined a structural rewrite.",
+        );
       }
 
-      const revisedContent = extract("REVISED_CONTENT");
       if (revisedContent) {
-        return makeResult(revisedContent, true);
+        return makeAppliedResult(revisedContent, "REVISED_CONTENT");
       }
-      const patchesRaw = extract("PATCHES");
-      if (patchesRaw) {
-        const patches = parseSpotFixPatches(patchesRaw);
-        if (patches.length > 0) {
-          const patchResult = applySpotFixPatches(originalChapter, patches);
-          if (patchResult.applied && patchResult.appliedPatchCount / patches.length >= 0.5) {
-            return makeResult(patchResult.revisedContent, true);
-          }
+      if (parsedPatches.length > 0) {
+        const patchResult = applySpotFixPatches(originalChapter, parsedPatches);
+        if (patchResult.applied && patchResult.appliedPatchCount / parsedPatches.length >= 0.5) {
+          return makeAppliedResult(patchResult.revisedContent, "PATCHES");
         }
       }
-      // Both empty — no fix
-      return makeResult(originalChapter, false);
+      // Both empty — distinguish a safe no-op envelope from malformed output.
+      const hasRevisionEnvelope = hasTag("REVISED_CONTENT") || hasTag("PATCHES");
+      return makeResult(
+        originalChapter,
+        false,
+        !hasRevisionEnvelope,
+        hasRevisionEnvelope ? "The reviser returned an empty safe-edit envelope." : "Revision output contained no PATCHES or REVISED_CONTENT envelope.",
+      );
     }
 
     // Legacy spot-fix mode: patches only
     if (mode === "spot-fix") {
-      const patches = parseSpotFixPatches(extract("PATCHES"));
-      const patchResult = applySpotFixPatches(originalChapter, patches);
-      return makeResult(patchResult.revisedContent, patchResult.applied);
+      const patchResult = applySpotFixPatches(originalChapter, parsedPatches);
+      if (patchResult.applied) {
+        return makeAppliedResult(patchResult.revisedContent, "PATCHES");
+      }
+      return makeResult(
+        patchResult.revisedContent,
+        false,
+        !hasTag("PATCHES"),
+        !hasTag("PATCHES") ? "Spot-fix output contained no PATCHES envelope." : undefined,
+      );
     }
 
     // Legacy rewrite/polish/rework/anti-detect: full content
-    const revisedContent = extract("REVISED_CONTENT");
-    return makeResult(revisedContent || originalChapter, revisedContent.length > 0);
+    if (revisedContent) {
+      return makeAppliedResult(revisedContent, "REVISED_CONTENT");
+    }
+    return makeResult(
+      originalChapter,
+      false,
+      !hasTag("REVISED_CONTENT"),
+      !hasTag("REVISED_CONTENT") ? "Revision output contained no REVISED_CONTENT envelope." : undefined,
+    );
   }
 
   private buildAutoSystemPrompt(params: {
@@ -528,8 +730,9 @@ ${chapterContent}`;
     resolvedLanguage: "zh" | "ko" | "en";
     lengthSpec?: LengthSpec;
     autoOutputMode: AutoOutputMode;
+    hasChapterMemo: boolean;
   }): string {
-    const { langPrefix, gp, protagonistBlock, numericalRule, resolvedLanguage, lengthSpec, autoOutputMode } = params;
+    const { langPrefix, gp, protagonistBlock, numericalRule, resolvedLanguage, lengthSpec, autoOutputMode, hasChapterMemo } = params;
     // lengthGuardrail intentionally not used in auto mode — length constraint is embedded in REVISED_CONTENT description
     if (resolvedLanguage === "ko") {
       const route = autoOutputMode === "rewrite-only"
@@ -541,8 +744,11 @@ ${chapterContent}`;
         ? `\nREVISED_CONTENT를 출력할 때는 공백 포함 ${lengthSpec.softMin}-${lengthSpec.softMax}자 안에 맞춥니다. 목표는 ${lengthSpec.target}자입니다.`
         : "";
       const ledgerSection = gp.numericalSystem
-        ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부)"
+        ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부, 완전한 Markdown 표)"
         : "";
+      const funAnchorPreservation = hasChapterMemo
+        ? "chapter_memo의 재미 앵커와"
+        : "직전 회차의 약속, 현재 목표와";
 
       return `${langPrefix}당신은 한국 장르소설 수정 편집자입니다. 「${gp.name}」 장르의 원고를 감리 결과에 맞춰 고칩니다.${protagonistBlock}${route}
 
@@ -558,6 +764,9 @@ REVISED_CONTENT는 구조, 인과, 분량, 사건 배열처럼 회차 전체를 
 5. 추상 명사가 행동하는 문장, 반복되는 대조문, 장면 뒤의 의미 해설을 걷어냅니다.
 6. 인물의 감정과 달라진 관계는 행동, 대사, 선택으로 보여 줍니다.
 7. 수정 과정에서 새 사건이나 새 설정을 발명하지 않습니다.
+8. ${funAnchorPreservation} 원고에서 이미 살아 있는 주인공의 선택, 반전, 가시적 보상, 그리고 의도된 화말 기능(완전 수습·후과·자연스러운 다음 선택이나 압력)을 삭제하거나 요약하거나 약화하지 않습니다.
+9. 복선 부채 문맥이 주어졌다면 원고에 이미 구현된 지급 장면을 보존합니다. 원문의 완급과 필요한 숨 고르기도 감리 지적과 직접 관계없으면 그대로 둡니다.
+10. critical 보상 누락을 고칠 때는 새 사건을 덧붙이기보다 메모가 약속한 가장 가까운 지급 장면을 행동, 상대 반응, 실제 결과가 보이도록 살립니다.
 
 출력 형식:
 
@@ -577,15 +786,17 @@ REPLACEMENT_TEXT:
 (전체 재작성이 필요할 때만 수정한 전체 한국어 원고를 출력합니다.)
 
 === UPDATED_STATE ===
-(수정한 전체 상태표)
+(수정한 전체 상태표, 완전한 Markdown 표)
 ${ledgerSection}
 === UPDATED_HOOKS ===
-(수정한 전체 복선표)`;
+(수정한 전체 복선표, hook_id 머리글을 포함한 완전한 Markdown 표)
+
+=== REVISION_COMPLETE ===`;
     }
 
     const en = resolvedLanguage !== "zh";
     const ledgerSection = gp.numericalSystem
-      ? (en ? "\n=== UPDATED_LEDGER ===\n(Full updated resource ledger)" : "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)")
+      ? (en ? "\n=== UPDATED_LEDGER ===\n(Full updated resource ledger as a complete Markdown table)" : "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本，必须是完整 Markdown 表格)")
       : "";
     const rewriteLengthConstraint = lengthSpec
       ? (en
@@ -629,7 +840,7 @@ Revision principles:
 Cycle-aware revision:
 - If this chapter should be "aftermath" but is still escalating tension, rewrite the densest conflict passage into a change-showing passage — who lost what, whose attitude shifted, what the new normal is
 - If this chapter should be "climax" but has no clear payoff, find the closest scene to a reward and amplify it — make the promised release exceed reader expectations
-- Daily passages that don't serve the main line: rewrite as "bait" — add a detail pointing to the future, a hint, a character reaction that seeds curiosity
+- Daily passages that do not serve the main line need a concrete present function — a relationship shift, decision, payoff, consequence, or natural next pressure. Preserve an intentional clean closure instead of inventing a hook
 
 Output format:
 
@@ -649,10 +860,12 @@ REPLACEMENT_TEXT:
 (Full revised chapter content — only when PATCHES cannot solve the problem. Omit this section if using PATCHES)
 
 === UPDATED_STATE ===
-(Full updated state card)
+(Full updated state card as a complete Markdown table)
 ${ledgerSection}
 === UPDATED_HOOKS ===
-(Full updated hooks board)`
+(Full updated hooks board as a complete Markdown table with a hook_id header)
+
+=== REVISION_COMPLETE ===`
       : `${langPrefix}你是一位专业的${gp.name}网络小说修稿编辑。你的任务是根据审稿意见对章节进行修正。${protagonistBlock}${routingDirectiveZh}
 
 PATCHES 和 REVISED_CONTENT 分别处理不同类型的问题——按问题类型选择，不是按偏好：
@@ -677,7 +890,7 @@ REVISED_CONTENT——处理全章级问题（字数压缩、结构重组、节�
 小目标周期修稿指引：
 - 如果本章应该是"后效"阶段但仍在加压，把最密集的冲突段落改写为展示改变的段落——谁失去了什么、谁的态度变了、新的常态是什么
 - 如果本章应该是"爆发"阶段但没有明确兑现，找到最接近回报的场景并放大它——让承诺的释放超过读者预期
-- 日常段落如果不服务主线，改写为"饵"：加入一个指向未来的细节、一句暗示、一个角色反应
+- 日常段落如果不服务主线，赋予它明确的当下功能：关系变化、选择、兑现、后果或自然产生的下一步压力。若本章意在干净结算，保留收束，不要硬造钩子
 
 输出格式：
 
@@ -697,10 +910,12 @@ REPLACEMENT_TEXT:
 (修正后的完整正文——用于字数/结构/节奏等全章级问题。仅局部问题时省略此区块)
 
 === UPDATED_STATE ===
-(更新后的完整状态卡)
+(更新后的完整状态卡，必须是完整 Markdown 表格)
 ${ledgerSection}
 === UPDATED_HOOKS ===
-(更新后的完整伏笔池)`;
+(更新后的完整伏笔池，必须是含 hook_id 表头的完整 Markdown 表格)
+
+=== REVISION_COMPLETE ===`;
   }
 
   private buildLegacySystemPrompt(params: {
@@ -728,10 +943,12 @@ REPLACEMENT_TEXT:
 --- END PATCH ---
 
 === UPDATED_STATE ===
-(수정한 전체 상태표)
-${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부)" : ""}
+(수정한 전체 상태표, 완전한 Markdown 표)
+${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부, 완전한 Markdown 표)" : ""}
 === UPDATED_HOOKS ===
-(수정한 전체 복선표)`
+(수정한 전체 복선표, hook_id 머리글을 포함한 완전한 Markdown 표)
+
+=== REVISION_COMPLETE ===`
         : `=== FIXED_ISSUES ===
 (수정한 문제를 한 줄씩 적습니다.)
 
@@ -739,10 +956,12 @@ ${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장�
 (수정한 전체 한국어 원고)
 
 === UPDATED_STATE ===
-(수정한 전체 상태표)
-${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부)" : ""}
+(수정한 전체 상태표, 완전한 Markdown 표)
+${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(수정한 전체 자원 장부, 완전한 Markdown 표)" : ""}
 === UPDATED_HOOKS ===
-(수정한 전체 복선표)`;
+(수정한 전체 복선표, hook_id 머리글을 포함한 완전한 Markdown 표)
+
+=== REVISION_COMPLETE ===`;
 
       return `${langPrefix}당신은 한국 장르소설 수정 편집자입니다. 「${gp.name}」 원고를 한국어로 직접 읽고 고칩니다.${protagonistBlock}
 
@@ -777,10 +996,12 @@ REPLACEMENT_TEXT:
 --- END PATCH ---
 
 === UPDATED_STATE ===
-(更新后的完整状态卡)
-${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)" : ""}
+(更新后的完整状态卡，必须是完整 Markdown 表格)
+${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本，必须是完整 Markdown 表格)" : ""}
 === UPDATED_HOOKS ===
-(更新后的完整伏笔池)`
+(更新后的完整伏笔池，必须是含 hook_id 表头的完整 Markdown 表格)
+
+=== REVISION_COMPLETE ===`
       : `=== FIXED_ISSUES ===
 (逐条说明修正了什么，一行一条)
 
@@ -788,10 +1009,12 @@ ${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账�
 (修正后的完整正文)
 
 === UPDATED_STATE ===
-(更新后的完整状态卡)
-${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)" : ""}
+(更新后的完整状态卡，必须是完整 Markdown 表格)
+${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本，必须是完整 Markdown 表格)" : ""}
 === UPDATED_HOOKS ===
-(更新后的完整伏笔池)`;
+(更新后的完整伏笔池，必须是含 hook_id 表头的完整 Markdown 表格)
+
+=== REVISION_COMPLETE ===`;
 
     return `${langPrefix}你是一位专业的${gp.name}网络小说修稿编辑。你的任务是根据审稿意见对章节进行修正。${protagonistBlock}
 

@@ -7,7 +7,7 @@ fatigueWords: ["delve", "tapestry", "testament", "intricate", "pivotal", "vibran
 numericalSystem: false
 powerScaling: false
 eraResearch: true
-pacingRule: "Worldbuilding emerges through action, not exposition. Tech reveals tied to plot-critical moments. Political/exploration arcs alternate with action every 2-4 chapters."
+pacingRule: "Worldbuilding emerges through action, not exposition, and tech reveals attach to plot-critical moments. Alternate political, exploration, and action modes when contrast adds value, not at a fixed interval."
 satisfactionTypes: ["Discovery", "Tech Breakthrough", "Political Victory", "First Contact", "Mystery Solved", "Survival Against Odds"]
 auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ---
@@ -33,7 +33,7 @@ auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 
 ## Pacing Guidance
 
-- Hard sci-fi: logical problem-solving drives pacing — each chapter should advance understanding or create new constraints
+- Hard sci-fi: logical problem-solving drives pacing; use recent chapters to diagnose whether understanding, consequence, or constraint has genuinely stalled instead of requiring a new constraint every chapter
 - Space opera: epic scale requires political/interpersonal arcs between action sequences
 - Exploration chapters establish wonder and worldbuilding through character experience
 - Political complexity: factions with competing interests, diplomacy alongside combat

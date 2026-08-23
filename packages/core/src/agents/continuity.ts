@@ -8,6 +8,7 @@ import { getFanficDimensionConfig, FANFIC_DIMENSIONS } from "./fanfic-dimensions
 import { readFile, readdir } from "node:fs/promises";
 import { filterHooks, filterSummaries, filterSubplots, filterEmotionalArcs, filterCharacterMatrix } from "../utils/context-filter.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
+import { sanitizeLegacyFunFirstMethodology } from "../utils/writing-methodology.js";
 import {
   readVolumeMap,
   readCharacterContext,
@@ -54,10 +55,35 @@ export interface AuditIssue {
 export type ResearchStatus = "not-applicable" | "not-checked" | "needs-research" | "verified" | "conflict";
 
 export function isAutomaticRevisionIssue(issue: AuditIssue): boolean {
+  // Automatic prose repair is reserved for reader-trust failures. Warnings
+  // remain visible editorial advice; promoting them to blockers makes style
+  // heuristics silently rewrite otherwise effective scenes.
+  return issue.track !== "research" && issue.severity === "critical";
+}
+
+/** Issues an editor may address after an explicit manual revision request. */
+export function isRevisionCandidateIssue(issue: AuditIssue): boolean {
   return issue.track !== "research" && issue.severity !== "info";
 }
 
 type PromptLanguage = "zh" | "ko" | "en";
+
+function buildAuditParseFailureIssue(language: PromptLanguage): AuditIssue {
+  return {
+    severity: "critical",
+    category: language === "ko" ? "시스템 오류" : language === "en" ? "System Error" : "系统错误",
+    description: language === "ko"
+      ? "감리 출력 형식이 잘못되어 JSON으로 해석할 수 없습니다."
+      : language === "en"
+        ? "Audit output format was invalid and could not be parsed as JSON."
+        : "审稿输出格式异常，无法解析为 JSON",
+    suggestion: language === "ko"
+      ? "구조화 출력을 안정적으로 지원하는 더 강한 모델을 사용하거나 API 응답 형식을 확인하세요."
+      : language === "en"
+        ? "The model may not support reliable structured output. Try a stronger model or inspect the API response format."
+        : "可能是模型不支持结构化输出。尝试换一个更大的模型，或检查 API 返回格式。",
+  };
+}
 
 function normalizeRepairScope(value: unknown): AuditIssue["repairScope"] {
   if (value === "local" || value === "structural" || value === "unknown") return value;
@@ -75,13 +101,18 @@ function normalizeResearchStatus(value: unknown): ResearchStatus | undefined {
 }
 
 function inferIssueTrack(issue: AuditIssue): "creative" | "research" {
-  const text = `${issue.category} ${issue.description}`;
-  // Host-owned routing wins over an LLM-supplied track. Otherwise a model can
-  // accidentally turn an unverified historical claim into a prose rewrite.
-  if (/Era Accuracy|年代考据|시대 고증|고증|research|fact.?check|事实核查/i.test(text)) {
+  // A host-recognized research *category* wins over an LLM-supplied track so
+  // unverified historical claims cannot become prose-rewrite commands. Do not
+  // route on a bare word in the description: "research report" can be the
+  // object of a real information-boundary violation.
+  if (/Era Accuracy|年代考据|시대 고증|고증|research(?: verification| accuracy| claim)?|fact.?check|事实核查/i.test(issue.category)) {
     return "research";
   }
-  return issue.track ?? "creative";
+  if (issue.track) return issue.track;
+  if (/needs? (?:external )?(?:research|verification)|requires? fact.?check|추가 (?:조사|검증)|별도 (?:조사|검증)|需要(?:研究|核查)|事实核查/i.test(issue.description)) {
+    return "research";
+  }
+  return "creative";
 }
 
 function normalizeSeparatedAuditResult(
@@ -267,12 +298,6 @@ function buildDimensionNote(
       : `高疲劳词：${words.join("、")}。同时检查AI标记词（仿佛/不禁/宛如/竟然/忽然/猛地）密度，每3000字超过1次即warning`;
   }
 
-  if (id === 15 && gp.satisfactionTypes.length > 0) {
-    return language !== "zh"
-      ? `Payoff types: ${gp.satisfactionTypes.join(", ")}`
-      : `爽点类型：${gp.satisfactionTypes.join("、")}`;
-  }
-
   if (id === 12 && bookRules?.eraConstraints) {
     const era = bookRules.eraConstraints;
     const parts = [era.period, era.region].filter(Boolean);
@@ -285,18 +310,28 @@ function buildDimensionNote(
 
   // v10: Enhanced dimension notes with writing methodology awareness
   if (id === 7) {
-    return language !== "zh"
-      ? "Check pacing rhythm: Do the recent 3-5 chapters form a complete mini-goal cycle (build-up → escalation → climax → aftermath)? If 5+ consecutive chapters pass without a climax (payoff/reward/reversal), flag as pacing stagnation. If the previous chapter was a climax/big reversal, does this chapter show change (relationships shifted, status changed, costs paid)? If it jumps straight to new build-up without showing impact, flag as 'post-climax impact missing'. Daily/transition scenes must carry at least one task: plant a hook, advance a relationship, set up contrast, or prepare the next cycle."
-      : "检查节奏波形：最近 3-5 章是否形成了完整的「蓄压→升级→爆发→后效」周期？如果连续 5 章没有爆发（兑现/回报/翻转），标记为节奏停滞。如果上一章是爆发/高潮/大反转，本章是否写出了改变？如果直接跳到新蓄压而没有展示前一波爆发的影响，标记为「高潮后影响缺失」。非冲突章节中的日常/过渡/对话段落，是否至少承担了一项任务：埋伏笔、推关系、建立反差、准备下一轮蓄压。纯水日常标记为流水账风险。";
+    if (language === "ko") {
+      return "최근 3~5화를 통과 할당량이 아니라 진단 구간으로 봅니다. 목표 변화, 지급, 후과가 전혀 없어 실제로 평평해진 경우만 리듬 정체로 표시하세요. 깨끗한 결산과 필요한 후일담은 합법입니다. 직전 화가 절정이나 큰 반전이었다면 관계, 지위, 비용 같은 변화가 먼저 착지했는지 확인하세요. 일상/전환 장면은 감정, 관계, 정보, 선택, 지급, 후과 가운데 하나를 실제로 바꾸면 충분하며 새 훅이나 다음 주기를 만들 의무는 없습니다.";
+    }
+    return language === "en"
+      ? "Use the recent 3-5 chapters as a diagnostic window, not a pass/fail quota. Flag pacing stagnation only when a run has no recognizable goal movement, payoff, or consequence and genuinely feels flat; clean closure and necessary aftermath are legitimate. If the previous chapter was a climax or major reversal, check that relationships, status, or costs land before a new build-up. A quiet/transition scene earns its place by changing emotion, relationship, information, choice, payoff, or consequence; it need not plant a hook or start the next cycle."
+      : "把最近 3-5 章当作诊断窗口，不是通过配额。只有一段连续章节没有可辨认的目标变化、兑现或后果并且确实发平时，才标记节奏停滞；完整收束和必要后效都合法。如果上一章是高潮或大反转，检查关系、地位、代价等改变是否先落地。日常/过渡段落只要实际改变情绪、关系、信息、选择、兑现或后果就成立，不必埋新伏笔或启动下一轮。";
   }
 
   if (id === 15) {
     const base = gp.satisfactionTypes.length > 0
-      ? (language !== "zh" ? `Payoff types: ${gp.satisfactionTypes.join(", ")}. ` : `爽点类型：${gp.satisfactionTypes.join("、")}。`)
+      ? (language === "ko"
+          ? `장르 보상 후보: ${gp.satisfactionTypes.join(", ")}. `
+          : language === "en"
+            ? `Payoff candidates: ${gp.satisfactionTypes.join(", ")}. `
+            : `爽点候选：${gp.satisfactionTypes.join("、")}。`)
       : "";
-    return language !== "zh"
-      ? `${base}Check desire engine: Has the chapter created an emotional gap (reader wants release) OR delivered a payoff that exceeds expectations? A payoff that only satisfies 70% of built-up anticipation counts as diluted. If this chapter is in the aftermath phase of a mini-goal cycle, verify that consequences are shown — not just emotional reactions, but concrete changes to status, relationships, or resources.`
-      : `${base}检查欲望驱动：本章是否制造了情绪缺口（读者渴望释放）或完成了超出预期的兑现？只满足读者70%期待的兑现等于爽点虚化。如果本章处于小目标周期的后效阶段，检查是否展示了具体改变——不只是情绪反应，而是地位、关系或资源的实际变化。`;
+    if (language === "ko") {
+      return `${base}이번 화의 의도에 맞는 독자 가치를 확인하세요. 가시적 지급뿐 아니라 목표 전진, 후과, 관계·감정의 변화, 선택, 쓸모 있는 정보도 성립합니다. 완전히 수습하는 화는 새 감정 공백을 만들 필요가 없습니다. 약속한 지급을 알아볼 수 없게 약화하거나 이미 얻은 결과를 감춘 경우만 지적하고, 비율·새로움·보상 개수로 통과 여부를 정하지 마세요. 후일담이라면 지위, 관계, 자원 같은 구체적 변화 하나가 착지하면 충분합니다.`;
+    }
+    return language === "en"
+      ? `${base}Check for reader value appropriate to the chapter's intended function: a visible payoff, goal movement, consequence, relationship or emotional turn, choice, or useful information can all qualify. Clean closure need not create a new emotional gap. Flag a promised payoff only when it is recognizably weakened or an earned result is withheld; never grade by a percentage, novelty target, or payoff count. In aftermath, one concrete change to status, relationship, or resources is enough.`
+      : `${base}检查本章是否提供了符合预定功能的读者价值：情绪、关系、信息、选择、兑现或后果都可以成立，也可以表现为明确的目标推进。完整收束和必要后效都合法，不必制造新的情绪缺口。只有已经承诺的兑现被明显削弱或已经挣到的结果被扣住时才标记；不得按百分比、新奇度或爽点数量判定通过。后效章只要让地位、关系或资源的一项具体变化落地即可。`;
   }
 
   if (id === 25) {
@@ -307,30 +342,12 @@ function buildDimensionNote(
 
   switch (id) {
     case 6:
-      // Phase 7 — hook-debt escalation. Reviewer now reads pending_hooks.md
-      // not just for "is this hook undelivered" but for causal/temporal
-      // debt escalation. The ledger's status column carries "过期 (距=…/半衰=…)"
-      // and "受阻于 …" markers emitted by the stale/blocked detector; this
-      // dimension tells the reviewer how to escalate them.
-      return language !== "zh"
-        ? `Hook-debt escalation (Phase 7 + hotfixes 2/3). Read the pending_hooks.md ledger and escalate based on the stale / blocked / core_hook / depends_on / promoted columns, NOT only on "undelivered hook present":
-
-• Critical severity only applies to hooks with promoted=true in the ledger. A stale/blocked non-promoted hook stays at info — the promotion flag is the gate that keeps reviewer noise down, because architect-seed emits many non-load-bearing seeds.
-• A promoted core_hook=true hook that has been stale for over 10 chapters → escalate from warning to critical. The book has only 3-7 core hooks; letting one drift that long is the lead symptom of narrative rot.
-• A promoted hook whose status cell contains "blocked on X (blocked Y chapters)" with Y >= 6 → warning. The literal "blocked Y chapters" token comes straight from the ledger — read it, don't guess. Call out the upstream hook id so the planner can route the resolution.
-• At volume end (final chapter of any volume per volume_map) a promoted core_hook that is still open or stale without explicit "carried over to volume N+1" planning → critical.
-• Any non-promoted stale hook → info-level log; do not fail the chapter on it, but note it so the planner can schedule cleanup.
-
-Quote the exact hook_id in description and include the stale / blocked marker text verbatim. Structure check only — do not judge hook prose quality.`
-        : `Phase 7 hook-debt 升级规则（含 hotfix 2/3）。阅读 pending_hooks.md 伏笔池时不要只看"有没有悬而未决的伏笔"，要读状态列中的 stale / blocked 标记、core_hook 列、depends_on 列、以及升级列：
-
-• critical 级别仅适用于升级=是（promoted=true）的伏笔。非升级的 stale/blocked 伏笔一律保持 info——升级标志是降噪的开关，因为架构师阶段会产出大量非承重的伏笔种子。
-• 升级=是且 core_hook=是 的伏笔过期超过 10 章未回收 → warning 升级为 critical。全书只有 3-7 条核心伏笔，任何一条漂移这么久都是烂尾前兆。
-• 升级=是的受阻伏笔，状态列中"受阻于 X (已阻 Y 章)"且 Y ≥ 6 → warning。"已阻 Y 章"这个字面 token 直接读自账本，不要猜。描述中要写出具体的上游 hook_id，让 planner 能安排落地路径。
-• 卷尾（volume_map 中任一卷的末章）仍有升级=是的主线伏笔处于 open 或 stale 且没有显式"延至下一卷"规划 → critical。
-• 升级=否的 stale 伏笔 → info 级记录，不判本章失败，但保留以便 planner 安排清理。
-
-description 中要明确引用 hook_id，并把状态列中 stale / blocked 的原文标记字面抄进去。本维度只审结构，不评价伏笔文笔。`;
+      if (language === "ko") {
+        return "pending_hooks.md의 stale / blocked / core_hook / depends_on / promoted 열은 다음 기획을 위한 부채 진단이지 이번 화의 장면 할당량이 아닙니다. 승격되지 않은 묵은 복선은 info, 승격되었거나 core_hook인 묵은 복선과 6화 이상 막힌 복선은 warning으로 기록해 Planner가 우선 검토하게 하세요. 권말에 이월 계획 없이 남은 승격 핵심 복선도 warning으로 사람과 Planner에게 넘기며, 나이만으로 현재 원고를 critical 또는 자동 재작성 대상으로 만들지 않습니다. 이번 chapter_memo가 특정 hook_id를 advance/resolve 또는 전부 지급 대상으로 명시했는데 장면이 실제로 빠진 경우만 Chapter Memo Drift 기준으로 critical을 판단합니다. 설명에는 정확한 hook_id와 stale/blocked 표식을 인용하세요.";
+      }
+      return language === "en"
+        ? "Treat stale / blocked / core_hook / depends_on / promoted columns in pending_hooks.md as planning-debt diagnostics, not a scene quota for the current chapter. Log non-promoted stale hooks as info; promoted/core stale hooks and hooks blocked for 6+ chapters are warnings for Planner prioritization. Even at volume end, a promoted core hook with no carry-over plan is a warning for human/Planner review, not an age-only critical or automatic prose rewrite. Use critical only through Chapter Memo Drift when this chapter explicitly selected that hook_id for advance/resolve or full payoff and the promised scene is absent. Quote the exact hook_id and stale/blocked marker."
+        : "把 pending_hooks.md 的 stale / blocked / core_hook / depends_on / promoted 列当作下一步规划的债务诊断，不是本章场景配额。未升级的陈旧伏笔记 info；升级/核心陈旧伏笔以及受阻 6 章以上的伏笔记 warning，交给 Planner 优先检视。即使在卷尾，升级核心伏笔没有显式转卷计划也只进入人工/Planner warning，不能仅凭年龄判 critical 或自动改写当前正文。只有本章 chapter_memo 明确把某 hook_id 选为 advance/resolve 或完整兑现而正文缺少承诺场景时，才按 Chapter Memo Drift 判 critical。描述中引用准确 hook_id 和 stale/blocked 标记。";
     case 19:
       return language !== "zh"
         ? "Check whether POV shifts are signaled clearly and stay consistent with the configured viewpoint."
@@ -364,13 +381,19 @@ description 中要明确引用 hook_id，并把状态列中 stale / blocked 的�
         ? "Check whether the spinoff resolves mainline hooks without authorization (warning level)."
         : "检查番外是否越权回收正传伏笔（warning级别）";
     case 32:
-      return language !== "zh"
-        ? "Check whether the ending renews curiosity, whether promised payoffs are landing on the cadence their hooks imply, whether pressure gets any release, and whether reader expectation gaps are accumulating faster than they are being satisfied. If a climax just occurred, check whether the aftermath chapters show concrete change before starting a new cycle."
-        : "检查：章尾是否重新点燃好奇心，已经承诺的回收是否按伏笔自身节奏落地，压力是否得到释放，读者期待缺口是在持续累积还是在被满足。如果刚经历高潮，检查后效章节是否在开启新周期前展示了具体改变。";
+      if (language === "ko") {
+        return "화말이 이번 화가 의도한 종결 기능—완전한 수습, 보상의 후과, 자연스럽게 생긴 다음 선택이나 압력—을 수행했는지 확인하세요. 약속한 지급이 독자가 알아볼 수 있게 착지하고 압력이 필요한 만큼 풀렸는지 봅니다. 이미 얻은 결과를 인공적인 절벽을 위해 감춘 경우를 표시하세요. 깨끗한 결산 화말은 새 호기심을 점화하지 않아도 합법입니다.";
+      }
+      return language === "en"
+        ? "Check whether the ending performs its intended function: clean settlement, payoff fallout, or a next choice/pressure that grows naturally from the result. Verify that promised payoffs land recognizably and pressure gets the release it has earned. Flag an earned result withheld only to fabricate a cliffhanger. A clean-closure ending does not need to renew curiosity."
+        : "检查章尾是否完成了预定功能：完整收束、兑现后的后果，或从结果中自然生出的下一选择/压力。确认已经承诺的兑现让读者清楚看见，压力得到应有释放。若只为制造人造断崖而扣住已经挣到的结果，应当标记。干净结算的章尾不必重新点燃好奇心。";
     case 33:
-      return language !== "zh"
-        ? "Cross-check the chapter_memo provided with the chapter. Does the final prose deliver the memo's goal and leave a visible trace for every one of the 7 sections it contains (tasks, pay-offs / held-back cards, daily/transition function map, three-question check, end-of-chapter concrete changes, hard-don'ts)? Missing or contradicted sections -> critical. Note: a sparse memo (breather chapter, goal + skeleton body only) is legitimate — only flag drift against sections that the memo actually populates. Never flag the memo itself for being sparse."
-        : "对照随章提供的 chapter_memo。成稿是否兑现了 memo 中的 goal，并在 7 段正文（当前任务 / 该兑现·暂不掀 / 日常过渡功能 / 关键抉择三连问 / 章尾必须发生的改变 / 不要做 等）中留下可见落地痕迹？任何段落缺失或被写反 → critical。提醒：稀疏 memo 合法（喘息章 memo 可以只有 goal + 骨架 body），只检查 memo 实际写出的段落，不能因为 memo 稀疏就判 incomplete。";
+      if (language === "ko") {
+        return "chapter_memo는 방향 계약이지 체크리스트가 아닙니다. critical은 (1) 회차 목표나 핵심 작업이 통째로 빠지거나 반대로 쓰인 경우, (2) 이번 화에 완전 지급하거나 반드시 지급한다고 명시한 장면이 없는 경우, (3) 명시적 금지를 어긴 경우, (4) 약속한 결과나 인과가 깨질 정도로 필수 화말 상태가 빠진 경우에만 사용하세요. 같은 독자 약속과 결과를 다른 유효한 장면으로 구현했다면 문제로 삼지 않습니다. 삼연문답의 논리, 전환 기능의 위치·정도·영향처럼 기획 보조의 자취가 약한 것은 warning만 가능하며 자동 재작성 대상이 아닙니다. 짧고 성긴 memo도 합법입니다.";
+      }
+      return language === "en"
+        ? "Treat chapter_memo as a steering contract, not a checklist. Use critical only when (1) the chapter goal or core task is wholly absent or contradicted, (2) a scene explicitly marked for full / must-pay-this-chapter payoff is absent, (3) an explicit hard prohibition is violated, or (4) a required ending state is missing badly enough to break the promised result or causality. A different valid scene implementation is fine when it delivers the same reader promise and result. Weak literal traces of the three-question rationale or the transition map's placement, degree, and impact are warning-only planning drift, never grounds for automatic rewrite. Sparse memos are legitimate."
+        : "把 chapter_memo 当作方向契约，不是逐项打勾的清单。只有以下情况可以判 critical：(1) 本章目标或核心任务整体缺失、被写反；(2) 明确标为本章完整兑现或必须兑现的场景缺失；(3) 违反显式硬禁令；(4) 必需章尾状态缺失到破坏既定结果或因果。只要另一种有效场景实现了同一个读者承诺与结果，就不算问题。三连问的推导、过渡功能的位置/程度/影响等规划辅助没有逐字留痕，只能记 warning，绝不能触发自动重写。稀疏 memo 合法。";
     case 34:
     case 35:
     case 36:
@@ -542,11 +565,12 @@ export class ContinuityAuditor extends BaseAgent {
     // body, and an empty string is NOT a usable style guide. Treat
     // missing/empty body as "no fallback available".
     const legacyRulesBody = parsedRules?.body?.trim();
-    const styleGuide = styleGuideRaw !== "(文件不存在)"
+    const persistedStyleGuide = styleGuideRaw !== "(文件不存在)"
       ? styleGuideRaw
       : (legacyRulesBody || "(无文风指南)");
 
     const resolvedLanguage = bookLanguage ?? gp.language;
+    const styleGuide = sanitizeLegacyFunFirstMethodology(persistedStyleGuide);
     const isEnglish = resolvedLanguage !== "zh";
     const fanficMode = hasFanficCanon ? (bookRules?.fanficMode as FanficMode | undefined) : undefined;
     const dimensions = buildDimensionList(gp, bookRules, resolvedLanguage, hasParentCanon, fanficMode);
@@ -582,9 +606,12 @@ export class ContinuityAuditor extends BaseAgent {
         : resolvedLanguage === "en"
           ? "\n\n## Future Advantage audit boundary\n- Distinguish a remembered later outcome from its present-day implementation. Knowing the outcome does not waive bridge steps, resistance, proof, or cost.\n- Never mark an authorized divergence as an error merely because it did not occur in real history.\n- An unsupported or unverified real-world claim uses track=research, severity=info, and research_status=needs-research. It is not a creative failure or an automatic-revision instruction.\n- Future-advantage-specific critical candidates are limited to forbidden shortcuts, information-boundary breaches, and direct contradictions with authorized divergence or book canon. General creative structural failures still follow the normal creative audit.\n- Set future_advantage_execution.implemented=true only when the move is executed in the body. Every evidence value must be a short verbatim excerpt from the chapter. A planned-only move is false."
           : "\n\n## 未来先机审稿边界\n- 区分主角记得的未来结果与当下实现方法；知道结果不等于可以省略实现步骤、阻力、证据或代价。\n- 已授权的历史分歧不能仅因真实历史中未发生就判错。\n- 缺少依据或尚未核实的现实主张必须使用 track=research、severity=info、research_status=needs-research；它不是创作失败，也不是自动修稿指令。\n- 未来先机专属 critical 只限于禁用捷径、信息边界越界、与授权分歧或作品正典直接矛盾。一般创作结构问题仍按原有创作审稿标准处理。\n- 只有正文实际执行 move 时 future_advantage_execution.implemented 才能为 true。所有 evidence 必须逐字摘自本章；只存在于计划中的 move 必须为 false。";
+    const koreanMemoAnchorAuditNote = resolvedLanguage === "ko" && options?.chapterMemo
+      ? "\n\nchapter_memo의 '독자가 지금 기다리는 것'은 별도 점수가 아니라 이번 화의 재미 앵커입니다. 원고가 메모 문구를 반복했는지가 아니라 주인공의 선택, 상대의 대응, 반전이나 지급, 눈에 보이는 결과로 구현했는지 봅니다. 일부 지급·더 키움·아직 감춤은 합법이며 자동 실패로 만들지 않습니다. 메모가 '전부 지급' 또는 이번 화의 핵심 작업으로 명시했는데 해당 장면 자체가 없을 때만 Chapter Memo Drift Check의 creative critical로 판정하고 repair_scope=\"structural\"을 씁니다. 장면은 있으나 타격감이 약한 경우 warning으로만 남깁니다."
+      : "";
 
     const systemPromptBase = resolvedLanguage === "ko"
-      ? `당신은 엄격한 ${genreLabel} 웹소설 구조 편집자입니다. 문장 윤문이 아니라 회차의 완성도와 구조를 감리합니다.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
+      ? `당신은 엄격한 ${genreLabel} 웹소설 구조 편집자입니다. 문장 윤문이 아니라 회차의 완성도와 구조를 감리합니다.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}${koreanMemoAnchorAuditNote}
 
 ## 감리 범위(고정)
 
@@ -935,13 +962,22 @@ ${chapterContent}`;
           }
         }
       }
-      return {
-        passed: passedMatch[1] === "true",
-        creativePassed: passedMatch[1] === "true",
-        researchStatus: normalizeResearchStatus(content.match(/"research_status"\s*:\s*"([^"]+)"/)?.[1]),
-        issues,
-        summary: summaryMatch?.[1] ?? "",
-      };
+      // A regex recovery proves only that fragments were present, not that the
+      // auditor completed its verdict. Keep any readable findings visible, but
+      // never promote a truncated `"passed": true` fragment to a trusted pass.
+      if (issues.length > 0) {
+        return {
+          passed: false,
+          parseFailed: true,
+          creativePassed: false,
+          researchStatus: normalizeResearchStatus(content.match(/"research_status"\s*:\s*"([^"]+)"/)?.[1]),
+          // Preserve readable findings for diagnosis, but add an explicit
+          // system-critical receipt so persistence cannot make a malformed
+          // audit look like it failed merely because of an advisory warning.
+          issues: [buildAuditParseFailureIssue(language), ...issues],
+          summary: summaryMatch?.[1] ?? (language === "ko" ? "감리 출력 일부만 복구됨" : language === "en" ? "Audit output was only partially recovered" : "审稿输出仅部分恢复"),
+        };
+      }
     }
 
     return {
@@ -949,20 +985,7 @@ ${chapterContent}`;
       parseFailed: true,
       creativePassed: false,
       researchStatus: "not-checked",
-      issues: [{
-        severity: "critical",
-        category: language === "ko" ? "시스템 오류" : language === "en" ? "System Error" : "系统错误",
-        description: language === "ko"
-          ? "감리 출력 형식이 잘못되어 JSON으로 해석할 수 없습니다."
-          : language === "en"
-            ? "Audit output format was invalid and could not be parsed as JSON."
-            : "审稿输出格式异常，无法解析为 JSON",
-        suggestion: language === "ko"
-          ? "구조화 출력을 안정적으로 지원하는 더 강한 모델을 사용하거나 API 응답 형식을 확인하세요."
-          : language === "en"
-            ? "The model may not support reliable structured output. Try a stronger model or inspect the API response format."
-            : "可能是模型不支持结构化输出。尝试换一个更大的模型，或检查 API 返回格式。",
-      }],
+      issues: [buildAuditParseFailureIssue(language)],
       summary: language === "ko" ? "감리 출력 해석 실패" : language === "en" ? "Audit output parsing failed" : "审稿输出解析失败",
     };
   }
@@ -1026,7 +1049,22 @@ ${overrides}\n`;
   private tryParseAuditJson(json: string, language: PromptLanguage = "zh"): AuditResult | null {
     try {
       const parsed = JSON.parse(json);
-      if (typeof parsed.passed !== "boolean" && parsed.passed !== undefined) return null;
+      // A syntactically valid object is not necessarily a complete audit.
+      // Trusted verdicts require the full minimal envelope; otherwise callers
+      // could accept `{ "passed": true }` after a truncated model response.
+      if (
+        typeof parsed.passed !== "boolean"
+        || !Array.isArray(parsed.issues)
+        || typeof parsed.summary !== "string"
+        || parsed.issues.some((issue: unknown) => {
+          if (!issue || typeof issue !== "object") return true;
+          const candidate = issue as Record<string, unknown>;
+          return (candidate.severity !== "critical" && candidate.severity !== "warning" && candidate.severity !== "info")
+            || typeof candidate.category !== "string"
+            || typeof candidate.description !== "string"
+            || typeof candidate.suggestion !== "string";
+        })
+      ) return null;
       const rawScore = parsed.overall_score ?? parsed.overallScore;
       const overallScore = typeof rawScore === "number" && Number.isFinite(rawScore)
         ? Math.round(Math.max(0, Math.min(100, rawScore)))
@@ -1041,8 +1079,8 @@ ${overrides}\n`;
           parsed.future_advantage_execution ?? parsed.futureAdvantageExecution,
         ),
         issues: Array.isArray(parsed.issues)
-	          ? parsed.issues.map((i: Record<string, unknown>) => ({
-	              severity: (i.severity as string) ?? "warning",
+          ? parsed.issues.map((i: Record<string, unknown>) => ({
+              severity: i.severity as AuditIssue["severity"],
 	              category: (i.category as string) ?? (language === "ko" ? "미분류" : language === "en" ? "Uncategorized" : "未分类"),
 	              description: (i.description as string) ?? "",
 	              suggestion: (i.suggestion as string) ?? "",

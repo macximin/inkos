@@ -101,6 +101,50 @@ describe("runChapterReviewCycle v9", () => {
     expect(reviseChapter.mock.calls[0]?.[4]).toBe("auto");
   });
 
+  it("keeps pre-audit and post-revision length telemetry distinct", async () => {
+    const initialContent = "i".repeat(200);
+    const revisedContent = "r".repeat(220);
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        overallScore: 70,
+        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
+      }))
+      .mockResolvedValueOnce(createAuditResult({ passed: true, overallScore: 90 }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent,
+      wordCount: revisedContent.length,
+      fixedIssues: ["fixed"],
+      updatedState: "state",
+      updatedLedger: "",
+      updatedHooks: "hooks",
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: initialContent,
+        wordCount: initialContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 1,
+    });
+
+    expect(result.preAuditNormalizedWordCount).toBe(200);
+    expect(result.postReviseCount).toBe(220);
+    expect(result.finalWordCount).toBe(220);
+    expect(result.revised).toBe(true);
+  });
+
   it("does not auto-revise when audit output parsing failed", async () => {
     const originalContent = "b".repeat(200);
     const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
@@ -151,7 +195,9 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.auditResult.parseFailed).toBe(true);
   });
 
-  it("runs repair loop when score is below threshold, picks best version", async () => {
+  it("does not adopt an in-range repair when its re-audit cannot be parsed", async () => {
+    const originalContent = "o".repeat(100);
+    const revisedContent = "r".repeat(200);
     const auditChapter = vi.fn()
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
@@ -160,13 +206,64 @@ describe("runChapterReviewCycle v9", () => {
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
-        overallScore: 80,
-        issues: [{ severity: "warning", category: "pacing", description: "slow", suggestion: "trim" }],
+        overallScore: 0,
+        parseFailed: true,
+        issues: [{ severity: "critical", category: "system", description: "bad JSON", suggestion: "retry" }],
+      }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent,
+      wordCount: revisedContent.length,
+      fixedIssues: ["attempted repair"],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+    const normalizeDraftLengthIfNeeded = vi.fn().mockImplementation(async (content: string) => ({
+      content,
+      wordCount: content.length,
+      applied: false,
+      tokenUsage: ZERO_USAGE,
+    }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded,
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseChapter).toHaveBeenCalledTimes(1);
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.revised).toBe(false);
+    expect(result.auditResult.parseFailed).not.toBe(true);
+  });
+
+  it("keeps repairing creative critical issues and accepts the first hard-gate pass", async () => {
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        overallScore: 70,
+        issues: [
+          { severity: "critical", category: "continuity", description: "broken", suggestion: "fix" },
+          { severity: "critical", category: "timeline", description: "time order broken", suggestion: "restore order" },
+        ],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
+        overallScore: 69,
+        issues: [{ severity: "critical", category: "continuity", description: "still broken", suggestion: "fix again" }],
+      }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: true,
         overallScore: 76,
-        issues: [{ severity: "warning", category: "pacing", description: "still slow", suggestion: "trim more" }],
+        issues: [{ severity: "warning", category: "pacing", description: "slightly slow", suggestion: "optional trim" }],
       }));
 
     const reviseChapter = vi.fn()
@@ -206,15 +303,13 @@ describe("runChapterReviewCycle v9", () => {
       maxReviewIterations: 2,
     });
 
-    // Should have attempted 2 revisions:
-    // iter 1: 70 → 80 (+10, net improvement)
-    // iter 2: 80 → 76 (no net improvement, stop)
+    // The first repair lowers critical debt even though its advisory score
+    // falls. That hard-gate progress earns the second repair attempt.
     expect(reviseChapter).toHaveBeenCalledTimes(2);
     expect(reviseChapter.mock.calls[0]?.[4]).toBe("auto");
 
-    // Best version should be picked (score 80 from iter 1)
-    expect(result.auditResult.overallScore).toBe(80);
-    expect(result.finalContent).toBe("a".repeat(200));
+    expect(result.auditResult.overallScore).toBe(76);
+    expect(result.finalContent).toBe("b".repeat(200));
     expect(result.revised).toBe(true);
   });
 
@@ -223,7 +318,7 @@ describe("runChapterReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 80,
-        issues: [{ severity: "warning", category: "pacing", description: "needs work", suggestion: "tighten" }],
+        issues: [{ severity: "critical", category: "continuity", description: "needs work", suggestion: "tighten" }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: true,
@@ -276,7 +371,7 @@ describe("runChapterReviewCycle v9", () => {
         issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
       }))
       .mockResolvedValueOnce(createAuditResult({
-        passed: false,
+        passed: true,
         overallScore: 80,
         issues: [{ severity: "warning", category: "pacing", description: "slow", suggestion: "trim" }],
       }))
@@ -326,9 +421,9 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.finalContent).toBe("a".repeat(200));
   });
 
-  it("stops immediately when initial score passes threshold", async () => {
+  it("stops immediately on a creative pass even when the advisory score is low", async () => {
     const auditChapter = vi.fn()
-      .mockResolvedValue(createAuditResult({ overallScore: 88 }));
+      .mockResolvedValue(createAuditResult({ overallScore: 62 }));
     const reviseChapter = vi.fn();
     const normalizeDraftLengthIfNeeded = vi.fn()
       .mockImplementation(async (content: string) => ({
@@ -352,7 +447,7 @@ describe("runChapterReviewCycle v9", () => {
 
     // No revision should have been called
     expect(reviseChapter).not.toHaveBeenCalled();
-    expect(result.auditResult.overallScore).toBe(88);
+    expect(result.auditResult.overallScore).toBe(62);
     expect(result.revised).toBe(false);
   });
 
@@ -399,7 +494,7 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.auditResult.researchStatus).toBe("needs-research");
   });
 
-  it("does not let a high LLM score hide a deterministic warning", async () => {
+  it("reports a deterministic warning without auto-revising the chapter", async () => {
     const originalContent = "b".repeat(200);
     const revisedContent = "a".repeat(200);
     const auditChapter = vi.fn()
@@ -441,15 +536,116 @@ describe("runChapterReviewCycle v9", () => {
         : [],
     });
 
-    expect(reviseChapter).toHaveBeenCalledTimes(1);
-    expect(reviseChapter.mock.calls[0]?.[3]).toEqual(expect.arrayContaining([
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.auditResult.passed).toBe(true);
+    expect(result.auditResult.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: "문단 파편화", severity: "warning" }),
     ]));
-    expect(result.finalContent).toBe(revisedContent);
-    expect(result.auditResult.passed).toBe(true);
   });
 
-  it("routes an AI-tell warning into repair while leaving info advisory", async () => {
+  it("describes warning-only findings as advisory when the auditor marks them failed", async () => {
+    const originalContent = "b".repeat(200);
+    const logWarn = vi.fn();
+    const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
+      passed: false,
+      creativePassed: false,
+      overallScore: 72,
+      issues: [{
+        severity: "warning",
+        category: "pacing",
+        description: "The ending could pull forward more strongly.",
+        suggestion: "Consider sharpening the final beat.",
+      }],
+    }));
+    const reviseChapter = vi.fn();
+    const normalizeDraftLengthIfNeeded = vi.fn()
+      .mockImplementation(async (content: string) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded,
+      logWarn,
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.auditResult.passed).toBe(true);
+    expect(result.auditResult.creativePassed).toBe(true);
+    expect(logWarn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a contradictory pass verdict when creative critical evidence exists", async () => {
+    const originalContent = "b".repeat(200);
+    const revisedContent = "r".repeat(200);
+    const criticalIssue: AuditIssue = {
+      severity: "critical",
+      track: "creative",
+      category: "continuity",
+      description: "The protagonist uses knowledge they never acquired.",
+      suggestion: "Restore the established information boundary.",
+    };
+    const auditChapter = vi.fn()
+      .mockResolvedValueOnce(createAuditResult({
+        passed: true,
+        creativePassed: true,
+        overallScore: 85,
+        issues: [criticalIssue],
+      }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: true,
+        creativePassed: true,
+        overallScore: 88,
+        issues: [],
+      }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent,
+      wordCount: revisedContent.length,
+      fixedIssues: ["restored information boundary"],
+      updatedState: "state",
+      updatedLedger: "",
+      updatedHooks: "hooks",
+      tokenUsage: ZERO_USAGE,
+    });
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseChapter).toHaveBeenCalledOnce();
+    expect(result.finalContent).toBe(revisedContent);
+    expect(result.auditResult.passed).toBe(true);
+    expect(result.auditResult.issues).toEqual([]);
+  });
+
+  it("keeps AI-tell warnings and info advisory without automatic repair", async () => {
     const originalContent = "b".repeat(200);
     const revisedContent = "a".repeat(200);
     const auditChapter = vi.fn()
@@ -503,15 +699,63 @@ describe("runChapterReviewCycle v9", () => {
       }),
     });
 
-    expect(reviseChapter).toHaveBeenCalledTimes(1);
-    expect(reviseChapter.mock.calls[0]?.[3]).toEqual(expect.arrayContaining([
-      expect.objectContaining({ category: "접속어 반복", severity: "warning" }),
-    ]));
-    expect(result.finalContent).toBe(revisedContent);
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.finalContent).toBe(originalContent);
     expect(result.auditResult.passed).toBe(true);
     expect(result.auditResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "접속어 반복", severity: "warning" }),
       expect.objectContaining({ category: "나열식 문장 구조", severity: "info" }),
     ]));
+  });
+
+  it("preserves the original when a length repair still fails the creative hard gate", async () => {
+    const originalContent = "원".repeat(120);
+    const stillBlockedRevision = "수".repeat(200);
+    const unresolvedIssue: AuditIssue = {
+      severity: "critical",
+      category: "독자 보상 누락",
+      description: "약속한 핵심 보상 장면이 없습니다.",
+      suggestion: "핵심 보상 장면을 실제 행동으로 지급하세요.",
+    };
+    const auditChapter = vi.fn()
+      .mockResolvedValue(createAuditResult({
+        passed: false,
+        overallScore: 50,
+        issues: [unresolvedIssue],
+      }));
+    const reviseChapter = vi.fn().mockResolvedValue({
+      revisedContent: stillBlockedRevision,
+      wordCount: stillBlockedRevision.length,
+      fixedIssues: [],
+      updatedState: "",
+      updatedLedger: "",
+      updatedHooks: "",
+      tokenUsage: ZERO_USAGE,
+    });
+    const normalizeDraftLengthIfNeeded = vi.fn().mockImplementation(async (content: string) => ({
+      content,
+      wordCount: content.length,
+      applied: false,
+      tokenUsage: ZERO_USAGE,
+    }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded,
+    });
+
+    expect(reviseChapter).toHaveBeenCalledOnce();
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.finalWordCount).toBe(originalContent.length);
+    expect(result.revised).toBe(false);
+    expect(result.auditResult.issues).toEqual([unresolvedIssue]);
   });
 
   it("normalizes deterministic surface blockers before audit and repair", async () => {
