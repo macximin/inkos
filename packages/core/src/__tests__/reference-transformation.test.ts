@@ -65,6 +65,11 @@ describe("reference-derived production", () => {
     expect(context?.rendered).toContain("REFERENCE STORY EXAMPLES");
     expect(context?.rendered).toContain("첫 장면 실제 원문");
     expect(context?.rendered).toContain("원작과의 거리는 품질 기준이 아닙니다");
+    await expect(store.buildWriterContext({
+      book: fixture.book,
+      chapterNumber: 2,
+      arcId: "arc-unmapped",
+    })).rejects.toThrow(/no source segment mapped/u);
   });
 
   it("prepares a comparison without overwriting and applies only on explicit command", async () => {
@@ -103,10 +108,25 @@ describe("reference-derived production", () => {
       currentContent: current,
       candidateContent: candidate,
       transformation,
+      sourceSegmentIds: [context.sourceSegment.id],
       sourceTexts: context.storyEntries.map((entry) => entry.prose),
+      commercialEvaluation: {
+        openingPressure: 93,
+        protagonistAgency: 95,
+        resistanceQuality: 91,
+        visiblePayoff: 94,
+        endingPropulsion: 94,
+        referenceEngineRetention: 92,
+        transformationIntegrity: 91,
+        styleFidelity: 93,
+      },
     });
     expect(prepared.report.automaticRewrite).toBe(false);
     expect(prepared.report.similarityPenalty).toBe(false);
+    expect(prepared.candidate.commercialScore).toEqual({
+      formula: "dopamine70-reference30-v1",
+      overall: 93,
+    });
     expect(await readFile(join(fixture.bookDir, targetRelative), "utf8")).toBe(current);
 
     await hil.apply({
@@ -119,6 +139,57 @@ describe("reference-derived production", () => {
       join(fixture.bookDir, "chapters", ".reviews", "1", "candidate-a-pre-apply.md"),
       "utf8",
     )).toBe(current);
+    expect(JSON.parse(await readFile(
+      join(fixture.bookDir, "chapters", ".reviews", "1", "candidate-a-transformation-comparison.json"),
+      "utf8",
+    )).status).toBe("accepted");
+    expect(JSON.parse(await readFile(
+      join(fixture.bookDir, "chapters", ".reviews", "1", "transformation-comparison.json"),
+      "utf8",
+    )).status).toBe("accepted");
+
+    const rejected = await hil.prepare({
+      chapterNumber: 1,
+      candidateId: "candidate-b",
+      currentContent: candidate,
+      candidateContent: "별도 후보 결말이다.\n",
+      transformation,
+      sourceSegmentIds: [context.sourceSegment.id],
+      sourceTexts: context.storyEntries.map((entry) => entry.prose),
+    });
+    expect(rejected.report.candidateId).toBe("candidate-b");
+    await hil.reject(1, "candidate-b");
+    expect(JSON.parse(await readFile(
+      join(fixture.bookDir, "chapters", ".reviews", "1", "candidate-b-transformation-comparison.json"),
+      "utf8",
+    )).status).toBe("rejected");
+    expect(JSON.parse(await readFile(
+      join(fixture.bookDir, "chapters", ".reviews", "1", "candidate-a-transformation-comparison.json"),
+      "utf8",
+    )).status).toBe("accepted");
+  });
+
+  it("fails closed when the active Arc is not ready", async () => {
+    const fixture = await createFixture();
+    const store = new ReferencePackStore(fixture.root, fixture.bookDir);
+    await store.bind({
+      bookId: fixture.book.id,
+      packPath: fixture.packPath,
+      storyIndexPath: fixture.storyIndexPath,
+      styleExamplesPath: fixture.styleExamplesPath,
+      sourcePath: fixture.sourcePath,
+      now: () => new Date(NOW),
+    });
+    const arcs = new ArcStore(fixture.bookDir, { now: () => new Date(NOW) });
+    const active = await arcs.getActive();
+    if (!active) throw new Error("fixture active Arc missing");
+    await arcs.save({ ...active, status: "draft" });
+    await expect(ensureFireflyLongformPreflight({
+      projectRoot: fixture.root,
+      bookDir: fixture.bookDir,
+      book: fixture.book,
+      now: () => new Date(NOW),
+    })).rejects.toThrow(/needs a ready NarrativeArc/u);
   });
 });
 

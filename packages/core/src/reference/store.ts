@@ -175,10 +175,16 @@ export class ReferencePackStore {
     ]);
     const storyIndex = parseJsonLines(storyIndexText, (value) => ReferenceStoryIndexEntrySchema.parse(value));
     const allStyleExamples = parseJsonLines(styleExamplesText, (value) => ReferenceStyleExampleSchema.parse(value));
+    if (!input.arcId) {
+      throw new Error("Reference Writer context requires an explicit target Arc id.");
+    }
+    const targetArcId = input.arcId;
     const segment = transformation.sourceSegments.find((candidate) =>
-      input.arcId ? candidate.targetArcIds.includes(input.arcId) : false,
-    ) ?? transformation.sourceSegments[0];
-    if (!segment) throw new Error("Reference transformation contains no source segment.");
+      candidate.targetArcIds.includes(targetArcId),
+    );
+    if (!segment) {
+      throw new Error(`Reference transformation has no source segment mapped to Arc ${JSON.stringify(targetArcId)}.`);
+    }
     const storyEntries = segment.sourceChapterIds
       .slice(0, pack.storyRetrieval.defaultMappedChapterLimit)
       .map((sequence) => {
@@ -207,6 +213,7 @@ export class ReferencePackStore {
       packId: binding.referencePackId,
       spineReference: binding.spineReference,
       transformation,
+      sourceSegment: segment,
       storyEntries,
       styleExamples,
       rendered,

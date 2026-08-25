@@ -19,6 +19,24 @@ const CommercialEvaluationSchema = z.object({
 }).strict();
 export type CommercialEvaluation = z.infer<typeof CommercialEvaluationSchema>;
 
+export const COMMERCIAL_EVALUATION_FORMULA = "dopamine70-reference30-v1" as const;
+
+export function scoreCommercialEvaluation(evaluation: CommercialEvaluation): number {
+  const front = (
+    evaluation.openingPressure
+    + evaluation.protagonistAgency
+    + evaluation.resistanceQuality
+    + evaluation.visiblePayoff
+    + evaluation.endingPropulsion
+  ) / 5;
+  const reference = (
+    evaluation.referenceEngineRetention
+    + evaluation.transformationIntegrity
+    + evaluation.styleFidelity
+  ) / 3;
+  return Math.round(((front * 0.7) + (reference * 0.3)) * 10) / 10;
+}
+
 const CandidateMetaSchema = z.object({
   version: z.literal(1),
   kind: z.literal("reference-transformation-candidate"),
@@ -30,6 +48,10 @@ const CandidateMetaSchema = z.object({
   referencePackId: z.string().min(1),
   sourceSegmentIds: z.array(z.string().min(1)).min(1),
   commercialEvaluation: CommercialEvaluationSchema.optional(),
+  commercialScore: z.object({
+    formula: z.literal(COMMERCIAL_EVALUATION_FORMULA),
+    overall: z.number().min(0).max(100),
+  }).strict().optional(),
   preparedAt: z.string().datetime(),
   decidedAt: z.string().datetime().optional(),
 }).strict();
@@ -60,6 +82,7 @@ const ComparisonReportSchema = z.object({
   automaticRewrite: z.literal(false),
   similarityPenalty: z.literal(false),
   createdAt: z.string().datetime(),
+  decidedAt: z.string().datetime().optional(),
 }).strict();
 export type TransformationComparisonReport = z.infer<typeof ComparisonReportSchema>;
 
@@ -100,16 +123,33 @@ export class ReferenceTransformationHilStore {
     return join("chapters", ".reviews", String(chapterNumber));
   }
 
+  comparisonReportPath(chapterNumber: number, candidateId: string): string {
+    return join(this.reviewDir(chapterNumber), `${candidateId}-transformation-comparison.json`);
+  }
+
+  latestComparisonReportPath(chapterNumber: number): string {
+    return join(this.reviewDir(chapterNumber), "transformation-comparison.json");
+  }
+
   async prepare(input: {
     readonly chapterNumber: number;
     readonly candidateId: string;
     readonly currentContent: string;
     readonly candidateContent: string;
     readonly transformation: unknown;
+    readonly sourceSegmentIds?: ReadonlyArray<string>;
     readonly sourceTexts: ReadonlyArray<string>;
     readonly commercialEvaluation?: CommercialEvaluation;
   }): Promise<{ candidate: ReferenceTransformationCandidate; report: TransformationComparisonReport }> {
     const transformation = ReferenceTransformationSchema.parse(input.transformation);
+    const selectedSegments = input.sourceSegmentIds
+      ? input.sourceSegmentIds.map((segmentId) => {
+          const segment = transformation.sourceSegments.find((candidate) => candidate.id === segmentId);
+          if (!segment) throw new Error(`Reference transformation segment ${JSON.stringify(segmentId)} is missing.`);
+          return segment;
+        })
+      : transformation.sourceSegments;
+    if (selectedSegments.length === 0) throw new Error("Reference HIL requires at least one source segment.");
     const timestamp = this.now().toISOString();
     const candidate = CandidateMetaSchema.parse({
       version: 1,
@@ -120,8 +160,14 @@ export class ReferenceTransformationHilStore {
       currentContentSha256: sha256(input.currentContent),
       candidateContentSha256: sha256(input.candidateContent),
       referencePackId: transformation.referencePackId,
-      sourceSegmentIds: transformation.sourceSegments.map((segment) => segment.id),
+      sourceSegmentIds: selectedSegments.map((segment) => segment.id),
       commercialEvaluation: input.commercialEvaluation,
+      commercialScore: input.commercialEvaluation
+        ? {
+            formula: COMMERCIAL_EVALUATION_FORMULA,
+            overall: scoreCommercialEvaluation(input.commercialEvaluation),
+          }
+        : undefined,
       preparedAt: timestamp,
     });
     const report = ComparisonReportSchema.parse({
@@ -132,10 +178,10 @@ export class ReferenceTransformationHilStore {
       status: "unreviewed",
       referencePackId: transformation.referencePackId,
       spineReference: transformation.spineReference,
-      retained: [...new Set(transformation.sourceSegments.flatMap((segment) => segment.retain))],
-      variedSurface: [...new Set(transformation.sourceSegments.flatMap((segment) => segment.varySurface))],
-      linkedConsequences: [...new Set(transformation.sourceSegments.flatMap((segment) => segment.linkedConsequences))],
-      sourceMappings: transformation.sourceSegments.map((segment) => ({
+      retained: [...new Set(selectedSegments.flatMap((segment) => segment.retain))],
+      variedSurface: [...new Set(selectedSegments.flatMap((segment) => segment.varySurface))],
+      linkedConsequences: [...new Set(selectedSegments.flatMap((segment) => segment.linkedConsequences))],
+      sourceMappings: selectedSegments.map((segment) => ({
         segmentId: segment.id,
         sourceArcIds: segment.sourceArcIds,
         sourceChapterIds: segment.sourceChapterIds,
@@ -147,9 +193,11 @@ export class ReferenceTransformationHilStore {
       similarityPenalty: false,
       createdAt: timestamp,
     });
+    const priorLatestArchive = await this.archiveLatestReportIfNeeded(input.chapterNumber, input.candidateId);
     await commitAtomicFileSet({
       rootDir: this.bookDir,
       writes: [
+        ...priorLatestArchive,
         {
           relativePath: join(this.candidateDir(input.chapterNumber), `${input.candidateId}.md`),
           content: input.candidateContent,
@@ -159,7 +207,11 @@ export class ReferenceTransformationHilStore {
           content: `${JSON.stringify(candidate, null, 2)}\n`,
         },
         {
-          relativePath: join(this.reviewDir(input.chapterNumber), "transformation-comparison.json"),
+          relativePath: this.comparisonReportPath(input.chapterNumber, input.candidateId),
+          content: `${JSON.stringify(report, null, 2)}\n`,
+        },
+        {
+          relativePath: this.latestComparisonReportPath(input.chapterNumber),
           content: `${JSON.stringify(report, null, 2)}\n`,
         },
       ],
@@ -191,6 +243,12 @@ export class ReferenceTransformationHilStore {
       status: "applied",
       decidedAt: this.now().toISOString(),
     });
+    const report = await this.loadCandidateReport(input.chapterNumber, input.candidateId);
+    const decidedReport = ComparisonReportSchema.parse({
+      ...report,
+      status: "accepted",
+      decidedAt: decided.decidedAt,
+    });
     await commitAtomicFileSet({
       rootDir: this.bookDir,
       writes: [
@@ -202,6 +260,14 @@ export class ReferenceTransformationHilStore {
         {
           relativePath: join(this.candidateDir(input.chapterNumber), `${input.candidateId}.json`),
           content: `${JSON.stringify(decided, null, 2)}\n`,
+        },
+        {
+          relativePath: this.comparisonReportPath(input.chapterNumber, input.candidateId),
+          content: `${JSON.stringify(decidedReport, null, 2)}\n`,
+        },
+        {
+          relativePath: this.latestComparisonReportPath(input.chapterNumber),
+          content: `${JSON.stringify(decidedReport, null, 2)}\n`,
         },
       ],
     });
@@ -219,11 +285,72 @@ export class ReferenceTransformationHilStore {
       status: "rejected",
       decidedAt: this.now().toISOString(),
     });
+    const report = await this.loadCandidateReport(chapterNumber, candidateId);
+    const rejectedReport = ComparisonReportSchema.parse({
+      ...report,
+      status: "rejected",
+      decidedAt: rejected.decidedAt,
+    });
     await commitAtomicFileSet({
       rootDir: this.bookDir,
-      writes: [{ relativePath: relative, content: `${JSON.stringify(rejected, null, 2)}\n` }],
+      writes: [
+        { relativePath: relative, content: `${JSON.stringify(rejected, null, 2)}\n` },
+        {
+          relativePath: this.comparisonReportPath(chapterNumber, candidateId),
+          content: `${JSON.stringify(rejectedReport, null, 2)}\n`,
+        },
+        {
+          relativePath: this.latestComparisonReportPath(chapterNumber),
+          content: `${JSON.stringify(rejectedReport, null, 2)}\n`,
+        },
+      ],
     });
     return rejected;
+  }
+
+  private async loadCandidateReport(
+    chapterNumber: number,
+    candidateId: string,
+  ): Promise<TransformationComparisonReport> {
+    const dedicated = join(this.bookDir, this.comparisonReportPath(chapterNumber, candidateId));
+    let raw: string;
+    try {
+      raw = await readFile(dedicated, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error;
+      raw = await readFile(join(this.bookDir, this.latestComparisonReportPath(chapterNumber)), "utf8");
+    }
+    const report = ComparisonReportSchema.parse(JSON.parse(raw));
+    if (report.candidateId !== candidateId) {
+      throw new Error(`Comparison report belongs to candidate ${JSON.stringify(report.candidateId)}, not ${JSON.stringify(candidateId)}.`);
+    }
+    if (report.status !== "unreviewed" && report.status !== "polish-requested") {
+      throw new Error(`Comparison report is already ${report.status}.`);
+    }
+    return report;
+  }
+
+  private async archiveLatestReportIfNeeded(
+    chapterNumber: number,
+    incomingCandidateId: string,
+  ): Promise<Array<{ relativePath: string; content: string }>> {
+    let raw: string;
+    try {
+      raw = await readFile(join(this.bookDir, this.latestComparisonReportPath(chapterNumber)), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return [];
+      throw error;
+    }
+    const report = ComparisonReportSchema.parse(JSON.parse(raw));
+    if (report.candidateId === incomingCandidateId) return [];
+    const dedicatedRelative = this.comparisonReportPath(report.chapterNumber, report.candidateId);
+    try {
+      await readFile(join(this.bookDir, dedicatedRelative), "utf8");
+      return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error;
+    }
+    return [{ relativePath: dedicatedRelative, content: `${JSON.stringify(report, null, 2)}\n` }];
   }
 }
 

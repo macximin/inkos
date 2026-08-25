@@ -52,6 +52,8 @@ export {
   ReferenceTransformationHilStore,
   ReferenceTransformationCandidateSchema,
   TransformationComparisonReportSchema,
+  COMMERCIAL_EVALUATION_FORMULA,
+  scoreCommercialEvaluation,
   type CommercialEvaluation,
   type ReferenceTransformationCandidate,
   type TransformationComparisonReport,

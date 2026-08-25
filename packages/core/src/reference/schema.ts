@@ -163,6 +163,7 @@ export interface WriterReferenceContext {
   readonly packId: string;
   readonly spineReference: string;
   readonly transformation: ReferenceTransformation;
+  readonly sourceSegment: ReferenceTransformationSegment;
   readonly storyEntries: ReadonlyArray<ReferenceStoryIndexEntry & { readonly prose: string }>;
   readonly styleExamples: ReadonlyArray<ReferenceStyleExample>;
   readonly rendered: string;

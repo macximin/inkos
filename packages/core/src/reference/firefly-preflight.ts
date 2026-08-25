@@ -49,6 +49,28 @@ export async function ensureFireflyLongformPreflight(input: {
     : null;
   const railStore = new StoryRailStore(input.bookDir, { now });
   let railPlan = railRequired ? await railStore.load() : null;
+  const activeArc = await new ArcStore(input.bookDir).getActive();
+  if (!activeArc) {
+    throw new Error("Firefly auto-required preflight needs an active NarrativeArc before chapter production.");
+  }
+  if (activeArc.bookId !== input.book.id) {
+    throw new Error("Firefly active NarrativeArc belongs to a different Book.");
+  }
+  if (activeArc.status !== "ready") {
+    throw new Error(`Firefly auto-required preflight needs a ready NarrativeArc; active Arc ${JSON.stringify(activeArc.id)} is ${activeArc.status}.`);
+  }
+  if (transformation && !transformation.sourceSegments.some((segment) => segment.targetArcIds.includes(activeArc.id))) {
+    throw new Error(`Reference transformation has no source segment mapped to active Arc ${JSON.stringify(activeArc.id)}.`);
+  }
+  if (railPlan) {
+    if (railPlan.anchorRail.status !== "ready" || railPlan.arcRouteRail.status !== "ready") {
+      throw new Error("Firefly auto-required preflight needs ready A-Rail and B-Rail state.");
+    }
+    const activeRoute = railPlan.arcRouteRail.entries.find((entry) => entry.status === "active");
+    if (!activeRoute || activeRoute.arcId !== activeArc.id) {
+      throw new Error(`Firefly ready B-Rail is not bound to active Arc ${JSON.stringify(activeArc.id)}.`);
+    }
+  }
   if (transformation && railPlan) {
     return {
       referencePackId: readyReference?.binding.referencePackId,
@@ -57,16 +79,8 @@ export async function ensureFireflyLongformPreflight(input: {
       railCreated: false,
       transformationSha256: await fileSha256(referenceStore.transformationPath),
       railPlanSha256: await fileSha256(join(input.bookDir, "story", "rails", "plan.json")),
-      arcId: (await new ArcStore(input.bookDir).getActive())?.id,
+      arcId: activeArc.id,
     };
-  }
-
-  const activeArc = await new ArcStore(input.bookDir).getActive();
-  if (!activeArc) {
-    throw new Error("Firefly auto-required preflight needs an active NarrativeArc before chapter production.");
-  }
-  if (activeArc.bookId !== input.book.id) {
-    throw new Error("Firefly active NarrativeArc belongs to a different Book.");
   }
 
   const timestamp = now().toISOString();
