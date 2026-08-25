@@ -60,6 +60,7 @@ import {
   loadOptionalActiveArcContext,
   renderChapterArcProvenance,
 } from "../arc/forecast.js";
+import { ReferencePackStore } from "../reference/store.js";
 
 const LEGACY_WRITER_CONTEXT_BUDGET = {
   storyBible: 14_000,
@@ -248,6 +249,17 @@ export class WriterAgent extends BaseAgent {
           targetChapters: book.targetChapters,
           onWarning: (message) => this.ctx.logger?.warn(message),
         });
+    const referenceContext = await new ReferencePackStore(
+      this.ctx.projectRoot,
+      bookDir,
+    ).buildWriterContext({
+      book,
+      chapterNumber,
+      arcId: arcChapterContext?.provenance.arcId,
+    });
+    const externalContext = [input.externalContext, referenceContext?.rendered]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n\n");
     const governedMemoryBlocks = input.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
       : undefined;
@@ -282,7 +294,7 @@ export class WriterAgent extends BaseAgent {
           chapterIntentData: input.chapterIntentData,
           contextPackage: input.contextPackage,
           ruleStack: input.ruleStack,
-          externalContext: input.externalContext,
+          externalContext: externalContext || undefined,
           arcContext: arcChapterContext?.markdown,
           futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
           lengthSpec: resolvedLengthSpec,
@@ -315,7 +327,7 @@ export class WriterAgent extends BaseAgent {
             hooks: povFilteredHooks,
             recentChapters,
             lengthSpec: resolvedLengthSpec,
-            externalContext: input.externalContext,
+            externalContext: externalContext || undefined,
             arcContext: arcChapterContext?.markdown,
             futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
             chapterSummaries: filteredSummaries,

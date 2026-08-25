@@ -176,7 +176,7 @@ ${fanficContext.fanficCanon}
     ? `## 문체 지침\n\n${styleGuide}`
     : "";
   const fingerprint = styleFingerprint
-    ? `## 참고 문체의 특징\n\n${styleFingerprint}\n\n특징을 문장 선택에 반영하되 참고 원문을 베끼지 않습니다.`
+    ? `## 참고 문체의 특징\n\n${styleFingerprint}\n\n문장 호흡, 문단 밀도, 대화 간격과 실제 표면 예문을 적극 활용합니다. 원작과의 거리는 품질 기준이 아니며, 출력 표면의 채택 또는 polishing은 이후 사람 검토에서 결정합니다.`
     : "";
   const funAnchorRule = governed
     ? "- chapter_memo의 '독자가 지금 기다리는 것'에 적힌 재미 앵커를 이번 화의 가장 강한 장면으로 구현합니다. 메모 문구를 되풀이하지 말고 선택, 대응, 반전, 지급 결과로 보여 줍니다."

@@ -25,6 +25,38 @@ export {
 export { type DetectionHistoryEntry, type DetectionStats } from "./models/detection.js";
 export { type StyleProfile } from "./models/style-profile.js";
 export {
+  ReferencePackSchema,
+  ReferenceStoryIndexEntrySchema,
+  ReferenceStyleExampleSchema,
+  ReferenceBindingSchema,
+  ReferenceTransformationSegmentSchema,
+  ReferenceTransformationSchema,
+  type ReferencePack,
+  type ReferenceStoryIndexEntry,
+  type ReferenceStyleExample,
+  type ReferenceBinding,
+  type ReferenceTransformationSegment,
+  type ReferenceTransformation,
+  type WriterReferenceContext,
+} from "./reference/schema.js";
+export {
+  ReferencePackStore,
+  sha256ReferenceText,
+  type BindReferencePackInput,
+} from "./reference/store.js";
+export {
+  ensureFireflyLongformPreflight,
+  type FireflyPreflightReceipt,
+} from "./reference/firefly-preflight.js";
+export {
+  ReferenceTransformationHilStore,
+  ReferenceTransformationCandidateSchema,
+  TransformationComparisonReportSchema,
+  type CommercialEvaluation,
+  type ReferenceTransformationCandidate,
+  type TransformationComparisonReport,
+} from "./reference/hil-store.js";
+export {
   type ArcStatus,
   type ArcEpisodeRole,
   type ArcEpisodeBeat,

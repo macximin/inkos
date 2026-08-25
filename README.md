@@ -373,6 +373,12 @@ Play 维护一个可持续推进的世界状态：角色、地点、物品、证
 
 `inkos style analyze` 分析参考文本，提取统计指纹（句长分布、词频特征、节奏模式）和 LLM 风格指南。`inkos style import` 将指纹注入指定书籍，后续所有章节自动采用该风格，修订者也会用风格标准做审计。
 
+Firefly 장편은 `inkos reference bind`로 전수 이야기 인덱스와 단계별 실제
+문체 예문을 Book에 결속한다. Writer는 현재 Arc에 매핑된 원천 장면과 문체
+예문을 실제 본문으로 읽으며, 누락된 source→target 변형 지도와 Story Rail은
+회차 제작 전에 자동 보완된다. 후보는 `inkos reference hil prepare`에서 현재
+원고를 덮어쓰지 않고 비교 대기하며, 사람의 `apply` 전에는 정본이 아니다.
+
 ### 创作简报
 
 `inkos book create --brief my-ideas.md` 传入你的脑洞、世界观设定、人设文档。建筑师 agent 会基于简报生成故事设定（`story_bible.md`）和创作规则（`book_rules.md`），而非凭空创作；同时把简报落盘到 `story/author_intent.md`，让这本书的长期创作意图不会只在建书时生效一次。
@@ -619,6 +625,9 @@ Studio 里的「开放世界」和「分支互动」是交互式创作入口。�
 | `inkos detect [id] [n]`                     | AIGC 检测（`--all` 全部章节，`--stats` 统计）                                                         |
 | `inkos style analyze <file>`                | 分析参考文本提取文风指纹                                                                               |
 | `inkos style import <file> [id]`            | 导入文风指纹到指定书                                                                                 |
+| `inkos reference bind [id]`                 | Firefly 전수 reference pack을 결속하고 변형 지도·Story Rail을 보완                                       |
+| `inkos reference context [id]`              | 지정 회차에 Writer가 실제로 받을 이야기·문체 예문을 확인                                                     |
+| `inkos reference hil prepare/apply/reject`  | 원고 비파괴 후보 비교와 사람 승인 적용                                                                    |
 | `inkos import canon [id] --from <parent>`   | 导入正传正典到番外书                                                                                 |
 | `inkos import chapters [id] --from <path>`  | 导入已有章节续写（`--split`、`--resume-from`）                                                        |
 | `inkos analytics [id]` / `inkos stats [id]` | 书籍数据分析（审计通过率、高频问题、章节排名、token 用量）                                                           |

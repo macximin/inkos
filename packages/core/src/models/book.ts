@@ -68,6 +68,10 @@ export const BookConfigSchema = z.object({
   writing: z.object({
     reviewMode: z.enum(["auto", "manual"]).optional(),
     revisionGate: z.enum(["strict", "lenient", "always"]).optional(),
+    railPolicy: z.enum(["optional", "auto-required"]).optional(),
+    referencePolicy: z.enum(["optional", "auto-required"]).optional(),
+    referencePackId: z.string().min(1).optional(),
+    spineReference: z.string().min(1).optional(),
   }).optional(),
 });
 

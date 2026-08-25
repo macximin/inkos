@@ -22,6 +22,7 @@ import { genreCommand } from "./commands/genre.js";
 import { updateCommand } from "./commands/update.js";
 import { detectCommand } from "./commands/detect.js";
 import { styleCommand } from "./commands/style.js";
+import { referenceCommand } from "./commands/reference.js";
 import { analyticsCommand } from "./commands/analytics.js";
 import { evalCommand } from "./commands/eval.js";
 import { importCommand } from "./commands/import.js";
@@ -86,6 +87,7 @@ export function createProgram(hooks: ProgramHooks = {}): Command {
   program.addCommand(updateCommand);
   program.addCommand(detectCommand);
   program.addCommand(styleCommand);
+  program.addCommand(referenceCommand);
   program.addCommand(analyticsCommand);
   program.addCommand(evalCommand);
   program.addCommand(importCommand);

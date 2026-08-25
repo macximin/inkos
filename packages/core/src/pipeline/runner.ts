@@ -73,6 +73,7 @@ import { runChapterReviewCycle } from "./chapter-review-cycle.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
 import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persisted-governed-plan.js";
 import { selectBookReferenceContext } from "../references/reference-context.js";
+import { ensureFireflyLongformPreflight } from "../reference/firefly-preflight.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -3467,6 +3468,13 @@ ${matrix}`,
         + `or explicitly discard it to continue through Book -> Chapter without Rail reflow.`,
       );
     }
+
+    const book = await this.state.loadBookConfig(bookId);
+    await ensureFireflyLongformPreflight({
+      projectRoot: this.config.projectRoot,
+      bookDir: this.state.bookDir(bookId),
+      book,
+    });
 
     const reachedEndpoint = await this.findReachedActiveStoryRailEndpoint(bookId);
     if (!reachedEndpoint) return;

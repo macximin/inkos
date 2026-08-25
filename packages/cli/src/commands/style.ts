@@ -12,11 +12,13 @@ styleCommand
   .description("Analyze a text file and extract style profile")
   .argument("<file>", "Text file to analyze")
   .option("--name <name>", "Source name for the profile")
+  .option("--lang <zh|ko|en>", "Analysis language", "zh")
   .option("--json", "Output JSON only")
   .action(async (file: string, opts) => {
     try {
       const text = await readFile(resolve(file), "utf-8");
-      const profile = analyzeStyle(text, opts.name ?? file);
+      const language = opts.lang === "ko" || opts.lang === "en" ? opts.lang : "zh";
+      const profile = analyzeStyle(text, opts.name ?? file, language);
 
       if (opts.json) {
         log(JSON.stringify(profile, null, 2));
@@ -55,9 +57,10 @@ styleCommand
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
       const bookDir = state.bookDir(bookId);
+      const book = await state.loadBookConfig(bookId);
 
       const text = await readFile(resolve(file), "utf-8");
-      const profile = analyzeStyle(text, opts.name ?? file);
+      const profile = analyzeStyle(text, opts.name ?? file, book.language ?? "ko");
 
       const storyDir = join(bookDir, "story");
       await mkdir(storyDir, { recursive: true });
