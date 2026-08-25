@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BookConfig } from "../models/book.js";
@@ -17,7 +18,13 @@ export interface FireflyPreflightReceipt {
   readonly spineReference?: string;
   readonly transformationCreated: boolean;
   readonly railCreated: boolean;
+  readonly transformationSha256?: string;
+  readonly railPlanSha256?: string;
   readonly arcId?: string;
+}
+
+async function fileSha256(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
 export async function ensureFireflyLongformPreflight(input: {
@@ -48,6 +55,8 @@ export async function ensureFireflyLongformPreflight(input: {
       spineReference: readyReference?.binding.spineReference,
       transformationCreated: false,
       railCreated: false,
+      transformationSha256: await fileSha256(referenceStore.transformationPath),
+      railPlanSha256: await fileSha256(join(input.bookDir, "story", "rails", "plan.json")),
       arcId: (await new ArcStore(input.bookDir).getActive())?.id,
     };
   }
@@ -137,6 +146,8 @@ export async function ensureFireflyLongformPreflight(input: {
     spineReference: readyReference?.binding.spineReference,
     transformationCreated: transformationMissing,
     railCreated: railMissing,
+    transformationSha256: await fileSha256(referenceStore.transformationPath),
+    railPlanSha256: await fileSha256(join(input.bookDir, "story", "rails", "plan.json")),
     arcId: activeArc.id,
   };
 }

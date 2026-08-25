@@ -38,10 +38,22 @@ describe("reference-derived production", () => {
     });
     expect(receipt.transformationCreated).toBe(true);
     expect(receipt.railCreated).toBe(true);
+    expect(receipt.transformationSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(receipt.railPlanSha256).toMatch(/^[a-f0-9]{64}$/u);
     const plan = await new StoryRailStore(fixture.bookDir).load();
     expect(plan?.anchorRail.anchors).toHaveLength(6);
     expect(plan?.anchorRail.status).toBe("ready");
     expect(plan?.arcRouteRail.status).toBe("ready");
+    const repeated = await ensureFireflyLongformPreflight({
+      projectRoot: fixture.root,
+      bookDir: fixture.bookDir,
+      book: fixture.book,
+      now: () => new Date(NOW),
+    });
+    expect(repeated.transformationCreated).toBe(false);
+    expect(repeated.railCreated).toBe(false);
+    expect(repeated.transformationSha256).toBe(receipt.transformationSha256);
+    expect(repeated.railPlanSha256).toBe(receipt.railPlanSha256);
 
     const context = await store.buildWriterContext({
       book: fixture.book,
