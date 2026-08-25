@@ -257,9 +257,7 @@ export class WriterAgent extends BaseAgent {
       chapterNumber,
       arcId: arcChapterContext?.provenance.arcId,
     });
-    const externalContext = [input.externalContext, referenceContext?.rendered]
-      .filter((value): value is string => Boolean(value?.trim()))
-      .join("\n\n");
+    const externalContext = input.externalContext?.trim() || undefined;
     const governedMemoryBlocks = input.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
       : undefined;
@@ -280,12 +278,15 @@ export class WriterAgent extends BaseAgent {
       : undefined;
 
     // ── Phase 1: Creative writing (temperature 0.7) ──
-    const creativeSystemPrompt = await this.withPromptPackGuidance(buildWriterSystemPrompt(
+    const baseCreativeSystemPrompt = await this.withPromptPackGuidance(buildWriterSystemPrompt(
       book, promptGenreProfile, bookRules, bookRulesBody, promptGenreBody, promptStyleGuide, styleFingerprint,
       chapterNumber, "creative", fanficContext, resolvedLanguage,
       input.chapterMemo ? "governed" : "legacy",
       resolvedLengthSpec,
     ), "longform.writer");
+    const creativeSystemPrompt = referenceContext
+      ? `${baseCreativeSystemPrompt}\n\n${referenceContext.rendered}`
+      : baseCreativeSystemPrompt;
 
     const creativeUserPrompt = input.chapterMemo && input.contextPackage && input.ruleStack
       ? this.buildGovernedUserPrompt({
@@ -294,7 +295,7 @@ export class WriterAgent extends BaseAgent {
           chapterIntentData: input.chapterIntentData,
           contextPackage: input.contextPackage,
           ruleStack: input.ruleStack,
-          externalContext: externalContext || undefined,
+          externalContext,
           arcContext: arcChapterContext?.markdown,
           futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
           lengthSpec: resolvedLengthSpec,
@@ -327,7 +328,7 @@ export class WriterAgent extends BaseAgent {
             hooks: povFilteredHooks,
             recentChapters,
             lengthSpec: resolvedLengthSpec,
-            externalContext: externalContext || undefined,
+            externalContext,
             arcContext: arcChapterContext?.markdown,
             futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
             chapterSummaries: filteredSummaries,
