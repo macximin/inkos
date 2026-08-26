@@ -96,11 +96,21 @@ describe("reference-derived production", () => {
       arcId: "arc-opening",
     });
     if (!transformation || !context) throw new Error("fixture reference state missing");
-    const targetRelative = join("chapters", "1_기존.md");
+    const targetRelative = join("chapters", "0001_기존.md");
     const current = "기존 원고는 준비 상태다.\n";
     const candidate = `${context.storyEntries[0]!.prose}\n후보 결말이다.\n`;
     await mkdir(join(fixture.bookDir, "chapters"), { recursive: true });
     await writeFile(join(fixture.bookDir, targetRelative), current, "utf8");
+    await writeFile(join(fixture.bookDir, "chapters", "index.json"), `${JSON.stringify([{
+      number: 1,
+      title: "기존",
+      status: "ready-for-review",
+      wordCount: 4,
+      createdAt: NOW,
+      updatedAt: NOW,
+      auditIssues: [],
+      lengthWarnings: [],
+    }], null, 2)}\n`, "utf8");
     const hil = new ReferenceTransformationHilStore(fixture.bookDir, () => new Date(NOW));
     const prepared = await hil.prepare({
       chapterNumber: 1,
@@ -128,6 +138,15 @@ describe("reference-derived production", () => {
       overall: 93,
     });
     expect(await readFile(join(fixture.bookDir, targetRelative), "utf8")).toBe(current);
+    expect((await hil.list())[0]).toMatchObject({
+      currentChapterMatchesPreparation: true,
+      candidate: { candidateId: "candidate-a", status: "prepared" },
+    });
+    await expect(hil.apply({
+      chapterNumber: 1,
+      candidateId: "candidate-a",
+      targetChapterRelativePath: join("chapters", "..", "..", "0001_escape.md"),
+    })).rejects.toThrow(/target does not match/u);
 
     await hil.apply({
       chapterNumber: 1,
@@ -147,6 +166,14 @@ describe("reference-derived production", () => {
       join(fixture.bookDir, "chapters", ".reviews", "1", "transformation-comparison.json"),
       "utf8",
     )).status).toBe("accepted");
+    expect(JSON.parse(await readFile(
+      join(fixture.bookDir, "chapters", "index.json"),
+      "utf8",
+    ))[0]).toMatchObject({
+      status: "drafted",
+      pendingAuditReason: "hil-applied-pending-resync",
+      auditIssues: [],
+    });
 
     const rejected = await hil.prepare({
       chapterNumber: 1,
@@ -158,6 +185,11 @@ describe("reference-derived production", () => {
       sourceTexts: context.storyEntries.map((entry) => entry.prose),
     });
     expect(rejected.report.candidateId).toBe("candidate-b");
+    await hil.requestPolish(1, "candidate-b");
+    expect(JSON.parse(await readFile(
+      join(fixture.bookDir, "chapters", ".reviews", "1", "candidate-b-transformation-comparison.json"),
+      "utf8",
+    )).status).toBe("polish-requested");
     await hil.reject(1, "candidate-b");
     expect(JSON.parse(await readFile(
       join(fixture.bookDir, "chapters", ".reviews", "1", "candidate-b-transformation-comparison.json"),

@@ -3,7 +3,7 @@ import type { Theme } from "../../hooks/use-theme";
 import type { TFunction } from "../../hooks/use-i18n";
 import type { SSEMessage } from "../../hooks/use-sse";
 import { useChatStore } from "../../store/chat";
-import { fetchJson } from "../../hooks/use-api";
+import { fetchJson, useApi } from "../../hooks/use-api";
 import { PanelRightClose, PanelRightOpen, ArrowLeft, Loader2, Map, Pencil, Save, X } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { cjk } from "@streamdown/cjk";
@@ -14,6 +14,7 @@ import { ChaptersSection } from "../sidebar/ChaptersSection";
 import { CharacterSection } from "../sidebar/CharacterSection";
 import { FrontmatterCards } from "../sidebar/FrontmatterCards";
 import { PendingHooksView } from "../sidebar/PendingHooksView";
+import { ReferenceHilSection, type ReferenceHilResponse } from "../sidebar/ReferenceHilSection";
 import { tr } from "../../lib/app-language";
 import {
   foundationFileLabel,
@@ -248,6 +249,7 @@ function PanelView({ bookId, theme: _theme, t, sse }: BookSidebarProps) {
         <span className="flex items-center gap-2"><Map size={15} className="text-primary" /> 기획서</span>
         <span className="text-xs text-muted-foreground">작품의 약속</span>
       </a>
+      <ReferenceHilSection bookId={bookId} />
       <a
         href={`#/book/${encodeURIComponent(bookId)}/arcs`}
         className="flex items-center justify-between rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
@@ -326,14 +328,20 @@ export function BookSidebar({ bookId, theme, t, sse }: BookSidebarProps) {
 export function BookSidebarToggle({ bookId, theme, t, sse }: BookSidebarProps) {
   const [open, setOpen] = useState(false);
   const sidebarView = useChatStore((s) => s.sidebarView);
+  const { data: hil } = useApi<ReferenceHilResponse>(`/books/${bookId}/reference-hil`);
 
   return (
     <>
       <button
         onClick={() => setOpen(true)}
-        className="fixed right-3 top-[72px] z-20 lg:hidden w-8 h-8 rounded-lg bg-card border border-border/40 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+        aria-label={tr("打开书籍信息", "Open book information", "작품 정보 열기")}
+        className="fixed right-3 top-[68px] z-20 lg:hidden h-9 rounded-lg bg-card border border-border/40 flex items-center gap-1.5 px-2.5 text-xs font-semibold text-muted-foreground shadow-sm hover:text-foreground transition-colors"
       >
         <PanelRightOpen size={14} />
+        <span>{tr("书籍信息", "Book info", "작품 정보")}</span>
+        {(hil?.pendingCount ?? 0) > 0 && (
+          <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-600 dark:text-amber-400">{hil!.pendingCount}</span>
+        )}
       </button>
 
       {open && (

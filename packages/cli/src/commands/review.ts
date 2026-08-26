@@ -1,11 +1,32 @@
 import { Command } from "commander";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import {
   StateManager,
+  ReferenceTransformationHilStore,
   StoryRailReflowStore,
+  buildFireflyReviewPackets,
+  FireflyReviewDecisionSchema,
+  FireflyReviewPacketSchema,
+  assertFireflyReviewPacketIdentity,
   formatLengthCount,
   readGenreProfile,
   resolveLengthCountingMode,
   rebuildApprovedFutureAdvantageCanon,
+  assertChapterApprovalReady,
   type ChapterMeta,
   type StoryRailReflowPrepareResult,
 } from "@actalk/inkos-core";
@@ -13,6 +34,146 @@ import { findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 
 export const reviewCommand = new Command("review")
   .description("Review and approve chapters");
+
+reviewCommand
+  .command("export-storyyard")
+  .description("Export prepared chapter candidates as immutable Storyyard review packets")
+  .argument("[book-id]", "Book ID (auto-detected if only one book)")
+  .option("--out <path>", "Output directory or .json path")
+  .option("--source-revision <revision>", "Source revision label (defaults to Book updatedAt)")
+  .option("--json", "Output JSON")
+  .action(async (bookIdArg: string | undefined, opts) => {
+    try {
+      const root = findProjectRoot();
+      const bookId = await resolveBookId(bookIdArg, root);
+      const state = new StateManager(root);
+      const [book, chapters, candidates] = await Promise.all([
+        state.loadBookConfig(bookId),
+        state.loadChapterIndex(bookId),
+        new ReferenceTransformationHilStore(state.bookDir(bookId)).list(),
+      ]);
+      const packets = buildFireflyReviewPackets({
+        book,
+        chapters,
+        candidates,
+        sourceRevision: opts.sourceRevision?.trim() || book.updatedAt,
+      });
+      if (packets.length === 0) throw new Error(`Book ${JSON.stringify(bookId)} has no prepared HIL candidates.`);
+
+      const requested = opts.out
+        ? resolve(root, opts.out)
+        : resolve(root, ".inkos", "exports", "storyyard", bookId);
+      const relativeOutput = relative(root, requested);
+      if (isAbsolute(relativeOutput) || relativeOutput === ".." || relativeOutput.startsWith(`..${sep}`)) {
+        throw new Error("Storyyard review packet output must stay inside the InkOS project.");
+      }
+      const singleFile = packets.length === 1 && requested.endsWith(".json");
+      const outputs: Array<{ path: string; sha256: string; packetId: string }> = [];
+      for (const packet of packets) {
+        const output = singleFile ? requested : join(requested, `${packet.packetId}.json`);
+        const serialized = `${JSON.stringify(packet, null, 2)}\n`;
+        await mkdir(dirname(output), { recursive: true });
+        await writeFile(output, serialized, "utf8");
+        outputs.push({
+          path: relative(root, output).split(sep).join("/"),
+          sha256: createHash("sha256").update(serialized).digest("hex"),
+          packetId: packet.packetId,
+        });
+      }
+      if (opts.json) {
+        log(JSON.stringify({
+          bookId,
+          packets: outputs,
+          artifacts: outputs.map((output) => ({
+            repo: "inkos",
+            path: output.path,
+            sha256: output.sha256,
+            role: "storyyard-review-packet",
+          })),
+        }));
+      } else {
+        for (const output of outputs) log(`Storyyard review packet ${output.packetId}: ${output.path}`);
+      }
+    } catch (e) {
+      if (opts.json) log(JSON.stringify({ error: String(e) }));
+      else logError(`Failed to export Storyyard review packet: ${e}`);
+      process.exitCode = 1;
+    }
+  });
+
+reviewCommand
+  .command("apply-storyyard")
+  .description("Validate and apply one pending Storyyard decision inside InkOS authority")
+  .argument("<decision-path>", "firefly_review_decision/v1 JSON file")
+  .requiredOption("--packet <path>", "Matching firefly_review_packet/v1 JSON file")
+  .option("--json", "Output JSON")
+  .action(async (decisionPath: string, opts) => {
+    try {
+      const root = findProjectRoot();
+      const decision = FireflyReviewDecisionSchema.parse(JSON.parse(await readFile(resolve(root, decisionPath), "utf8")));
+      const packet = FireflyReviewPacketSchema.parse(JSON.parse(await readFile(resolve(root, opts.packet), "utf8")));
+      assertFireflyReviewPacketIdentity(packet);
+      if (decision.status !== "pending") throw new Error(`Storyyard decision is already ${decision.status}.`);
+      if (decision.packetId !== packet.packetId || decision.packetSha256 !== packet.packetSha256) {
+        throw new Error("Storyyard decision does not match the review packet identity.");
+      }
+      if (decision.workId !== packet.work.id || decision.artifactId !== packet.artifact.id) {
+        throw new Error("Storyyard decision work or artifact does not match the review packet.");
+      }
+      const candidate = packet.candidates.find((item) => item.id === decision.candidateId);
+      if (!candidate || candidate.sha256 !== decision.candidateSha256) {
+        throw new Error("Storyyard decision candidate does not match the review packet.");
+      }
+      const state = new StateManager(root);
+      const bookId = await resolveBookId(decision.workId, root);
+      const release = await state.acquireBookLock(bookId);
+      try {
+        const store = new ReferenceTransformationHilStore(state.bookDir(bookId));
+        const current = (await store.list()).find((view) => view.candidate.candidateId === candidate.id);
+        if (!current || current.candidate.chapterNumber !== packet.artifact.chapterNumber) {
+          throw new Error("Storyyard decision candidate is missing from the canonical InkOS Book.");
+        }
+        if (current.candidate.candidateContentSha256 !== candidate.sha256 || !current.currentChapterMatchesPreparation) {
+          throw new Error("InkOS candidate or current manuscript changed after Storyyard export.");
+        }
+        let result: unknown;
+        if (decision.decision === "approve") {
+          const prefix = String(packet.artifact.chapterNumber).padStart(4, "0");
+          const files = (await readdir(join(state.bookDir(bookId), "chapters")))
+            .filter((name) => name.startsWith(prefix) && name.endsWith(".md"));
+          if (files.length !== 1) throw new Error(`Expected one canonical chapter file for ${prefix}, found ${files.length}.`);
+          result = await store.apply({
+            chapterNumber: packet.artifact.chapterNumber,
+            candidateId: candidate.id,
+            targetChapterRelativePath: join("chapters", files[0]!),
+          });
+        } else if (decision.decision === "polish") {
+          result = await store.requestPolish(packet.artifact.chapterNumber, candidate.id);
+        } else if (decision.decision === "reject") {
+          result = await store.reject(packet.artifact.chapterNumber, candidate.id);
+        } else {
+          result = { status: "held", candidateId: candidate.id };
+        }
+        const receiptPath = join("books", bookId, "story", "review-decisions", `${decision.decisionId}.json`);
+        const applied = {
+          ...decision,
+          status: "applied" as const,
+          appliedAt: new Date().toISOString(),
+          applyReceiptPath: receiptPath.split(sep).join("/"),
+          result,
+        };
+        await mkdir(dirname(join(root, receiptPath)), { recursive: true });
+        await writeFile(join(root, receiptPath), `${JSON.stringify(applied, null, 2)}\n`, "utf8");
+        log(JSON.stringify({ decision: applied, followUp: decision.decision === "approve" ? "Run write sync, then audit, before chapter approval or continuation." : null }, null, opts.json ? 0 : 2));
+      } finally {
+        await release();
+      }
+    } catch (error) {
+      if (opts.json) log(JSON.stringify({ error: String(error) }));
+      else logError(`Storyyard decision apply failed: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });
 
 reviewCommand
   .command("list")
@@ -187,6 +348,12 @@ reviewCommand
           throw new Error(`Chapter ${chapterNum} not found in "${bookId}"`);
         }
 
+        await assertChapterApprovalReady({
+          bookDir: state.bookDir(bookId),
+          bookId,
+          chapter: index[idx]!,
+        });
+
         const originalIndex = index.map((chapter) => ({ ...chapter }));
         index[idx] = {
           ...index[idx]!,
@@ -244,13 +411,18 @@ reviewCommand
         let count = 0;
         const now = new Date().toISOString();
 
-        const updated = index.map((ch) => {
-          if (ch.status === "ready-for-review" || ch.status === "audit-failed") {
-            count++;
-            return { ...ch, status: "approved" as const, updatedAt: now };
-          }
-          return ch;
-        });
+        const updated = [...index];
+        for (let chapterIndex = 0; chapterIndex < updated.length; chapterIndex += 1) {
+          const chapter = updated[chapterIndex]!;
+          if (chapter.status !== "ready-for-review") continue;
+          await assertChapterApprovalReady({
+            bookDir: state.bookDir(bookId),
+            bookId,
+            chapter,
+          });
+          count += 1;
+          updated[chapterIndex] = { ...chapter, status: "approved" as const, updatedAt: now };
+        }
 
         await state.saveChapterIndex(bookId, updated);
         let futureAdvantageCanon;

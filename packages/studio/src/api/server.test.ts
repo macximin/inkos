@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -507,6 +508,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     ingestMaterial: actual.ingestMaterial,
     listBookReferences: actual.listBookReferences,
     inspectBookProductionReadiness: actual.inspectBookProductionReadiness,
+    ReferenceTransformationHilStore: actual.ReferenceTransformationHilStore,
+    assertChapterApprovalReady: actual.assertChapterApprovalReady,
     isUsablePlayInitialScene: actual.isUsablePlayInitialScene,
     chatCompletion: chatCompletionMock,
     loadProjectConfig: loadProjectConfigMock,
@@ -1300,6 +1303,103 @@ describe("createStudioServer daemon lifecycle", () => {
       railReflowWarning: expect.stringContaining("Story rail plan cannot be read"),
     });
     expect(saveChapterIndexMock).toHaveBeenCalled();
+  });
+
+  it("refuses Studio approval while a HIL-applied chapter still needs resync and audit", async () => {
+    await writeCompleteBookFixture(root, "hil-book", "HIL Book");
+    loadChapterIndexMock.mockResolvedValue([{
+      number: 1,
+      title: "Chapter 1",
+      status: "drafted",
+      pendingAuditReason: "hil-applied-pending-resync",
+      wordCount: 100,
+      createdAt: "2026-08-26T00:00:00.000Z",
+      updatedAt: "2026-08-26T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/hil-book/chapters/1/approve", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("must be ready-for-review"),
+    });
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
+  });
+
+  it("lists persisted HIL candidates and records a locked polish request", async () => {
+    await writeCompleteBookFixture(root, "hil-book", "HIL Book");
+    const bookDir = join(root, "books", "hil-book");
+    const candidateDir = join(bookDir, "chapters", ".candidates", "1");
+    const reviewDir = join(bookDir, "chapters", ".reviews", "1");
+    const current = "현재 원고\n";
+    const candidateBody = "후보 원고\n";
+    await mkdir(candidateDir, { recursive: true });
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(bookDir, "chapters", "0001_HIL.md"), current, "utf8");
+    await writeFile(join(candidateDir, "candidate-a.md"), candidateBody, "utf8");
+    await writeFile(join(candidateDir, "candidate-a.json"), JSON.stringify({
+      version: 1,
+      kind: "reference-transformation-candidate",
+      candidateId: "candidate-a",
+      chapterNumber: 1,
+      status: "prepared",
+      currentContentSha256: createHash("sha256").update(current).digest("hex"),
+      candidateContentSha256: createHash("sha256").update(candidateBody).digest("hex"),
+      referencePackId: "pack-a",
+      sourceSegmentIds: ["segment-a"],
+      preparedAt: "2026-08-26T00:00:00.000Z",
+    }), "utf8");
+    const report = {
+      version: 1,
+      kind: "transformation-comparison",
+      chapterNumber: 1,
+      candidateId: "candidate-a",
+      status: "unreviewed",
+      referencePackId: "pack-a",
+      spineReference: "reference-a",
+      retained: ["engine"],
+      variedSurface: ["people"],
+      linkedConsequences: ["money"],
+      sourceMappings: [],
+      exactSurfaceMatches: [],
+      automaticRewrite: false,
+      similarityPenalty: false,
+      createdAt: "2026-08-26T00:00:00.000Z",
+    };
+    await writeFile(join(reviewDir, "candidate-a-transformation-comparison.json"), JSON.stringify(report), "utf8");
+    await writeFile(join(reviewDir, "transformation-comparison.json"), JSON.stringify(report), "utf8");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const listed = await app.request("http://localhost/api/v1/books/hil-book/reference-hil");
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({
+      pendingCount: 1,
+      candidates: [{
+        currentChapterMatchesPreparation: true,
+        candidate: { candidateId: "candidate-a", status: "prepared" },
+        report: { status: "unreviewed" },
+      }],
+    });
+
+    const polished = await app.request("http://localhost/api/v1/books/hil-book/reference-hil/1/candidate-a/polish", {
+      method: "POST",
+    });
+    expect(polished.status).toBe(200);
+    await expect(polished.json()).resolves.toMatchObject({
+      ok: true,
+      action: "polish",
+      result: { status: "polish-requested" },
+    });
+    expect(acquireBookLockMock).toHaveBeenCalledWith("hil-book");
+    expect(releaseBookLockMock).toHaveBeenCalledOnce();
   });
 
   it("returns the official project pitch with recorded reference provenance", async () => {

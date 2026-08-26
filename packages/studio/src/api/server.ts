@@ -143,6 +143,8 @@ import {
   probeCodexCli,
   safeNonSymlinkChildPath,
   inspectBookProductionReadiness,
+  ReferenceTransformationHilStore,
+  assertChapterApprovalReady,
 } from "@actalk/inkos-core";
 import { access, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -4067,6 +4069,98 @@ export function createStudioServer(
 
   // --- Actions ---
 
+  app.get("/api/v1/books/:id/reference-hil", async (c) => {
+    const id = c.req.param("id");
+    try {
+      await state.loadBookConfig(id);
+      const candidates = await new ReferenceTransformationHilStore(state.bookDir(id)).list();
+      return c.json({
+        bookId: id,
+        pendingCount: candidates.filter(({ candidate }) => candidate.status === "prepared").length,
+        candidates,
+      });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
+  app.post("/api/v1/books/:id/reference-hil/:chapter/:candidate/:action", async (c) => {
+    const id = c.req.param("id");
+    const chapterNumber = Number.parseInt(c.req.param("chapter"), 10);
+    const candidateId = c.req.param("candidate");
+    const action = c.req.param("action");
+    if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
+      return c.json({ error: "Invalid chapter number" }, 400);
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(candidateId)) {
+      return c.json({ error: "Invalid candidate id" }, 400);
+    }
+    if (action !== "apply" && action !== "polish" && action !== "reject") {
+      return c.json({ error: "Invalid HIL action" }, 400);
+    }
+
+    try {
+      await state.loadBookConfig(id);
+      const releaseLock = await state.acquireBookLock(id);
+      let result: unknown;
+      try {
+        const store = new ReferenceTransformationHilStore(state.bookDir(id));
+        if (action === "polish") {
+          result = await store.requestPolish(chapterNumber, candidateId);
+        } else if (action === "reject") {
+          result = await store.reject(chapterNumber, candidateId);
+        } else {
+          const chapterFiles = (await readdir(join(state.bookDir(id), "chapters")))
+            .filter((file) => file.startsWith(String(chapterNumber).padStart(4, "0")) && file.endsWith(".md"));
+          if (chapterFiles.length !== 1) {
+            throw new Error(`Chapter ${chapterNumber} needs exactly one manuscript file; found ${chapterFiles.length}.`);
+          }
+          result = await store.apply({
+            chapterNumber,
+            candidateId,
+            targetChapterRelativePath: join("chapters", chapterFiles[0]!),
+          });
+        }
+      } finally {
+        await releaseLock();
+      }
+
+      if (action !== "apply") {
+        broadcast("reference-hil:updated", { bookId: id, chapterNumber, candidateId, action });
+        return c.json({ ok: true, action, result });
+      }
+
+      let syncResult: unknown;
+      let auditResult: unknown;
+      let followUpError: string | undefined;
+      try {
+        const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForSettings: id }));
+        syncResult = await pipeline.resyncChapterArtifacts(id, chapterNumber);
+        auditResult = await pipeline.auditDraft(id, chapterNumber);
+      } catch (error) {
+        followUpError = error instanceof Error ? error.message : String(error);
+      }
+      broadcast("reference-hil:updated", {
+        bookId: id,
+        chapterNumber,
+        candidateId,
+        action,
+        followUpError,
+      });
+      return c.json({
+        ok: true,
+        action,
+        result,
+        syncResult,
+        auditResult,
+        followUpStatus: followUpError ? "needs-attention" : "complete",
+        ...(followUpError ? { followUpError } : {}),
+      });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  });
+
   app.post("/api/v1/books/:id/write-next", async (c) => {
     const id = c.req.param("id");
     const body = await c.req.json<{ wordCount?: number }>().catch(() => ({ wordCount: undefined }));
@@ -4204,6 +4298,13 @@ export function createStudioServer(
       const releaseLock = await state.acquireBookLock(id);
       try {
         const index = await state.loadChapterIndex(id);
+        const target = index.find((chapter) => chapter.number === num);
+        if (!target) return c.json({ error: `Chapter ${num} not found` }, 404);
+        await assertChapterApprovalReady({
+          bookDir: state.bookDir(id),
+          bookId: id,
+          chapter: target,
+        });
         const approvedAt = new Date().toISOString();
         const updated = index.map((ch) =>
           ch.number === num ? { ...ch, status: "approved" as const, updatedAt: approvedAt } : ch,

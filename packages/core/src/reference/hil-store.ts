@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { ChapterMetaSchema } from "../models/chapter.js";
 import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
+import { safeNonSymlinkChildPath } from "../utils/path-safety.js";
 import { ReferenceTransformationSchema } from "./schema.js";
 
+const CANDIDATE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u;
 const CandidateStatusSchema = z.enum(["prepared", "applied", "rejected"]);
 
 const CommercialEvaluationSchema = z.object({
@@ -40,7 +43,7 @@ export function scoreCommercialEvaluation(evaluation: CommercialEvaluation): num
 const CandidateMetaSchema = z.object({
   version: z.literal(1),
   kind: z.literal("reference-transformation-candidate"),
-  candidateId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u),
+  candidateId: z.string().regex(CANDIDATE_ID_PATTERN),
   chapterNumber: z.number().int().min(1),
   status: CandidateStatusSchema,
   currentContentSha256: z.string().length(64),
@@ -86,8 +89,25 @@ const ComparisonReportSchema = z.object({
 }).strict();
 export type TransformationComparisonReport = z.infer<typeof ComparisonReportSchema>;
 
+export interface ReferenceTransformationHilCandidateView {
+  readonly candidate: ReferenceTransformationCandidate;
+  readonly report: TransformationComparisonReport;
+  readonly currentContent: string;
+  readonly candidateContent: string;
+  readonly currentChapterMatchesPreparation: boolean;
+}
+
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function assertCandidateLocator(chapterNumber: number, candidateId?: string): void {
+  if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
+    throw new Error(`Invalid Reference HIL chapter number: ${chapterNumber}.`);
+  }
+  if (candidateId !== undefined && !CANDIDATE_ID_PATTERN.test(candidateId)) {
+    throw new Error(`Invalid Reference HIL candidate id: ${JSON.stringify(candidateId)}.`);
+  }
 }
 
 function findExactMatches(candidate: string, sources: ReadonlyArray<string>, width = 12) {
@@ -116,19 +136,66 @@ export class ReferenceTransformationHilStore {
   ) {}
 
   candidateDir(chapterNumber: number): string {
+    assertCandidateLocator(chapterNumber);
     return join("chapters", ".candidates", String(chapterNumber));
   }
 
   reviewDir(chapterNumber: number): string {
+    assertCandidateLocator(chapterNumber);
     return join("chapters", ".reviews", String(chapterNumber));
   }
 
   comparisonReportPath(chapterNumber: number, candidateId: string): string {
+    assertCandidateLocator(chapterNumber, candidateId);
     return join(this.reviewDir(chapterNumber), `${candidateId}-transformation-comparison.json`);
   }
 
   latestComparisonReportPath(chapterNumber: number): string {
     return join(this.reviewDir(chapterNumber), "transformation-comparison.json");
+  }
+
+  async list(): Promise<ReadonlyArray<ReferenceTransformationHilCandidateView>> {
+    const root = join(this.bookDir, "chapters", ".candidates");
+    const chapterDirs = await readdir(root, { withFileTypes: true }).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return [];
+      throw error;
+    });
+    const results: ReferenceTransformationHilCandidateView[] = [];
+    for (const chapterDir of chapterDirs) {
+      if (!chapterDir.isDirectory() || !/^\d+$/.test(chapterDir.name)) continue;
+      const chapterNumber = Number.parseInt(chapterDir.name, 10);
+      const files = await readdir(join(root, chapterDir.name)).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const file of files.filter((name) => name.endsWith(".json")).sort()) {
+        const candidateId = file.slice(0, -".json".length);
+        results.push(await this.get(chapterNumber, candidateId));
+      }
+    }
+    return results.sort((left, right) =>
+      right.candidate.preparedAt.localeCompare(left.candidate.preparedAt)
+      || left.candidate.candidateId.localeCompare(right.candidate.candidateId));
+  }
+
+  async get(chapterNumber: number, candidateId: string): Promise<ReferenceTransformationHilCandidateView> {
+    assertCandidateLocator(chapterNumber, candidateId);
+    const candidate = CandidateMetaSchema.parse(JSON.parse(await readFile(
+      join(this.bookDir, this.candidateDir(chapterNumber), `${candidateId}.json`),
+      "utf8",
+    )));
+    const [report, candidateContent, currentContent] = await Promise.all([
+      this.loadCandidateReportForDisplay(chapterNumber, candidateId),
+      readFile(join(this.bookDir, this.candidateDir(chapterNumber), `${candidateId}.md`), "utf8"),
+      this.readCurrentChapter(chapterNumber),
+    ]);
+    return {
+      candidate,
+      report,
+      currentContent,
+      candidateContent,
+      currentChapterMatchesPreparation: sha256(currentContent) === candidate.currentContentSha256,
+    };
   }
 
   async prepare(input: {
@@ -224,19 +291,43 @@ export class ReferenceTransformationHilStore {
     readonly candidateId: string;
     readonly targetChapterRelativePath: string;
   }): Promise<ReferenceTransformationCandidate> {
+    assertCandidateLocator(input.chapterNumber, input.candidateId);
     const metaPath = join(this.bookDir, this.candidateDir(input.chapterNumber), `${input.candidateId}.json`);
     const bodyPath = join(this.bookDir, this.candidateDir(input.chapterNumber), `${input.candidateId}.md`);
+    const expectedPrefix = String(input.chapterNumber).padStart(4, "0");
+    const normalizedTarget = input.targetChapterRelativePath.replaceAll("\\", "/");
+    const targetParts = normalizedTarget.split("/");
+    if (
+      !normalizedTarget.startsWith("chapters/")
+      || targetParts.length !== 2
+      || targetParts.includes("..")
+      || !targetParts[1]?.startsWith(expectedPrefix)
+      || !targetParts[1]?.endsWith(".md")
+    ) {
+      throw new Error(`Reference HIL target does not match chapter ${input.chapterNumber}.`);
+    }
+    const targetChapterPath = await safeNonSymlinkChildPath(this.bookDir, input.targetChapterRelativePath);
     const candidate = CandidateMetaSchema.parse(JSON.parse(await readFile(metaPath, "utf8")));
     if (candidate.status !== "prepared") throw new Error(`Candidate is already ${candidate.status}.`);
-    const [candidateBody, currentBody] = await Promise.all([
+    const [candidateBody, currentBody, rawIndex] = await Promise.all([
       readFile(bodyPath, "utf8"),
-      readFile(join(this.bookDir, input.targetChapterRelativePath), "utf8"),
+      readFile(targetChapterPath, "utf8"),
+      readFile(join(this.bookDir, "chapters", "index.json"), "utf8"),
     ]);
     if (sha256(candidateBody) !== candidate.candidateContentSha256) {
       throw new Error("Candidate body SHA-256 mismatch.");
     }
     if (sha256(currentBody) !== candidate.currentContentSha256) {
       throw new Error("Current chapter changed after candidate preparation; prepare a new comparison.");
+    }
+    const index = ChapterMetaSchema.array().parse(JSON.parse(rawIndex));
+    const targetIndex = index.findIndex((chapter) => chapter.number === input.chapterNumber);
+    if (targetIndex < 0) throw new Error(`Chapter ${input.chapterNumber} is missing from the chapter index.`);
+    const latestChapter = Math.max(...index.map((chapter) => chapter.number));
+    if (latestChapter !== input.chapterNumber) {
+      throw new Error(
+        `Reference HIL can only replace the latest persisted chapter (latest is ${latestChapter}).`,
+      );
     }
     const decided = CandidateMetaSchema.parse({
       ...candidate,
@@ -249,6 +340,17 @@ export class ReferenceTransformationHilStore {
       status: "accepted",
       decidedAt: decided.decidedAt,
     });
+    const updatedIndex = index.map((chapter) => chapter.number === input.chapterNumber
+      ? ChapterMetaSchema.parse({
+          ...chapter,
+          status: "drafted",
+          updatedAt: decided.decidedAt,
+          auditIssues: [],
+          reviewNote: undefined,
+          pendingAuditReason: "hil-applied-pending-resync",
+          futureAdvantageExecution: undefined,
+        })
+      : chapter);
     await commitAtomicFileSet({
       rootDir: this.bookDir,
       writes: [
@@ -257,6 +359,10 @@ export class ReferenceTransformationHilStore {
           content: currentBody,
         },
         { relativePath: input.targetChapterRelativePath, content: candidateBody },
+        {
+          relativePath: join("chapters", "index.json"),
+          content: `${JSON.stringify(updatedIndex, null, 2)}\n`,
+        },
         {
           relativePath: join(this.candidateDir(input.chapterNumber), `${input.candidateId}.json`),
           content: `${JSON.stringify(decided, null, 2)}\n`,
@@ -274,7 +380,36 @@ export class ReferenceTransformationHilStore {
     return decided;
   }
 
+  async requestPolish(
+    chapterNumber: number,
+    candidateId: string,
+  ): Promise<TransformationComparisonReport> {
+    assertCandidateLocator(chapterNumber, candidateId);
+    const candidate = CandidateMetaSchema.parse(JSON.parse(await readFile(
+      join(this.bookDir, this.candidateDir(chapterNumber), `${candidateId}.json`),
+      "utf8",
+    )));
+    if (candidate.status !== "prepared") throw new Error(`Candidate is already ${candidate.status}.`);
+    const report = await this.loadCandidateReport(chapterNumber, candidateId);
+    const polished = ComparisonReportSchema.parse({ ...report, status: "polish-requested" });
+    await commitAtomicFileSet({
+      rootDir: this.bookDir,
+      writes: [
+        {
+          relativePath: this.comparisonReportPath(chapterNumber, candidateId),
+          content: `${JSON.stringify(polished, null, 2)}\n`,
+        },
+        {
+          relativePath: this.latestComparisonReportPath(chapterNumber),
+          content: `${JSON.stringify(polished, null, 2)}\n`,
+        },
+      ],
+    });
+    return polished;
+  }
+
   async reject(chapterNumber: number, candidateId: string): Promise<ReferenceTransformationCandidate> {
+    assertCandidateLocator(chapterNumber, candidateId);
     const relative = join(this.candidateDir(chapterNumber), `${candidateId}.json`);
     const candidate = CandidateMetaSchema.parse(
       JSON.parse(await readFile(join(this.bookDir, relative), "utf8")),
@@ -328,6 +463,26 @@ export class ReferenceTransformationHilStore {
       throw new Error(`Comparison report is already ${report.status}.`);
     }
     return report;
+  }
+
+  private async loadCandidateReportForDisplay(
+    chapterNumber: number,
+    candidateId: string,
+  ): Promise<TransformationComparisonReport> {
+    return ComparisonReportSchema.parse(JSON.parse(await readFile(
+      join(this.bookDir, this.comparisonReportPath(chapterNumber, candidateId)),
+      "utf8",
+    )));
+  }
+
+  private async readCurrentChapter(chapterNumber: number): Promise<string> {
+    const files = await readdir(join(this.bookDir, "chapters"));
+    const prefix = String(chapterNumber).padStart(4, "0");
+    const matches = files.filter((file) => file.startsWith(prefix) && file.endsWith(".md"));
+    if (matches.length !== 1) {
+      throw new Error(`Chapter ${chapterNumber} needs exactly one manuscript file; found ${matches.length}.`);
+    }
+    return readFile(await safeNonSymlinkChildPath(this.bookDir, join("chapters", matches[0]!)), "utf8");
   }
 
   private async archiveLatestReportIfNeeded(

@@ -205,30 +205,35 @@ hil.command("prepare")
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
-      const store = new ReferencePackStore(root, state.bookDir(bookId));
-      const transformation = await store.loadTransformation(true);
-      if (!transformation) throw new Error("Reference transformation is missing.");
-      const activeArc = await new ArcStore(state.bookDir(bookId)).getActive();
-      if (!activeArc) throw new Error("Reference HIL prepare requires an active Arc.");
-      const context = await store.buildWriterContext({
-        book: await state.loadBookConfig(bookId),
-        chapterNumber: Number.parseInt(opts.chapter, 10),
-        arcId: activeArc.id,
-      });
-      if (!context) throw new Error("Reference context is missing.");
-      const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).prepare({
-        chapterNumber: Number.parseInt(opts.chapter, 10),
-        candidateId: opts.candidateId,
-        currentContent: await readFile(opts.current, "utf8"),
-        candidateContent: await readFile(opts.candidate, "utf8"),
-        transformation,
-        sourceSegmentIds: [context.sourceSegment.id],
-        sourceTexts: [
-          ...context.storyEntries.map((entry) => entry.prose),
-          ...context.styleExamples.map((example) => example.prose),
-        ],
-      });
-      log(JSON.stringify(result, null, 2));
+      const release = await state.acquireBookLock(bookId);
+      try {
+        const store = new ReferencePackStore(root, state.bookDir(bookId));
+        const transformation = await store.loadTransformation(true);
+        if (!transformation) throw new Error("Reference transformation is missing.");
+        const activeArc = await new ArcStore(state.bookDir(bookId)).getActive();
+        if (!activeArc) throw new Error("Reference HIL prepare requires an active Arc.");
+        const context = await store.buildWriterContext({
+          book: await state.loadBookConfig(bookId),
+          chapterNumber: Number.parseInt(opts.chapter, 10),
+          arcId: activeArc.id,
+        });
+        if (!context) throw new Error("Reference context is missing.");
+        const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).prepare({
+          chapterNumber: Number.parseInt(opts.chapter, 10),
+          candidateId: opts.candidateId,
+          currentContent: await readFile(opts.current, "utf8"),
+          candidateContent: await readFile(opts.candidate, "utf8"),
+          transformation,
+          sourceSegmentIds: [context.sourceSegment.id],
+          sourceTexts: [
+            ...context.storyEntries.map((entry) => entry.prose),
+            ...context.styleExamples.map((example) => example.prose),
+          ],
+        });
+        log(JSON.stringify(result, null, 2));
+      } finally {
+        await release();
+      }
     } catch (error) {
       logError(`Reference HIL prepare failed: ${String(error)}`);
       process.exitCode = 1;
@@ -245,12 +250,20 @@ hil.command("apply")
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
-      const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).apply({
-        chapterNumber: Number.parseInt(opts.chapter, 10),
-        candidateId: opts.candidateId,
-        targetChapterRelativePath: opts.target,
-      });
-      log(JSON.stringify(result, null, 2));
+      const release = await state.acquireBookLock(bookId);
+      try {
+        const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).apply({
+          chapterNumber: Number.parseInt(opts.chapter, 10),
+          candidateId: opts.candidateId,
+          targetChapterRelativePath: opts.target,
+        });
+        log(JSON.stringify({
+          ...result,
+          followUp: "Run write sync, then audit, before approval or continuation.",
+        }, null, 2));
+      } finally {
+        await release();
+      }
     } catch (error) {
       logError(`Reference HIL apply failed: ${String(error)}`);
       process.exitCode = 1;
@@ -266,13 +279,43 @@ hil.command("reject")
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
-      const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).reject(
-        Number.parseInt(opts.chapter, 10),
-        opts.candidateId,
-      );
-      log(JSON.stringify(result, null, 2));
+      const release = await state.acquireBookLock(bookId);
+      try {
+        const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).reject(
+          Number.parseInt(opts.chapter, 10),
+          opts.candidateId,
+        );
+        log(JSON.stringify(result, null, 2));
+      } finally {
+        await release();
+      }
     } catch (error) {
       logError(`Reference HIL reject failed: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
+hil.command("polish")
+  .argument("[book-id]", "Book ID")
+  .requiredOption("--chapter <n>", "Chapter number")
+  .requiredOption("--candidate-id <id>", "Candidate id")
+  .action(async (bookIdArg: string | undefined, opts) => {
+    try {
+      const root = findProjectRoot();
+      const bookId = await resolveBookId(bookIdArg, root);
+      const state = new StateManager(root);
+      const release = await state.acquireBookLock(bookId);
+      try {
+        const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).requestPolish(
+          Number.parseInt(opts.chapter, 10),
+          opts.candidateId,
+        );
+        log(JSON.stringify(result, null, 2));
+      } finally {
+        await release();
+      }
+    } catch (error) {
+      logError(`Reference HIL polish request failed: ${String(error)}`);
       process.exitCode = 1;
     }
   });

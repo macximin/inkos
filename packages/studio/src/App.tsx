@@ -33,7 +33,7 @@ import { useTheme } from "./hooks/use-theme";
 import { useI18n } from "./hooks/use-i18n";
 import { setAppLanguage, tr } from "./lib/app-language";
 import { postApi, putApi, useApi } from "./hooks/use-api";
-import { Sun, Moon } from "lucide-react";
+import { Sun, Moon, Menu, X } from "lucide-react";
 import { House } from "lucide-react";
 
 export type { HashRoute as Route } from "./hooks/use-hash-route";
@@ -63,6 +63,7 @@ export function App() {
   const { data: project, error: projectError, refetch: refetchProject } = useApi<{ language: string; languageExplicit: boolean }>("/project");
   const [showLanguageSelector, setShowLanguageSelector] = useState(false);
   const [ready, setReady] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const isDark = theme === "dark";
 
@@ -96,6 +97,10 @@ export function App() {
   }, [project]);
 
   useSessionEvents(sse, route, setRoute);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [route]);
 
   const nav = {
     toDashboard: () => setRoute({ page: "dashboard" }),
@@ -186,21 +191,31 @@ export function App() {
   return (
     <div className="h-screen bg-background text-foreground flex overflow-hidden font-sans">
       {/* Left Sidebar */}
-      <Sidebar nav={nav} activePage={activePage} sse={sse} t={t} />
+      <Sidebar nav={nav} activePage={activePage} sse={sse} t={t} className="hidden md:flex" />
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label={tr("导航", "Navigation", "메뉴")}>
+          <button type="button" className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setMobileNavOpen(false)} aria-label={tr("关闭导航", "Close navigation", "메뉴 닫기")} />
+          <div className="absolute inset-y-0 left-0 flex max-w-[88vw] shadow-2xl">
+            <Sidebar nav={nav} activePage={activePage} sse={sse} t={t} />
+            <button type="button" onClick={() => setMobileNavOpen(false)} className="mt-3 ml-2 flex h-9 w-9 items-center justify-center rounded-full bg-card text-foreground shadow-lg" aria-label={tr("关闭导航", "Close navigation", "메뉴 닫기")}><X size={16} /></button>
+          </div>
+        </div>
+      )}
 
       {/* Center Content */}
       <div className="flex-1 flex flex-col min-w-0 bg-background/30 backdrop-blur-sm">
         {/* Header Strip */}
-        <header className="h-14 shrink-0 flex items-center justify-between px-8 border-b border-border/40">
+        <header className="h-14 shrink-0 flex items-center justify-between gap-2 px-3 md:px-8 border-b border-border/40">
           <div className="flex items-center gap-2">
+             <button type="button" onClick={() => setMobileNavOpen(true)} className="md:hidden flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/50 bg-card/70 text-foreground" aria-label={tr("打开导航", "Open navigation", "메뉴 열기")}><Menu size={17} /></button>
              <button
                onClick={nav.toDashboard}
-               className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-card/70 px-3.5 py-2 text-[17px] font-semibold text-foreground hover:bg-secondary/50 transition-colors"
+               className="inline-flex min-w-0 items-center gap-2 rounded-lg border border-border/50 bg-card/70 px-2.5 md:px-3.5 py-2 text-sm md:text-[17px] font-semibold text-foreground hover:bg-secondary/50 transition-colors"
              >
                <House size={18} />
-               <span>{t("bread.home")}</span>
-               <span className="text-muted-foreground/70">/</span>
-               <span className="font-serif">InkOS Studio</span>
+               <span className="hidden sm:inline">{t("bread.home")}</span>
+               <span className="hidden sm:inline text-muted-foreground/70">/</span>
+               <span className="font-serif truncate">InkOS</span>
              </button>
           </div>
 

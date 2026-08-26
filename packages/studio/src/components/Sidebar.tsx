@@ -90,11 +90,12 @@ interface Nav {
   toFilmStudio: (id: string) => void;
 }
 
-export function Sidebar({ nav, activePage, sse, t }: {
+export function Sidebar({ nav, activePage, sse, t, className = "" }: {
   nav: Nav;
   activePage: string;
   sse: { messages: ReadonlyArray<SSEMessage> };
   t: TFunction;
+  className?: string;
 }) {
   const { data, refetch: refetchBooks, mutate: mutateBooks } = useApi<{ books: ReadonlyArray<BookSummary> }>("/books");
   const { data: filmsData, refetch: refetchFilms } = useApi<{ films: ReadonlyArray<{ projectId: string; title: string }> }>("/interactive-films");
@@ -284,7 +285,7 @@ export function Sidebar({ nav, activePage, sse, t }: {
   };
 
   return (
-    <aside className="w-[260px] shrink-0 border-r border-border bg-background/80 backdrop-blur-md flex flex-col h-full overflow-hidden select-none">
+    <aside className={`w-[260px] shrink-0 border-r border-border bg-background/80 backdrop-blur-md flex flex-col h-full overflow-hidden select-none ${className}`}>
       {/* Logo Area */}
       <div className="px-6 py-8">
         <button

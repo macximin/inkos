@@ -3434,6 +3434,11 @@ ${matrix}`,
         `Latest chapter ${latestChapter.number} is state-degraded. Repair state or rewrite that chapter before continuing.`,
       );
     }
+    if (latestChapter?.pendingAuditReason === "hil-applied-pending-resync") {
+      throw new Error(
+        `Latest chapter ${latestChapter.number} has an applied HIL candidate and requires truth/state sync before continuing.`,
+      );
+    }
     if (latestChapter?.pendingAuditReason === "resynced-manual-edit") {
       throw new Error(
         `Latest chapter ${latestChapter.number} was resynced from a manual edit and requires auditDraft before continuing.`,

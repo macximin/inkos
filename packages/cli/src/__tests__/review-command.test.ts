@@ -4,6 +4,10 @@ const loadChapterIndexMock = vi.fn();
 const saveChapterIndexMock = vi.fn();
 const prepareReflowMock = vi.fn();
 const rebuildFutureCanonMock = vi.fn();
+const assertChapterApprovalReadyMock = vi.fn(async ({ chapter }: { chapter: { status: string; pendingAuditReason?: string } }) => {
+  if (chapter.status !== "ready-for-review") throw new Error("chapter is not ready-for-review");
+  if (chapter.pendingAuditReason) throw new Error(`chapter still requires audit (${chapter.pendingAuditReason})`);
+});
 const logMock = vi.fn();
 const logErrorMock = vi.fn();
 const events: string[] = [];
@@ -46,6 +50,7 @@ vi.mock("@actalk/inkos-core", () => ({
     events.push(`canon:${input.bookDir.split("/").at(-1)}`);
     return rebuildFutureCanonMock(input);
   },
+  assertChapterApprovalReady: assertChapterApprovalReadyMock,
 }));
 
 vi.mock("../utils.js", () => ({
@@ -97,6 +102,7 @@ describe("review approval Story Rail close trigger", () => {
       message: "No Story Rail plan exists.",
     });
     rebuildFutureCanonMock.mockResolvedValue({ executedMoveCount: 0, changed: false });
+    assertChapterApprovalReadyMock.mockClear();
   });
 
   it("prepares a pending reflow after approve saves status and before releasing the Book lock", async () => {
@@ -150,10 +156,10 @@ describe("review approval Story Rail close trigger", () => {
     );
 
     const approved = saveChapterIndexMock.mock.calls[0]?.[1] as Array<{ status: string }>;
-    expect(approved.map((entry) => entry.status)).toEqual(["approved", "approved"]);
+    expect(approved.map((entry) => entry.status)).toEqual(["approved", "audit-failed"]);
     expect(JSON.parse(logMock.mock.calls.at(-1)?.[0] as string)).toMatchObject({
       bookId: "book-a",
-      approvedCount: 2,
+      approvedCount: 1,
       railReflow: {
         status: "not-eligible",
         reason: "missing-plan",
@@ -161,6 +167,24 @@ describe("review approval Story Rail close trigger", () => {
     });
     expect(events.at(-1)).toBe("release:book-a");
     expect(logErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks approval while a HIL-applied chapter still needs resync and audit", async () => {
+    loadChapterIndexMock.mockResolvedValue([{
+      ...chapter(1),
+      status: "drafted",
+      pendingAuditReason: "hil-applied-pending-resync",
+    }]);
+    const { reviewCommand } = await import("../commands/review.js");
+
+    await expect(reviewCommand.parseAsync(
+      ["node", "review", "approve", "book-a", "1"],
+      { from: "node" },
+    )).rejects.toThrow(/process\.exit/u);
+
+    expect(saveChapterIndexMock).not.toHaveBeenCalled();
+    expect(logErrorMock).toHaveBeenCalledWith(expect.stringContaining("not ready-for-review"));
+    expect(events.at(-1)).toBe("release:book-a");
   });
 
   it("keeps approve successful and emits a warning when optional prepare throws", async () => {

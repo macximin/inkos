@@ -56,8 +56,20 @@ export {
   scoreCommercialEvaluation,
   type CommercialEvaluation,
   type ReferenceTransformationCandidate,
+  type ReferenceTransformationHilCandidateView,
   type TransformationComparisonReport,
 } from "./reference/hil-store.js";
+export { assertChapterApprovalReady } from "./state/chapter-approval.js";
+export {
+  FireflyReviewCandidateSchema,
+  FireflyReviewDecisionSchema,
+  FireflyReviewPacketSchema,
+  assertFireflyReviewPacketIdentity,
+  buildFireflyReviewPackets,
+  type FireflyReviewCandidate,
+  type FireflyReviewDecision,
+  type FireflyReviewPacket,
+} from "./storyyard/review-packet.js";
 export {
   type ArcStatus,
   type ArcEpisodeRole,
