@@ -420,6 +420,7 @@ export {
   createSkillRegistry,
   loadAvailableAgentSkills,
   loadBuiltinAgentSkills,
+  loadBuiltinSkillResource,
   loadConfiguredAgentSkills,
   loadExternalAgentSkills,
   parseAgentSkillDocument,

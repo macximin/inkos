@@ -1,0 +1,4 @@
+interface:
+  display_name: "한국 웹소설 피치 생존심사"
+  short_description: "자기점수를 배제하고 피치의 생존·보류·폐기 순위를 결정"
+  default_prompt: "$inkos-commercial-pitch-review를 사용해 여러 한국 상업 웹소설 피치를 비교하고 한 작품만 생존 추천해 주세요."

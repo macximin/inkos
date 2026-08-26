@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPitchCommand, validatePitchCandidate } from "../commands/pitch.js";
+import { createPitchCommand, validatePitchCandidate, validatePitchSurvivalReview } from "../commands/pitch.js";
 
 const mocks = vi.hoisted(() => ({
   projectRoot: "/tmp/inkos-pitch-test",
@@ -14,6 +14,7 @@ vi.mock("@actalk/inkos-core", () => ({
     constructor(_config: unknown) {}
   },
   runAgentSession: mocks.runAgentSession,
+  loadBuiltinSkillResource: vi.fn(async (skillId: string) => `rubric for ${skillId}`),
 }));
 
 vi.mock("../utils.js", () => ({
@@ -71,6 +72,33 @@ function candidate(candidateId = "p01") {
   };
 }
 
+function survivalReview() {
+  return {
+    winnerCandidateId: "p01",
+    ranking: ["p01", "p02"],
+    verdicts: [
+      {
+        candidateId: "p01",
+        verdict: "SURVIVE",
+        independentScore: { promise: 19, earlyPayoff: 19, repeatEngine: 18, railConversion: 18, longRunSupply: 18, total: 92 },
+        decisiveStrength: "첫 보상이 더 빠르고 관계 변화가 선명하다.",
+        decisiveRisk: "중반 인수전이 반복될 수 있다.",
+        requiredRepair: "Arc별 승부 수단을 분리한다.",
+      },
+      {
+        candidateId: "p02",
+        verdict: "HOLD",
+        independentScore: { promise: 18, earlyPayoff: 17, repeatEngine: 18, railConversion: 17, longRunSupply: 18, total: 88 },
+        decisiveStrength: "채권 회수 엔진이 명확하다.",
+        decisiveRisk: "초반 개인 소유권이 약하다.",
+        requiredRepair: "첫 자산의 개인 귀속을 명시한다.",
+      },
+    ],
+    comparisonReason: "p01이 더 빨리 결제되고 가족 대우 변화가 강하다.",
+    humanDecision: "pending",
+  };
+}
+
 describe("pitch slate command", () => {
   let root: string;
   let stdout: string[];
@@ -100,6 +128,15 @@ describe("pitch slate command", () => {
     const errors = validatePitchCandidate(invalid, "p01");
     expect(errors).toContain("arcLadder must contain at least 6 arcs");
     expect(errors).toContain("commercialScore.total must equal the five component scores");
+  });
+
+  it("rejects survival reviews that restore multiple winners or omit candidates", () => {
+    const invalid = survivalReview();
+    invalid.verdicts[1].verdict = "SURVIVE";
+    invalid.ranking = ["p01"];
+    const errors = validatePitchSurvivalReview(invalid, ["p01", "p02"]);
+    expect(errors).toContain("ranking must contain every candidate exactly once");
+    expect(errors).toContain("at most one candidate may be SURVIVE");
   });
 
   it("generates candidates serially and publishes one non-canonical slate atomically", async () => {
@@ -134,6 +171,9 @@ describe("pitch slate command", () => {
     }));
     expect(String(mocks.runAgentSession.mock.calls[0]?.[1])).toContain(
       "각각 0~20점, total은 그 합계인 0~100점",
+    );
+    expect(String(mocks.runAgentSession.mock.calls[0]?.[0]?.backgroundTaskContext)).toContain(
+      "rubric for inkos-commercial-webnovel-pitch",
     );
     const output = JSON.parse(stdout.join(""));
     expect(output).toEqual(expect.objectContaining({
@@ -175,5 +215,53 @@ describe("pitch slate command", () => {
     expect(process.exitCode).toBe(0);
     expect(mocks.runAgentSession).toHaveBeenCalledTimes(2);
     expect(String(mocks.runAgentSession.mock.calls[1]?.[1])).toContain("계약 검증에 실패");
+  });
+
+  it("reviews a slate without exposing generator scores or changing the slate", async () => {
+    const slateDir = join(root, ".inkos", "pitch-slates", "review-canary");
+    await mkdir(slateDir, { recursive: true });
+    const p01 = candidate("p01");
+    const p02 = candidate("p02");
+    await writeFile(join(slateDir, "slate.json"), JSON.stringify({
+      schemaVersion: 1,
+      slateId: "review-canary",
+      canonStatus: "non-canonical",
+      reviewStatus: "pending",
+      candidateCount: 2,
+      candidates: [p01, p02],
+    }), "utf8");
+    mocks.runAgentSession.mockResolvedValueOnce({ responseText: JSON.stringify(survivalReview()), messages: [] });
+
+    const command = createPitchCommand();
+    await command.parseAsync([
+      "review",
+      "--id", "review-canary",
+      "--session", "review-canary-session",
+      "--json",
+    ], { from: "user" });
+
+    expect(process.exitCode).toBe(0);
+    expect(mocks.runAgentSession).toHaveBeenCalledTimes(1);
+    const reviewPrompt = String(mocks.runAgentSession.mock.calls[0]?.[1]);
+    expect(reviewPrompt).not.toContain('"commercialScore"');
+    expect(reviewPrompt).not.toContain('"decision"');
+    expect(mocks.runAgentSession.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      bookId: null,
+      sessionKind: "pitch-review",
+      requestedSkills: ["inkos-commercial-pitch-review"],
+      suppressProductionTools: true,
+    }));
+    const output = JSON.parse(stdout.join(""));
+    expect(output).toEqual(expect.objectContaining({
+      slateId: "review-canary",
+      reviewStatus: "complete",
+      humanDecision: "pending",
+      winnerCandidateId: "p01",
+    }));
+    const persisted = JSON.parse(await readFile(join(slateDir, "survival-review", "review.json"), "utf8"));
+    expect(persisted.winnerCandidateId).toBe("p01");
+    const originalSlate = JSON.parse(await readFile(join(slateDir, "slate.json"), "utf8"));
+    expect(originalSlate.candidates[0].commercialScore.total).toBe(91);
+    expect(originalSlate.candidates[0].decision).toBe("pending");
   });
 });

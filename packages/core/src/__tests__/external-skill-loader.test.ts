@@ -12,6 +12,7 @@ import {
 } from "../skills/index.js";
 
 const BUILTIN_SKILL_IDS = [
+  "inkos-commercial-pitch-review",
   "inkos-commercial-webnovel-pitch",
   "inkos-long-market-research",
   "inkos-long-story-analysis",
@@ -60,6 +61,13 @@ describe("external skill loader", () => {
         body: expect.stringContaining("parser or model-format failure"),
       }),
     ]));
+    const pitchReviewSkill = loaded.skills.find((skill) => skill.id === "inkos-commercial-pitch-review");
+    expect(pitchReviewSkill?.body).toContain("생성자가 붙인 점수와 결정은 보지 말고");
+    const survivalRubric = await readFile(
+      join(pitchReviewSkill!.baseDir!, "references", "survival-rubric.md"),
+      "utf-8",
+    );
+    expect(survivalRubric).toContain("슬레이트당 최대 하나");
     const pitchSkill = loaded.skills.find((skill) => skill.id === "inkos-commercial-webnovel-pitch");
     expect(pitchSkill?.description).toContain("주축 골격");
     expect(pitchSkill?.body).toContain("주축 참고작 하나");

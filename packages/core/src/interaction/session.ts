@@ -3,7 +3,7 @@ import { AutomationModeSchema, type AutomationMode } from "./modes.js";
 import { ExecutionStateSchema, InteractionEventSchema, type InteractionEvent } from "./events.js";
 import { assertSafeBookId, isSafeBookId } from "../utils/book-id.js";
 
-export const SessionKindSchema = z.enum(["chat", "book-create", "book", "short", "play", "script", "storyboard", "interactive-film", "edit", "interactive-film-authoring", "pitch-slate"]);
+export const SessionKindSchema = z.enum(["chat", "book-create", "book", "short", "play", "script", "storyboard", "interactive-film", "edit", "interactive-film-authoring", "pitch-slate", "pitch-review"]);
 export type SessionKind = z.infer<typeof SessionKindSchema>;
 export const PlayModeSchema = z.enum(["open", "guided"]);
 export type PlayMode = z.infer<typeof PlayModeSchema>;

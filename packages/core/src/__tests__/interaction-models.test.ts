@@ -59,6 +59,7 @@ describe("interaction models", () => {
     expect(SessionKindSchema.parse("script")).toBe("script");
     expect(SessionKindSchema.parse("storyboard")).toBe("storyboard");
     expect(SessionKindSchema.parse("interactive-film")).toBe("interactive-film");
+    expect(SessionKindSchema.parse("pitch-review")).toBe("pitch-review");
     expect(ScriptTargetFormatSchema.parse("vertical_short_drama")).toBe("vertical_short_drama");
     expect(PlayModeSchema.parse("guided")).toBe("guided");
 

@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import {
   loadConfiguredAgentSkills,
   loadExternalAgentSkills,
@@ -34,6 +36,18 @@ export async function loadAvailableAgentSkills(
     skills: [...builtin.skills, ...configured.skills],
     diagnostics: [...builtin.diagnostics, ...configured.diagnostics],
   };
+}
+
+export async function loadBuiltinSkillResource(skillId: string, resourcePath: string): Promise<string> {
+  const loaded = await loadBuiltinAgentSkills();
+  const skill = loaded.skills.find((candidate) => candidate.id === skillId);
+  if (!skill?.baseDir) throw new Error(`Built-in skill is unavailable: ${skillId}`);
+  const fullPath = join(skill.baseDir, resourcePath);
+  const rel = relative(skill.baseDir, fullPath);
+  if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) {
+    throw new Error(`Built-in skill resource path is unsafe: ${resourcePath}`);
+  }
+  return readFile(fullPath, "utf8");
 }
 
 function builtinSkillsRoot(): string {
