@@ -45,6 +45,16 @@ describe("buildAgentSystemPrompt", () => {
       expect(prompt).toContain("write_truth_file");
     });
 
+    it("isolates pitch-slate production from Books and originality scoring", () => {
+      const prompt = buildAgentSystemPrompt(null, "ko", "pitch-slate");
+      expect(prompt).toContain("비정본 후보 제작 실행");
+      expect(prompt).toContain("Book, Story Frame, Rail, Arc, 회차 원고를 만들거나 고치지 않습니다");
+      expect(prompt).toContain("JSON 객체 하나만 출력");
+      expect(prompt).toContain("원작과의 거리를 점수화하지 않습니다");
+      expect(prompt).not.toContain("propose_action");
+      expect(prompt).not.toContain("sub_agent");
+    });
+
     it("requires self-contained proposed action instructions", () => {
       const zhPrompt = buildAgentSystemPrompt(null, "zh", "chat");
       const enPrompt = buildAgentSystemPrompt(null, "en", "chat");

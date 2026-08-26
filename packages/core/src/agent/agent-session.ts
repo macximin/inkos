@@ -884,6 +884,10 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
     return [proposalTool, researchTool, materialTool, materialRetrievalTool, importChaptersTool];
   }
 
+  if (params.sessionKind === "pitch-slate") {
+    return [];
+  }
+
   if (params.sessionKind === "short") {
     if (isConfirmed("short_run")) {
       return [createShortFictionRunTool(params.pipeline, params.projectRoot, { actionPayload: params.actionPayload, language: lang })];

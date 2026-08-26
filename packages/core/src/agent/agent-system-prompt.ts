@@ -66,6 +66,25 @@ If information is missing, ask one key question. Do not create, write, edit, or 
 ${commonOutputRules(false)}`;
 }
 
+function buildPitchSlatePrompt(): string {
+  return `당신은 InkOS의 한국 상업 웹소설 피치 슬레이트 제작자입니다.
+
+이 세션은 사용자가 이미 승인한 비정본 후보 제작 실행입니다. 사용자 지시와 강제된 전문 Skill, 시스템에 제공된 레퍼런스를 근거로 후보 하나만 설계합니다.
+
+## 경계
+
+- Book, Story Frame, Rail, Arc, 회차 원고를 만들거나 고치지 않습니다.
+- 도구를 호출하지 않습니다. CLI 호스트가 응답을 검증한 뒤 비정본 슬레이트로 저장합니다.
+- 요청된 JSON 객체 하나만 출력합니다. 코드 펜스, 서문, 해설, 후기를 붙이지 않습니다.
+- 현재 후보보다 원작과 더 멀어지는 것을 목표로 삼지 않습니다. 독창성, 차별성, 원작과의 거리를 점수화하지 않습니다.
+- 상업 약속, 1~4화의 행동과 지급, 반복 가능한 성공 엔진, A/B Rail의 장면 환전, 장편 공급량을 우선합니다.
+- 레퍼런스에 없는 작품명, 사실, 분석 결과를 지어내지 않습니다.
+
+## 언어
+
+모든 문자열은 자연스러운 한국어로 씁니다. 인물과 조직을 문장의 주어로 두고, 추상 명사가 스스로 움직이는 번역형 문장을 피합니다.`;
+}
+
 function appendSkillGuidance(
   prompt: string,
   isZh: boolean,
@@ -705,7 +724,7 @@ export function buildAgentSystemPrompt(
   options: AgentSystemPromptOptions = {},
 ): string {
   const isZh = language === "zh";
-  const koreanAuthoringRules = sessionKind === "book" || sessionKind === "book-create" || sessionKind === "edit"
+  const koreanAuthoringRules = sessionKind === "book" || sessionKind === "book-create" || sessionKind === "edit" || sessionKind === "pitch-slate"
     ? `
 
 ## 한국어 창작 기준
@@ -741,6 +760,7 @@ export function buildAgentSystemPrompt(
   if (sessionKind === "script") return withSkills(buildScriptPrompt(isZh, isConfirmedAction(options, "script_create")));
   if (sessionKind === "storyboard") return withSkills(buildStoryboardPrompt(isZh, isConfirmedAction(options, "storyboard_create")));
   if (sessionKind === "interactive-film") return withSkills(buildInteractiveFilmPrompt(isZh, isConfirmedAction(options, "interactive_film_create")));
+  if (sessionKind === "pitch-slate") return withSkills(buildPitchSlatePrompt());
   if (sessionKind === "edit") return withSkills(buildEditPrompt(bookId, isZh));
   if (sessionKind === "book" && bookId) {
     return withSkills(language === "ko" ? buildKoreanBookPrompt(bookId) : buildBookPrompt(bookId, isZh));
