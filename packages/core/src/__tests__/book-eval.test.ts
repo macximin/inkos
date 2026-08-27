@@ -57,4 +57,74 @@ describe("evaluateBookQuality", () => {
       status: "audit-failed",
     });
   });
+
+  it("keeps informational Korean signals out of quality penalties", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-book-eval-ko-"));
+    const state = new StateManager(root);
+    const now = new Date().toISOString();
+    const book = {
+      id: "ko-demo-book",
+      title: "계약의 주인",
+      language: "ko" as const,
+      platform: "other" as const,
+      genre: "현대판타지 재벌물",
+      status: "active" as const,
+      targetChapters: 10,
+      chapterWordCount: 5000,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await state.saveBookConfig(book.id, book);
+    await state.ensureControlDocuments(book.id);
+    await state.saveChapterIndex(book.id, [
+      { number: 1, title: "계약의 주인", status: "approved", wordCount: 5000, auditIssues: [], lengthWarnings: [], createdAt: now, updatedAt: now },
+    ]);
+    const bookDir = state.bookDir(book.id);
+    await mkdir(join(bookDir, "chapters"), { recursive: true });
+    await writeFile(join(bookDir, "chapters", "0001_계약의_주인.md"), [
+      "승부는 돈이 아니라 권리였다.",
+      "필요한 건 약속이 아니라 계약이었다.",
+      "그가 원한 것은 칭찬이 아니라 지분이었다.",
+      "상대가 내민 것은 사과가 아니라 담보였다.",
+      "마지막에 남은 건 체면이 아니라 현금이었다.",
+    ].join(" "), "utf-8");
+
+    const report = await evaluateBookQuality({ state, bookId: book.id });
+
+    expect(report.chapters[0]).toMatchObject({
+      aiTellCount: 0,
+      aiTellDensity: 0,
+    });
+  });
+
+  it("uses the persisted Korean book language for quality evaluation", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-book-eval-ko-language-"));
+    const state = new StateManager(root);
+    const now = new Date().toISOString();
+    const book = {
+      id: "ko-language-book",
+      title: "원고 검수",
+      language: "ko" as const,
+      platform: "other" as const,
+      genre: "현대판타지 재벌물",
+      status: "active" as const,
+      targetChapters: 10,
+      chapterWordCount: 5000,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await state.saveBookConfig(book.id, book);
+    await state.ensureControlDocuments(book.id);
+    await state.saveChapterIndex(book.id, [
+      { number: 1, title: "원고 검수", status: "approved", wordCount: 5000, auditIssues: [], lengthWarnings: [], createdAt: now, updatedAt: now },
+    ]);
+    const bookDir = state.bookDir(book.id);
+    await mkdir(join(bookDir, "chapters"), { recursive: true });
+    await writeFile(join(bookDir, "chapters", "0001_원고_검수.md"), "요청하신 수정본입니다.\n\n남자는 계약서를 접었다.", "utf-8");
+
+    const report = await evaluateBookQuality({ state, bookId: book.id });
+
+    expect(report.chapters[0]!.aiTellCount).toBe(1);
+    expect(report.chapters[0]!.aiTellDensity).toBeGreaterThan(0);
+  });
 });

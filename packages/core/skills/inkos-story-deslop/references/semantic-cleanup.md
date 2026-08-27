@@ -11,3 +11,5 @@ Ask of every suspect passage:
 7. Does sentence rhythm match the scene's physical and emotional movement?
 
 Repair by restoring concrete cause and character-specific behavior. Do not mechanically delete transitions, metaphors, three-part lists, or every occurrence of a flagged word.
+
+For commercial fiction, test the repair against the scene's saleable effect. Keep the promise, reversal, reward, relationship change, and last-line propulsion at least as legible as before. If cleanup makes a scene smoother but less urgent, less specific, or less fun, reject that cleanup.

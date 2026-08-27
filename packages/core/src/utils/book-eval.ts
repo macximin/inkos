@@ -82,6 +82,8 @@ export async function evaluateBookQuality(options: EvaluateBookQualityOptions): 
   const { state, bookId } = options;
   const index = await state.loadChapterIndex(bookId);
   const bookDir = state.bookDir(bookId);
+  const book = await state.loadBookConfig(bookId);
+  const language = book.language ?? "zh";
   const chaptersDir = join(bookDir, "chapters");
   const { start, end } = parseChapterRange(options.chapters);
   const filteredIndex = index.filter((ch) => ch.number >= start && ch.number <= end);
@@ -92,7 +94,8 @@ export async function evaluateBookQuality(options: EvaluateBookQualityOptions): 
     const paddedNum = String(ch.number).padStart(4, "0");
     const file = chapterFiles.find((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
     const content = file ? await readFile(join(chaptersDir, file), "utf-8") : "";
-    const aiTells = content ? analyzeAITells(content) : { issues: [] };
+    const aiTells = content ? analyzeAITells(content, language) : { issues: [] };
+    const scoredAiTells = aiTells.issues.filter((issue) => issue.severity === "warning");
     const paragraphs = content
       .split(/\n\s*\n/)
       .map((p) => p.trim())
@@ -100,7 +103,7 @@ export async function evaluateBookQuality(options: EvaluateBookQualityOptions): 
     const shortParas = paragraphs.filter((p) => p.length < 35);
     const paragraphWarnings = shortParas.length > paragraphs.length * 0.4 ? 1 : 0;
     const aiTellDensity = content.length > 0
-      ? (aiTells.issues.length / content.length) * 1000
+      ? (scoredAiTells.length / content.length) * 1000
       : 0;
 
     chapterEvals.push({
@@ -108,7 +111,7 @@ export async function evaluateBookQuality(options: EvaluateBookQualityOptions): 
       title: ch.title,
       wordCount: ch.wordCount,
       auditIssueCount: ch.auditIssues.length,
-      aiTellCount: aiTells.issues.length,
+      aiTellCount: scoredAiTells.length,
       aiTellDensity: Math.round(aiTellDensity * 100) / 100,
       paragraphWarnings,
       status: ch.status,

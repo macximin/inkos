@@ -1,11 +1,17 @@
 /**
  * Structural AI-tell detection — pure rule-based analysis (no LLM).
  *
- * Detects patterns common in AI-generated Chinese text:
+ * Detects structural patterns common in generated prose:
  * - dim 20: Paragraph length uniformity (low variance)
  * - dim 21: Filler/hedge word density
  * - dim 22: Formulaic transition patterns
  * - dim 23: List-like structure (consecutive same-prefix sentences)
+ * - ko dim 24: Assistant-response or manuscript-format residue
+ * - ko dim 25: Repeated interpretive closure
+ * - ko dim 26: Repeated binary-contrast scaffolding
+ *
+ * These findings are advisory. They identify passages for editorial review;
+ * they are not proof of model authorship and must not trigger blind rewrites.
  */
 
 export interface AITellIssue {
@@ -32,6 +38,76 @@ const TRANSITION_WORDS: Record<AITellLanguage, ReadonlyArray<string>> = {
   ko: ["그러나", "하지만", "한편", "동시에", "그럼에도", "그렇기는 해도", "주목할 점은"],
   en: ["however", "meanwhile", "on the other hand", "nevertheless", "even so", "still"],
 };
+
+const KOREAN_ASSISTANT_RESIDUE_PATTERNS: ReadonlyArray<RegExp> = [
+  /요청하신\s+(?:내용|원고|문장|장면)/g,
+  /(?:다음은|아래는)\s+(?:수정|작성|재작성|보완|다듬)(?:한|된|은)?\s*(?:원고|문장|내용|버전)/g,
+  /(?:수정본|개선본|다듬은\s+버전)(?:입니다|을\s+드립니다)/g,
+  /도움이\s+되었(?:기를\s+바랍니다|으면\s+좋겠습니다)/g,
+];
+
+const KOREAN_INTERPRETIVE_CLOSURE_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:이는|이것은|그것은|그건|그게)\s+[^.!?\n]{0,60}?(?:의미했|뜻했|증명했|보여\s*주었)[^.!?\n]*(?:[.!?]|$)/g,
+  /(?:중요한\s+것은|분명한\s+것은|핵심은|문제는)\s+[^.!?\n]{0,60}(?:[.!?]|$)/g,
+];
+
+function countPatternMatches(content: string, patterns: ReadonlyArray<RegExp>): number {
+  return patterns.reduce((total, pattern) => total + (content.match(pattern)?.length ?? 0), 0);
+}
+
+function analyzeKoreanFictionSignals(content: string): AITellIssue[] {
+  const issues: AITellIssue[] = [];
+
+  const assistantResidueCount = countPatternMatches(content, KOREAN_ASSISTANT_RESIDUE_PATTERNS);
+  if (assistantResidueCount > 0) {
+    issues.push({
+      severity: "warning",
+      category: "응답문 잔재",
+      description: `원고 바깥의 챗봇 응답처럼 보이는 문구가 ${assistantResidueCount}건 발견됐습니다.`,
+      suggestion: "실제 서사인지 확인한 뒤, 요청 응답·수정본 안내 문구만 국소적으로 제거하세요.",
+    });
+  }
+
+  const lines = content.split(/\r?\n/);
+  const headingCount = lines.filter((line) => /^\s{0,3}#{1,6}\s+\S/.test(line)).length;
+  const dashLineCount = lines.filter((line) => /^\s*-\s+\S/.test(line)).length;
+  const explicitListCount = lines.filter((line) => /^\s*(?:[*+]\s+|\d+[.)]\s+)\S/.test(line)).length;
+  const fenceCount = lines.filter((line) => /^\s*```/.test(line)).length;
+  // A leading dash is a common Korean dialogue convention, so dash-only lines
+  // do not establish Markdown residue without stronger editorial scaffolding.
+  const hasFormatResidue = fenceCount > 0 || headingCount >= 2 || explicitListCount >= 3;
+  if (hasFormatResidue) {
+    issues.push({
+      severity: "warning",
+      category: "원고 형식 잔재",
+      description: `본문에서 Markdown 제목 ${headingCount}개, 명시적 목록 ${explicitListCount}개, 대시 행 ${dashLineCount}개, 코드 울타리 ${fenceCount}개가 감지됐습니다.`,
+      suggestion: "회차 제목이나 의도한 장면 구분은 보존하고, 모델의 설명·목록·코드 울타리만 원고 밖으로 이동하세요.",
+    });
+  }
+
+  const interpretiveClosureCount = countPatternMatches(content, KOREAN_INTERPRETIVE_CLOSURE_PATTERNS);
+  if (interpretiveClosureCount >= 4) {
+    issues.push({
+      severity: "warning",
+      category: "해설식 결론 반복",
+      description: `행동이나 결과를 다시 풀이하는 결론형 문장틀이 ${interpretiveClosureCount}회 반복됩니다.`,
+      suggestion: "독자가 이미 확인한 의미는 재설명하지 말고, 필요한 정보만 인물의 선택·반응·손익 결과로 남기세요.",
+    });
+  }
+
+  const contrastCount = content.match(/아니라/g)?.length ?? 0;
+  const contrastDensity = content.length > 0 ? contrastCount / (content.length / 1000) : 0;
+  if (contrastCount >= 5 && contrastDensity > 1.2) {
+    issues.push({
+      severity: "info",
+      category: "대조 문장틀 반복",
+      description: `"아니라"를 이용한 이분법적 대조가 ${contrastCount}회(1천 자당 ${contrastDensity.toFixed(1)}회) 반복됩니다.`,
+      suggestion: "강조에 필요한 대조는 남기고, 같은 결론을 재포장한 문장만 행동·대가·관계 변화로 바꾸세요.",
+    });
+  }
+
+  return issues;
+}
 
 /**
  * Analyze text content for structural AI-tell patterns.
@@ -174,6 +250,10 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
             : "变换句式开头：用不同主语、时间词、动作词开头，打破列表感",
       });
     }
+  }
+
+  if (isKorean) {
+    issues.push(...analyzeKoreanFictionSignals(content));
   }
 
   return { issues };

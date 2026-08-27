@@ -91,6 +91,92 @@ describe("analyzeAITells", () => {
       .not.toMatch(/[\u4e00-\u9fff]/);
   });
 
+  it("detects high-confidence Korean assistant-response residue", () => {
+    const content = "요청하신 수정본입니다.\n\n남자는 계약서를 접어 주머니에 넣었다.";
+
+    const result = analyzeAITells(content, "ko");
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      severity: "warning",
+      category: "응답문 잔재",
+      suggestion: expect.stringContaining("국소적으로"),
+    }));
+  });
+
+  it("detects manuscript-format residue without rejecting a single chapter title", () => {
+    const cleanChapter = analyzeAITells([
+      "# 1화 계약서",
+      "",
+      "- 잔금은 오늘 들어옵니까?",
+      "",
+      "- 계약서부터 보시죠.",
+      "",
+      "남자는 도장을 찍었다.",
+    ].join("\n"), "ko");
+    expect(cleanChapter.issues.some((issue) => issue.category === "원고 형식 잔재")).toBe(false);
+
+    const contaminated = analyzeAITells([
+      "# 수정 포인트",
+      "1. 갈등을 강화했습니다.",
+      "2. 대사를 정리했습니다.",
+      "3. 후킹을 추가했습니다.",
+      "## 수정 원고",
+      "남자는 도장을 찍었다.",
+    ].join("\n"), "ko");
+
+    expect(contaminated.issues).toContainEqual(expect.objectContaining({
+      severity: "warning",
+      category: "원고 형식 잔재",
+    }));
+  });
+
+  it("detects repeated interpretive closures but preserves a single necessary explanation", () => {
+    const single = analyzeAITells("문제는 잔금이었다. 그는 통장을 내밀었다.", "ko");
+    expect(single.issues.some((issue) => issue.category === "해설식 결론 반복")).toBe(false);
+
+    const repeated = analyzeAITells([
+      "문제는 잔금이었다.",
+      "중요한 것은 소유권이었다.",
+      "이는 그가 협상에서 이겼다는 뜻했다.",
+      "분명한 것은 공장이 이제 그의 손에 있다는 점이었다.",
+    ].join("\n"), "ko");
+
+    expect(repeated.issues).toContainEqual(expect.objectContaining({
+      severity: "warning",
+      category: "해설식 결론 반복",
+    }));
+  });
+
+  it("reports dense binary-contrast scaffolding as information, not a rewrite trigger", () => {
+    const content = [
+      "승부는 돈이 아니라 권리였다.",
+      "필요한 건 약속이 아니라 계약이었다.",
+      "그가 원한 것은 칭찬이 아니라 지분이었다.",
+      "상대가 내민 것은 사과가 아니라 담보였다.",
+      "마지막에 남은 건 체면이 아니라 현금이었다.",
+    ].join(" ");
+
+    const result = analyzeAITells(content, "ko");
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      severity: "info",
+      category: "대조 문장틀 반복",
+    }));
+  });
+
+  it("does not flag a concrete Korean commercial-fiction beat", () => {
+    const content = [
+      "도경은 밀린 급여가 적힌 장부를 책상 위에 폈다.",
+      "직원들의 시선이 통장 사본으로 몰렸다. 입금액은 삼억 이천이었다.",
+      "문제는 소유권이 아니라 오늘 밤 멈출 압류 트럭이었다. 그는 공장 열쇠를 집어 들고 정문으로 걸어갔다.",
+    ].join("\n\n");
+
+    const result = analyzeAITells(content, "ko");
+    const koreanFictionSignals = new Set(["응답문 잔재", "원고 형식 잔재", "해설식 결론 반복", "대조 문장틀 반복"]);
+
+    expect(result.issues.filter((issue) => koreanFictionSignals.has(issue.category))).toHaveLength(0);
+  });
+
   it("returns no issues for content with fewer than 3 paragraphs", () => {
     const content = "只有一段话。";
     const result = analyzeAITells(content);
