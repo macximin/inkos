@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@actalk/inkos-core", () => ({
+  defaultChapterLength: vi.fn(() => 5000),
+  normalizePlatformOrOther: vi.fn(() => "other"),
   PipelineRunner: class PipelineRunnerMock {
     constructor(_config: unknown) {}
   },
@@ -263,5 +265,132 @@ describe("pitch slate command", () => {
     const originalSlate = JSON.parse(await readFile(join(slateDir, "slate.json"), "utf8"));
     expect(originalSlate.candidates[0].commercialScore.total).toBe(91);
     expect(originalSlate.candidates[0].decision).toBe("pending");
+  });
+
+  it("records one immutable hash-bound human decision without mutating the review", async () => {
+    const slateDir = join(root, ".inkos", "pitch-slates", "decision-canary");
+    const reviewDir = join(slateDir, "survival-review");
+    await mkdir(reviewDir, { recursive: true });
+    const slate = {
+      schemaVersion: 1,
+      slateId: "decision-canary",
+      canonStatus: "non-canonical",
+      reviewStatus: "pending",
+      candidateCount: 2,
+      candidates: [candidate("p01"), candidate("p02")],
+    };
+    const slateBytes = Buffer.from(`${JSON.stringify(slate, null, 2)}\n`);
+    await writeFile(join(slateDir, "slate.json"), slateBytes);
+    await writeFile(join(reviewDir, "review.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      reviewKind: "independent-blind-comparison",
+      slateId: "decision-canary",
+      reviewedAt: "2026-08-26T12:00:00.000Z",
+      sourceSlateSha256: (await import("node:crypto")).createHash("sha256").update(slateBytes).digest("hex"),
+      ...survivalReview(),
+    }, null, 2)}\n`);
+
+    const command = createPitchCommand({
+      now: () => new Date("2026-08-27T01:00:00.000Z"),
+      readInput: async () => "p02의 채권 회수 엔진이 장편 공급량에서 더 유리함.",
+    });
+    await command.parseAsync([
+      "decision", "--id", "decision-canary", "--candidate", "p02", "--decision", "select", "--json",
+    ], { from: "user" });
+
+    expect(process.exitCode).toBe(0);
+    const output = JSON.parse(stdout.join(""));
+    expect(output).toEqual(expect.objectContaining({
+      slateId: "decision-canary",
+      candidateId: "p02",
+      humanDecision: "select",
+      canonEffect: "planning-promotion-authorized",
+      manuscriptAuthorized: false,
+    }));
+    const decision = JSON.parse(await readFile(join(slateDir, "human-decision", "decision.json"), "utf8"));
+    expect(decision.sourceSlateSha256).toHaveLength(64);
+    expect(decision.sourceReviewSha256).toHaveLength(64);
+    const unchangedReview = JSON.parse(await readFile(join(reviewDir, "review.json"), "utf8"));
+    expect(unchangedReview.humanDecision).toBe("pending");
+
+    stdout = [];
+    const replay = createPitchCommand({ readInput: async () => "다른 결정" });
+    await replay.parseAsync([
+      "decision", "--id", "decision-canary", "--candidate", "p01", "--decision", "select", "--json",
+    ], { from: "user" });
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(stdout.join("")).error).toContain("already exists");
+  });
+
+  it("promotes only a selected pitch into a planning Book and creates no manuscript", async () => {
+    const slateDir = join(root, ".inkos", "pitch-slates", "promote-canary");
+    const reviewDir = join(slateDir, "survival-review");
+    const decisionDir = join(slateDir, "human-decision");
+    await mkdir(reviewDir, { recursive: true });
+    await mkdir(decisionDir, { recursive: true });
+    const slate = {
+      schemaVersion: 1,
+      slateId: "promote-canary",
+      canonStatus: "non-canonical",
+      reviewStatus: "pending",
+      candidateCount: 2,
+      candidates: [candidate("p01"), candidate("p02")],
+    };
+    const slateBytes = Buffer.from(`${JSON.stringify(slate, null, 2)}\n`);
+    await writeFile(join(slateDir, "slate.json"), slateBytes);
+    const { createHash } = await import("node:crypto");
+    const review = {
+      schemaVersion: 1,
+      reviewKind: "independent-blind-comparison",
+      slateId: "promote-canary",
+      reviewedAt: "2026-08-26T12:00:00.000Z",
+      sourceSlateSha256: createHash("sha256").update(slateBytes).digest("hex"),
+      ...survivalReview(),
+    };
+    const reviewBytes = Buffer.from(`${JSON.stringify(review, null, 2)}\n`);
+    await writeFile(join(reviewDir, "review.json"), reviewBytes);
+    await writeFile(join(decisionDir, "decision.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      decisionId: "phd-test",
+      slateId: "promote-canary",
+      candidateId: "p02",
+      decision: "select",
+      comment: "상업성 우선 선택",
+      decidedAt: "2026-08-27T01:00:00.000Z",
+      sourceSlateSha256: createHash("sha256").update(slateBytes).digest("hex"),
+      sourceReviewSha256: createHash("sha256").update(reviewBytes).digest("hex"),
+      canonEffect: "planning-promotion-authorized",
+      manuscriptAuthorized: false,
+    }, null, 2)}\n`);
+    let promotedBrief = "";
+    const command = createPitchCommand({
+      now: () => new Date("2026-08-27T02:00:00.000Z"),
+      initializePromotedBook: async ({ book, brief }) => {
+        promotedBrief = brief;
+        const bookDir = join(root, "books", book.id);
+        await mkdir(join(bookDir, "story"), { recursive: true });
+        await writeFile(join(bookDir, "book.json"), `${JSON.stringify(book, null, 2)}\n`);
+      },
+    });
+    await command.parseAsync([
+      "promote", "--id", "promote-canary", "--book", "selected-chaebol", "--json",
+    ], { from: "user" });
+
+    expect(process.exitCode).toBe(0);
+    expect(promotedBrief).toContain("p02");
+    const output = JSON.parse(stdout.join(""));
+    expect(output).toEqual(expect.objectContaining({
+      bookId: "selected-chaebol",
+      candidateId: "p02",
+      canonEffect: "planning-seed-created",
+      manuscriptCreated: false,
+    }));
+    const book = JSON.parse(await readFile(join(root, "books", "selected-chaebol", "book.json"), "utf8"));
+    expect(book.status).toBe("outlining");
+    expect(book.writing.reviewMode).toBe("manual");
+    await expect(readFile(join(root, "books", "selected-chaebol", "chapters", "chapter-0001.md"), "utf8"))
+      .rejects.toThrow();
+    const receipt = JSON.parse(await readFile(join(slateDir, "promotion.json"), "utf8"));
+    expect(receipt.lineageEdges.map((edge: { type: string }) => edge.type)).toEqual(["selects", "promotes_to"]);
   });
 });

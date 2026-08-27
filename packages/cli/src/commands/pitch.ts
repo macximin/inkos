@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { Command } from "commander";
-import { PipelineRunner, loadBuiltinSkillResource, runAgentSession } from "@actalk/inkos-core";
+import {
+  PipelineRunner,
+  defaultChapterLength,
+  loadBuiltinSkillResource,
+  normalizePlatformOrOther,
+  runAgentSession,
+  type BookConfig,
+} from "@actalk/inkos-core";
 import { buildPipelineConfig, createClient, findProjectRoot, loadConfig } from "../utils.js";
 
 const SAFE_SLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -12,12 +19,17 @@ const REQUIRED_SCORE_KEYS = ["promise", "earlyPayoff", "repeatEngine", "railConv
 const PITCH_SKILL_ID = "inkos-commercial-webnovel-pitch";
 const PITCH_REVIEW_SKILL_ID = "inkos-commercial-pitch-review";
 const REVIEW_VERDICTS = new Set(["SURVIVE", "HOLD", "KILL"]);
+const HUMAN_DECISIONS = new Set(["select", "hold", "reject"]);
 
 type JsonObject = Record<string, unknown>;
 
 export interface PitchCommandHooks {
   readonly readInput?: () => Promise<string>;
   readonly now?: () => Date;
+  readonly initializePromotedBook?: (params: {
+    readonly book: BookConfig;
+    readonly brief: string;
+  }) => Promise<void>;
 }
 
 async function readPitchInstruction(
@@ -64,6 +76,132 @@ function nonEmptyStringArray(value: unknown, minimum = 1): value is string[] {
 
 function objectArray(value: unknown, minimum = 1): value is JsonObject[] {
   return Array.isArray(value) && value.length >= minimum && value.every(isObject);
+}
+
+async function readOptionalText(explicit: unknown, readInput?: () => Promise<string>): Promise<string> {
+  if (nonEmptyString(explicit)) return explicit.trim();
+  if (readInput) return (await readInput()).trim();
+  if (!process.stdin.isTTY) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    return Buffer.concat(chunks).toString("utf8").trim();
+  }
+  return "";
+}
+
+function sha256Bytes(bytes: Buffer | string): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function readJsonObject(path: string, label: string): Promise<{ value: JsonObject; bytes: Buffer }> {
+  const bytes = await readFile(path);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(`${label} is not valid JSON`);
+  }
+  if (!isObject(parsed)) throw new Error(`${label} must be a JSON object`);
+  return { value: parsed, bytes };
+}
+
+function pitchPaths(projectRoot: string, slateId: string) {
+  const slateDir = join(projectRoot, ".inkos", "pitch-slates", slateId);
+  return {
+    slateDir,
+    slatePath: join(slateDir, "slate.json"),
+    reviewPath: join(slateDir, "survival-review", "review.json"),
+    decisionDir: join(slateDir, "human-decision"),
+    promotionPath: join(slateDir, "promotion.json"),
+  };
+}
+
+async function loadReviewedSlate(projectRoot: string, slateId: string) {
+  const paths = pitchPaths(projectRoot, slateId);
+  const [{ value: slate, bytes: slateBytes }, { value: review, bytes: reviewBytes }] = await Promise.all([
+    readJsonObject(paths.slatePath, "pitch slate"),
+    readJsonObject(paths.reviewPath, "pitch survival review"),
+  ]);
+  if (slate.slateId !== slateId || review.slateId !== slateId) throw new Error("pitch slate id does not match its path");
+  if (slate.canonStatus !== "non-canonical") throw new Error("pitch decision only accepts a non-canonical slate");
+  if (review.reviewKind !== "independent-blind-comparison" || review.humanDecision !== "pending") {
+    throw new Error("pitch survival review is not in the expected pending human-decision state");
+  }
+  if (!objectArray(slate.candidates)) throw new Error("pitch slate has no candidates");
+  const slateSha256 = sha256Bytes(slateBytes);
+  if (review.sourceSlateSha256 !== slateSha256) throw new Error("pitch survival review does not match the current slate hash");
+  return { paths, slate, review, slateSha256, reviewSha256: sha256Bytes(reviewBytes) };
+}
+
+function renderHumanDecisionMarkdown(decision: JsonObject, candidate: JsonObject): string {
+  return [
+    `# 피치 인간 판정 · ${decision.slateId}`,
+    "",
+    `- 판정: ${decision.decision}`,
+    `- 후보: ${decision.candidateId}`,
+    `- 대표 제목: ${(candidate.titleCandidates as string[])[0]}`,
+    `- 결정 시각: ${decision.decidedAt}`,
+    `- 슬레이트 SHA-256: ${decision.sourceSlateSha256}`,
+    `- 생존심사 SHA-256: ${decision.sourceReviewSha256}`,
+    `- 메모: ${decision.comment || "없음"}`,
+    "",
+    decision.decision === "select"
+      ? "이 판정은 기획 승격을 허용하지만 원고 생성이나 자동 연재를 허용하지 않습니다."
+      : "이 판정은 기획 승격을 허용하지 않습니다.",
+    "",
+  ].join("\n");
+}
+
+function renderPitchBrief(params: {
+  readonly slateId: string;
+  readonly candidate: JsonObject;
+  readonly verdict: JsonObject | undefined;
+  readonly decision: JsonObject;
+}): string {
+  const { candidate, verdict, decision } = params;
+  return [
+    `# 선택 피치 · ${params.slateId}/${candidate.candidateId}`,
+    "",
+    `- 제목 후보: ${(candidate.titleCandidates as string[]).join(" / ")}`,
+    `- 한 줄 약속: ${candidate.oneLinePromise}`,
+    `- 주축 레퍼런스: ${candidate.primaryReference}`,
+    `- 보존 골격: ${(candidate.preservedSkeleton as string[]).join(" / ")}`,
+    `- 표면 변주: ${candidate.surfaceVariation}`,
+    `- 인과 조정: ${(candidate.linkedCausalAdjustments as string[]).join(" / ")}`,
+    `- 첫 보상: ${candidate.firstReward}`,
+    `- A Rail: ${(candidate.railA as string[]).join(" → ")}`,
+    `- B Rail: ${(candidate.railB as string[]).join(" → ")}`,
+    `- 장기 위험: ${candidate.longRunRisk}`,
+    `- 독립심사 최소 수리: ${verdict?.requiredRepair ?? "없음"}`,
+    `- 인간 판정 메모: ${decision.comment || "없음"}`,
+    "",
+    "## 초반 4화",
+    "",
+    ...(candidate.openingEpisodes as JsonObject[]).map((episode) => `- ${episode.episode}화: ${episode.event} → ${episode.visiblePayoff}`),
+    "",
+    "## Arc 상승 사다리",
+    "",
+    ...(candidate.arcLadder as JsonObject[]).map((arc) => `- Arc ${arc.arc}: ${arc.externalMove} → ${arc.visibleReward} → ${arc.relationshipConversion}`),
+    "",
+    "이 문서는 기획 입력이다. 장편 기획 정합성을 잡되 재미·도파민·상업적 결제를 우선하고, 원고는 별도 인간 승인 전에는 생성하지 않는다.",
+    "",
+  ].join("\n");
+}
+
+async function writeArtifacts(projectRoot: string, artifacts: ReadonlyArray<{ path: string; content: string; role: string }>) {
+  const output = [];
+  for (const artifact of artifacts) {
+    const absolutePath = join(projectRoot, artifact.path);
+    await mkdir(dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, artifact.content, "utf8");
+    output.push({
+      repo: "inkos",
+      path: artifact.path.split("\\").join("/"),
+      sha256: sha256Bytes(await readFile(absolutePath)),
+      role: artifact.role,
+    });
+  }
+  return output;
 }
 
 export function extractPitchCandidate(responseText: string): JsonObject {
@@ -728,6 +866,242 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         const message = error instanceof Error ? error.message : String(error);
         if (opts.json) process.stdout.write(`${JSON.stringify({ error: message })}\n`);
         else process.stderr.write(`Pitch review failed: ${message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  command
+    .command("decision")
+    .description("Record one immutable hash-bound human decision for a reviewed slate")
+    .requiredOption("--id <slateId>", "Reviewed slate identifier")
+    .requiredOption("--candidate <candidateId>", "Candidate identifier")
+    .requiredOption("--decision <select|hold|reject>", "Human decision")
+    .option("--comment <text>", "Decision note; may also be piped through stdin")
+    .option("--json", "Emit structured JSON for external agents")
+    .action(async (opts) => {
+      try {
+        const slateId = String(opts.id ?? "").trim();
+        const candidateId = String(opts.candidate ?? "").trim();
+        const humanDecision = String(opts.decision ?? "").trim().toLowerCase();
+        if (!SAFE_SLATE_ID.test(slateId)) throw new Error("slate id must use 1-80 safe filename characters");
+        if (!/^p\d{2}$/.test(candidateId)) throw new Error("candidate id must use pNN format");
+        if (!HUMAN_DECISIONS.has(humanDecision)) throw new Error("decision must be select, hold, or reject");
+        const projectRoot = findProjectRoot();
+        const loaded = await loadReviewedSlate(projectRoot, slateId);
+        const candidate = (loaded.slate.candidates as JsonObject[])
+          .find((item) => item.candidateId === candidateId);
+        if (!candidate) throw new Error(`candidate does not belong to slate: ${candidateId}`);
+        try {
+          await access(loaded.paths.decisionDir);
+          throw new Error(`pitch human decision already exists: ${slateId}`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("pitch human decision already exists")) throw error;
+          if (!isObject(error) || error.code !== "ENOENT") throw error;
+        }
+        const comment = await readOptionalText(opts.comment, hooks.readInput);
+        if (comment.length > 2_000) throw new Error("decision comment must be 2,000 characters or fewer");
+        if (humanDecision !== "select" && !comment) throw new Error("hold or reject requires a decision comment");
+        const decidedAt = (hooks.now?.() ?? new Date()).toISOString();
+        const decisionId = `phd-${sha256Bytes(`${slateId}:${candidateId}:${humanDecision}:${decidedAt}:${comment}`).slice(0, 24)}`;
+        const decision: JsonObject = {
+          schemaVersion: 1,
+          decisionId,
+          slateId,
+          candidateId,
+          decision: humanDecision,
+          comment,
+          decidedAt,
+          sourceSlateSha256: loaded.slateSha256,
+          sourceReviewSha256: loaded.reviewSha256,
+          canonEffect: humanDecision === "select" ? "planning-promotion-authorized" : "none",
+          manuscriptAuthorized: false,
+        };
+        const temporaryDir = join(loaded.paths.slateDir, `.human-decision.tmp-${process.pid}-${Date.now()}`);
+        await mkdir(temporaryDir, { recursive: false });
+        try {
+          await writeFile(join(temporaryDir, "decision.json"), `${JSON.stringify(decision, null, 2)}\n`, "utf8");
+          await writeFile(join(temporaryDir, "decision.md"), renderHumanDecisionMarkdown(decision, candidate), "utf8");
+          await rename(temporaryDir, loaded.paths.decisionDir);
+        } catch (error) {
+          await rm(temporaryDir, { recursive: true, force: true });
+          throw error;
+        }
+        const artifacts = await Promise.all([
+          ["decision.json", "pitch-human-decision-data"],
+          ["decision.md", "pitch-human-decision-readable"],
+        ].map(async ([fileName, role]) => {
+          const absolutePath = join(loaded.paths.decisionDir, fileName);
+          return {
+            repo: "inkos",
+            path: relative(projectRoot, absolutePath).split("\\").join("/"),
+            sha256: sha256Bytes(await readFile(absolutePath)),
+            role,
+          };
+        }));
+        process.stdout.write(`${JSON.stringify({
+          slateId,
+          candidateId,
+          humanDecision,
+          decisionId,
+          canonEffect: decision.canonEffect,
+          manuscriptAuthorized: false,
+          location: relative(projectRoot, loaded.paths.decisionDir).split("\\").join("/"),
+          artifacts,
+        }, null, 2)}\n`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (opts.json) process.stdout.write(`${JSON.stringify({ error: message })}\n`);
+        else process.stderr.write(`Pitch decision failed: ${message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  command
+    .command("promote")
+    .description("Promote a selected pitch into an InkOS planning Book without drafting manuscript")
+    .requiredOption("--id <slateId>", "Slate with an immutable select decision")
+    .requiredOption("--book <bookId>", "Target InkOS Book identifier")
+    .option("--json", "Emit structured JSON for external agents")
+    .action(async (opts) => {
+      let createdBookDir: string | null = null;
+      try {
+        const slateId = String(opts.id ?? "").trim();
+        const bookId = String(opts.book ?? "").trim();
+        if (!SAFE_SLATE_ID.test(slateId)) throw new Error("slate id must use 1-80 safe filename characters");
+        if (!bookId || bookId.length > 160 || bookId === "." || bookId === ".." || /[\\/\0]/.test(bookId)) {
+          throw new Error("book id must be one safe path segment of 1-160 characters");
+        }
+        const projectRoot = findProjectRoot();
+        const loaded = await loadReviewedSlate(projectRoot, slateId);
+        const { value: decision, bytes: decisionBytes } = await readJsonObject(
+          join(loaded.paths.decisionDir, "decision.json"),
+          "pitch human decision",
+        );
+        if (decision.slateId !== slateId || decision.decision !== "select") {
+          throw new Error("pitch promotion requires an immutable select decision for this slate");
+        }
+        if (decision.schemaVersion !== 1
+          || decision.canonEffect !== "planning-promotion-authorized"
+          || decision.manuscriptAuthorized !== false) {
+          throw new Error("pitch human decision does not authorize planning-only promotion");
+        }
+        if (decision.sourceSlateSha256 !== loaded.slateSha256 || decision.sourceReviewSha256 !== loaded.reviewSha256) {
+          throw new Error("pitch human decision does not match the current slate and review hashes");
+        }
+        const candidate = (loaded.slate.candidates as JsonObject[])
+          .find((item) => item.candidateId === decision.candidateId);
+        if (!candidate) throw new Error("selected candidate no longer belongs to the slate");
+        const verdict = (loaded.review.verdicts as JsonObject[] | undefined)
+          ?.find((item) => item.candidateId === decision.candidateId);
+        try {
+          await access(loaded.paths.promotionPath);
+          throw new Error(`pitch promotion already exists: ${slateId}`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("pitch promotion already exists")) throw error;
+          if (!isObject(error) || error.code !== "ENOENT") throw error;
+        }
+        const bookDir = join(projectRoot, "books", bookId);
+        try {
+          await access(bookDir);
+          throw new Error(`target Book already exists: ${bookId}`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("target Book already exists")) throw error;
+          if (!isObject(error) || error.code !== "ENOENT") throw error;
+        }
+        const brief = renderPitchBrief({ slateId, candidate, verdict, decision });
+        const promotedAt = (hooks.now?.() ?? new Date()).toISOString();
+        const title = (candidate.titleCandidates as string[])[0];
+        const book: BookConfig = {
+          id: bookId,
+          title,
+          platform: normalizePlatformOrOther("other"),
+          genre: "chaebol-modern-fantasy-ko",
+          status: "outlining",
+          targetChapters: 200,
+          chapterWordCount: defaultChapterLength("ko"),
+          language: "ko",
+          createdAt: promotedAt,
+          updatedAt: promotedAt,
+          writing: { reviewMode: "manual" },
+        };
+        if (hooks.initializePromotedBook) {
+          await hooks.initializePromotedBook({ book, brief });
+        } else {
+          const config = await loadConfig({ requireApiKey: false, projectRoot });
+          const pipeline = new PipelineRunner(buildPipelineConfig(config, projectRoot, { externalContext: brief }));
+          await pipeline.initBook(book, { externalContext: brief, authorIntent: brief });
+        }
+        createdBookDir = bookDir;
+        const selection: JsonObject = {
+          schemaVersion: 1,
+          slateId,
+          candidateId: candidate.candidateId,
+          sourceSlateSha256: loaded.slateSha256,
+          sourceReviewSha256: loaded.reviewSha256,
+          sourceDecisionSha256: sha256Bytes(decisionBytes),
+          promotedAt,
+          candidate,
+          independentVerdict: verdict ?? null,
+          humanDecision: decision,
+        };
+        const selectionArtifacts = await writeArtifacts(projectRoot, [
+          {
+            path: `books/${bookId}/story/pitch-selection.json`,
+            content: `${JSON.stringify(selection, null, 2)}\n`,
+            role: "book-pitch-selection-data",
+          },
+          {
+            path: `books/${bookId}/story/pitch-selection.md`,
+            content: brief,
+            role: "book-pitch-selection-readable",
+          },
+        ]);
+        const bookConfigPath = join(bookDir, "book.json");
+        const bookConfigArtifact = {
+          repo: "inkos",
+          path: `books/${bookId}/book.json`,
+          sha256: sha256Bytes(await readFile(bookConfigPath)),
+          role: "book-config",
+        };
+        const promotion: JsonObject = {
+          schemaVersion: 1,
+          promotionId: `pp-${sha256Bytes(`${slateId}:${bookId}:${sha256Bytes(decisionBytes)}`).slice(0, 24)}`,
+          slateId,
+          candidateId: candidate.candidateId,
+          bookId,
+          promotedAt,
+          sourceSlateSha256: loaded.slateSha256,
+          sourceReviewSha256: loaded.reviewSha256,
+          sourceDecisionSha256: sha256Bytes(decisionBytes),
+          canonEffect: "planning-seed-created",
+          manuscriptCreated: false,
+          lineageEdges: [
+            { type: "selects", from: `pitch-candidate:${slateId}/${candidate.candidateId}`, to: `human-decision:${decision.decisionId}` },
+            { type: "promotes_to", from: `human-decision:${decision.decisionId}`, to: `book:${bookId}` },
+          ],
+          artifacts: [bookConfigArtifact, ...selectionArtifacts],
+        };
+        await writeFile(loaded.paths.promotionPath, `${JSON.stringify(promotion, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+        const promotionArtifact = {
+          repo: "inkos",
+          path: relative(projectRoot, loaded.paths.promotionPath).split("\\").join("/"),
+          sha256: sha256Bytes(await readFile(loaded.paths.promotionPath)),
+          role: "pitch-promotion-receipt",
+        };
+        process.stdout.write(`${JSON.stringify({
+          slateId,
+          candidateId: candidate.candidateId,
+          bookId,
+          canonEffect: "planning-seed-created",
+          manuscriptCreated: false,
+          nextStep: `inkos interact --book ${bookId}`,
+          artifacts: [promotionArtifact, bookConfigArtifact, ...selectionArtifacts],
+        }, null, 2)}\n`);
+      } catch (error) {
+        if (createdBookDir) await rm(createdBookDir, { recursive: true, force: true }).catch(() => undefined);
+        const message = error instanceof Error ? error.message : String(error);
+        if (opts.json) process.stdout.write(`${JSON.stringify({ error: message })}\n`);
+        else process.stderr.write(`Pitch promotion failed: ${message}\n`);
         process.exitCode = 1;
       }
     });
