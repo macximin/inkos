@@ -17,6 +17,8 @@ export const consolidateCommand = new Command("consolidate")
         client: pipelineConfig.client,
         model: pipelineConfig.model,
         projectRoot: root,
+        bookId,
+        fictionContentStage: "consolidate-summaries",
       });
 
       const { StateManager } = await import("@actalk/inkos-core");

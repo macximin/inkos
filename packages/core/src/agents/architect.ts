@@ -2,8 +2,9 @@ import { BaseAgent } from "./base.js";
 import type { BookConfig, FanficMode } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import { readGenreProfile } from "./rules-reader.js";
-import { writeFile, mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 import { renderHookSnapshot } from "../utils/memory-retrieval.js";
 import {
   shouldPromoteHook,
@@ -12,7 +13,32 @@ import {
 } from "../utils/hook-promotion.js";
 import { normalizeStoredHookStatus } from "../utils/hook-lifecycle.js";
 import type { StoredHook } from "../state/memory-db.js";
-import { parseBookRules } from "../models/book-rules.js";
+import {
+  BookRulesSchema,
+  parseBookRules,
+  renderBookRulesDocument,
+  type BookRules,
+} from "../models/book-rules.js";
+import {
+  carryForwardBookRuleProvenanceEntries,
+  compileBookRuleProvenance,
+  compileBookRuleOwnerAdoptionReceipt,
+  compileBookRuleSourceAuthorityReceipt,
+  BookRuleOwnerDecisionInputSchema,
+  persistBookRulesPair,
+  readBookRuleProvenance,
+  verifyBookRuleAuthorityEvidence,
+  verifyBookRuleProvenance,
+  renderBookRuleOwnerAdoptionReceipt,
+  renderBookRuleSourceAuthorityReceipt,
+  type BookRuleAuthorityAssignment,
+  type BookRuleAuthorityOrigin,
+  type BookRuleFieldPath,
+  type BookRuleOwnerDecisionInput,
+  type BookRuleProvenanceCollection,
+  type BookRuleProvenanceReceipt,
+  type BookRuleProvenanceEntry,
+} from "../models/book-rule-provenance.js";
 
 // ---------------------------------------------------------------------------
 // Phase 5 (v13) — Static 骨架 layer collapse
@@ -23,7 +49,7 @@ import { parseBookRules } from "../models/book-rules.js";
 //
 //   === SECTION: story_frame ===   4 散文段（主题 / 冲突 / 世界铁律+质感 / 终局）
 //   === SECTION: volume_map ===    5 散文段 + 尾段「6 条节奏原则（具体化 + 通用）」
-//   === SECTION: roles ===         一人一卡；主角卡承载完整弧线（起点→终点→代价）
+//   === SECTION: roles ===         一人一卡；主角卡承载起点与终点，代价/内在变化按作品需要可选
 //   === SECTION: book_rules ===    普通 Markdown 规则卡，宿主负责结构化解析
 //   === SECTION: pending_hooks ===  13-column 表；可含 startChapter=0 种子行
 //
@@ -79,6 +105,538 @@ export interface ArchitectOutput {
   readonly volumeMap?: string;
   readonly rhythmPrinciples?: string;
   readonly roles?: ReadonlyArray<ArchitectRole>;
+  /** Host-only source material used to assign exact BookRule authority at persistence time. */
+  readonly bookRuleAuthoritySources?: ReadonlyArray<ArchitectBookRuleAuthoritySource>;
+  /** Host-only, separately confirmed owner decisions. General create confirmation cannot populate this. */
+  readonly bookRuleOwnerDecisions?: ReadonlyArray<ArchitectBookRuleOwnerDecision>;
+}
+
+export interface ArchitectBookRuleAuthoritySource {
+  readonly source: "user-explicit" | "premise-explicit" | "book-canon";
+  readonly authorityOrigin: BookRuleAuthorityOrigin;
+  readonly intent: "authorize-rule";
+  readonly decisionId: string;
+  readonly authorizedByActorId: string;
+  readonly artifactContent: string;
+}
+
+export type ArchitectBookRuleOwnerDecision = BookRuleOwnerDecisionInput;
+
+export interface ArchitectMoralAuthoritySource {
+  /** Only owner direction and an already-persisted Book foundation may authorize a mandate. */
+  readonly kind: "owner-direction" | "persisted-book-canon";
+  readonly text: string;
+}
+
+interface PreparedArchitectBookRules {
+  readonly bookId: string;
+  readonly rulesFileContent: string;
+  readonly rules: BookRules;
+  readonly receipt: BookRuleProvenanceReceipt;
+  readonly authorityWrites: ReadonlyMap<string, string>;
+}
+
+function appendExactRule(values: ReadonlyArray<string>, text: string): string[] {
+  return values.includes(text) ? [...values] : [...values, text];
+}
+
+const MANDATORY_MORAL_CORRECTION_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?:반드시|무조건|마땅히|필수(?:로)?)[^.!?\n]{0,48}(?:처벌(?:받|하)|벌을\s*받|반성|사과|개심|교화|속죄|갱생|응보|도덕적\s*성장|대가를\s*치|파멸(?:해야|하|시키)|몰락(?:해야|하|시키)|정의의\s*심판(?:을\s*)?(?:받|받아))/giu,
+  /(?:처벌|반성|사과|개심|교화|속죄|갱생|응보|대가)[^.!?\n]{0,32}(?:반드시|필수|해야\s*한다|필요하다)/giu,
+  /(?:죄(?:의\s*)?값(?:을)?\s*(?:치르다|치러야(?:\s*한다)?|치르게\s*(?:해야\s*한다|한다)))/giu,
+  /(?:대가\s*없는\s*승리(?:로)?\s*(?:끝나|마무리되)[^.!?\n]{0,16}(?:서는|면)\s*안\s*(?:된|된다|돼))/giu,
+  /(?:범죄|죄|악행)[^.!?\n]{0,32}(?:주인공|범죄자|사기꾼|악인|가해자)[^.!?\n]{0,32}(?:(?:처벌|반성|속죄|응보|대가)\s*없이|무사히)[^.!?\n]{0,24}(?:승리|성공|도망|빠져나가)[^.!?\n]{0,20}(?:두지\s*않|끝나(?:서는|면)\s*안)/giu,
+  /(?:주인공|범죄자|사기꾼|악인|가해자)[^.!?\n]{0,32}(?:(?:처벌|반성|속죄|응보|대가)\s*없이|무사히)[^.!?\n]{0,24}(?:승리|성공|도망|빠져나가)[^.!?\n]{0,20}(?:두지\s*않|끝나(?:서는|면)\s*안)/giu,
+  /\b(?:must|has to|required to|needs to)\b[^.!?\n]{0,56}\b(?:be punished|repent|apologi[sz]e|reform|rehabilitate|redeem|atone|learn a moral lesson|pay (?:the )?price)\b/giu,
+  /\b(?:punishment|remorse|apology|reform|rehabilitation|redemption|atonement|retribution)\b[^.!?\n]{0,40}\b(?:is required|is mandatory|must happen|is necessary)\b/giu,
+  /\b(?:must|should|has to|needs to)\b[^.!?\n]{0,32}\bpay\s+for\s+(?:his|her|their|the)?\s*(?:crime|crimes|sin|sins|wrongdoing)\b/giu,
+  /\b(?:protagonist|fraudsters?|criminals?|offenders?|wrongdoers?|he|she|they)\b[^.!?\n]{0,32}\b(?:must|should|has to|needs to|required to|is required to)\b[^.!?\n]{0,56}\banswer\s+for\s+(?:his|her|their|the)?\s*(?:crime|crimes|sin|sins|wrongdoing)\b/giu,
+  /\b(?:story|plot|narrative|ending|character arc|protagonist(?:'s)? arc|his arc|her arc|their arc)\b[^.!?\n]{0,48}\b(?:must|should|has to|needs to|required to|is required to)\b(?=[^.!?\n]{0,160}\b(?:fraudsters?|criminals?|offenders?|wrongdoers?|crime|crimes|sin|sins|wrongdoing|fraud|murder|abuse|exploitation|betrayal|immorality|unethical conduct)\b)(?=[^.!?\n]{0,160}\b(?:(?:face|faces|faced|receive|receives|received)\s+justice|be\s+brought\s+to\s+justice|justice\s+for\s+(?:his|her|their|the)\s+(?:crime|crimes|sin|sins|wrongdoing))\b)[^.!?\n]{0,160}/giu,
+  /\b(?:fraudsters?|criminals?|offenders?|wrongdoers?|the protagonist|he|she|they)\b[^.!?\n]{0,32}\b(?:must|should|has to|needs to|required to|is required to)\b[^.!?\n]{0,80}\b(?:(?:face|faces|faced|receive|receives|received)\s+justice|be\s+brought\s+to\s+justice)\b/giu,
+  /\b(?:do\s+not|don't|never)\s+let\b[^.!?\n]{0,48}\b(?:fraudsters?|criminals?|offenders?|wrongdoers?|the protagonist|him|her|them)\b[^.!?\n]{0,48}\b(?:escape|evade|avoid)\s+(?:justice|punishment|accountability|a\s+reckoning)\b/giu,
+  /\b(?:crime|crimes|sin|sins|wrongdoing)\b[^.!?\n]{0,24}\b(?:cannot|must not|should not)\s+go\s+unpunished\b/giu,
+  /\b(?:victory|the ending|the story)\b[^.!?\n]{0,24}\b(?:must not|should not|cannot)\b[^.!?\n]{0,20}\b(?:without (?:a )?(?:price|cost|moral consequence)|cost[- ]free|consequence[- ]free)\b/giu,
+  /(?:必须|务必|一定要|理应)[^。！？\n]{0,48}(?:受罚|惩罚|反省|道歉|改过|教化|赎罪|洗白|得到报应|付出代价|(?:接受|受到|面临)?(?:正义|公正|法律)(?:的)?(?:审判|制裁))/gu,
+  /(?:受罚|惩罚|反省|道歉|改过|教化|赎罪|洗白|报应|代价)[^。！？\n]{0,32}(?:必须|不可或缺|是必要的)/gu,
+  /(?:罪行|犯罪|恶行|作恶)[^。！？\n]{0,24}(?:不能|不可|不应)(?:[^。！？\n]{0,12})?(?:不受惩罚|没有代价|毫无代价|逍遥法外)/gu,
+  /(?:不能|不可|不应)[^。！？\n]{0,24}(?:以|让)[^。！？\n]{0,12}(?:毫无|没有|无)代价(?:的)?胜利(?:收场|结束)/gu,
+  /(?:不要|不得|禁止)[^。！？\n]{0,24}让[^。！？\n]{0,24}(?:罪犯|犯罪者|作恶者|主角)[^。！？\n]{0,32}(?:逃脱|逃避)(?:正义|法律)?(?:审判|制裁)/gu,
+];
+
+// These patterns cover explicit obligation/inevitability aliases that avoid
+// the direct punishment/redemption wording above. They run on a whitespace-
+// collapsed copy of each foundation surface so Markdown line wrapping cannot
+// turn one mandatory sentence into two apparently unrelated fragments.
+const MANDATORY_MORAL_INEVITABILITY_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b(?:must|should|has to|needs to|required to|is required to)\b(?=[^.!?]{0,120}\b(?:accountability|reckoning|moral consequences?)\b)(?=[^.!?]{0,160}\b(?:crime|crimes|sin|sins|wrongdoing|fraud|murder|abuse|exploitation|betrayal|immorality|unethical conduct)\b)[^.!?]{0,160}/giu,
+  /\b(?:story|plot|narrative|ending|chapter|character arc|protagonist(?:'s)? arc)\b[^.!?]{0,48}\b(?:must|should|has to|needs to|required to|is required to|must not|should not)\b(?=[^.!?]{0,180}\b(?:crime|crimes|criminal conduct|sin|sins|wrongdoing|fraud|murder|violence|violent|abuse|exploitation|betrayal|immorality|unethical conduct)\b)(?=[^.!?]{0,180}\b(?:condemn|denounce|make\s+clear\b[^.!?]{0,48}\bwrong|moral\s+balance|safer\s+alternative|avoid\b[^.!?]{0,48}\b(?:normaliz|glorif)|not\s+reward|withhold\s+reward)\w*)[^.!?]{0,180}/giu,
+  /\b(?:story|chapter|narrative|cast)\b[^.!?]{0,48}\b(?:must|should|has to|needs to|required to|is required to)\b[^.!?]{0,120}\b(?:diverse\s+representation|representational\s+diversity|gender[- ]balanced\s+viewpoints?|balance\s+every\s+male\s+viewpoint\s+with\s+a\s+female\s+viewpoint)\b/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)(?:(?:each|every)\s+chapter\s+(?:is\s+(?:obligated|required)\s+to|shall|must)\s+(?:feature|include|contain)|it\s+is\s+(?:compulsory|mandatory|required)\s+for\s+(?:each|every)\s+chapter\s+to\s+(?:feature|include|contain))[^.!?]{0,96}(?:diverse\s+representation|at\s+least\s+one\s+(?:woman|female|queer|lgbtq?|minority)\s+character|a\s+(?:queer|lgbtq?|minority)\s+character)/gimu,
+  /\bensure\b[^.!?]{0,48}\b(?:cast|character\s+roster)\b[^.!?]{0,40}\b(?:is\s+)?(?:diverse|inclusive)\b/giu,
+  /\binclude\b(?=[^.!?]{0,160}\bat\s+least\s+one\b)(?=[^.!?]{0,160}\b(?:woman|female|queer|lgbtq?|racial\s+minority|minority)\b)(?=[^.!?]{0,180}\bevery\s+(?:arc|chapter)\b)[^.!?]{0,180}/giu,
+  /\bevery\s+chapter\b[^.!?]{0,64}\b(?:requires?|must\s+include|needs?)\b[^.!?]{0,64}\b(?:inclusive|diverse)\s+representation\b/giu,
+  /\b(?:female|women|woman|queer|lgbtq?|minority|marginali[sz]ed|protected[- ]group)\s+(?:characters?|leads?|protagonists?)\b[^.!?]{0,48}\b(?:must|should|has to|needs to|required to|is required to|must not|should not)\b[^.!?]{0,120}\b(?:agency|empowered|sympathetic|positive\s+portrayal|portrayed\s+positively|portrayed\s+negatively|negative\s+portrayal)\b/giu,
+  /\b(?:all|every)\s+(?:female|women|woman|queer|lgbtq?|minority|marginali[sz]ed)\s+(?:characters?|leads?|protagonists?)\b[^.!?]{0,48}\b(?:must|should|has to|needs to)\b[^.!?]{0,96}\b(?:empowered|sympathetic|positive|positive\s+portrayal)\b/giu,
+  /\bno\s+(?:protected[- ]group|minority|marginali[sz]ed|queer|lgbtq?)\s+characters?\b[^.!?]{0,64}\b(?:may|can|should)\b[^.!?]{0,48}\b(?:portrayed\s+as|be)\s+(?:evil|a\s+villain|villainous)\b/giu,
+  /\b(?:villain|antagonist)\b[^.!?]{0,40}\b(?:cannot|must not|should not)\b[^.!?]{0,48}\b(?:be|be\s+portrayed\s+as)\s+(?:gay|queer|lgbtq?|a\s+minority)\b/giu,
+  /\b(?:story|narrative|chapter)\b[^.!?]{0,48}\b(?:may not|must not|should not|cannot)\b(?=[^.!?]{0,140}\boffensive\s+language\b)(?=[^.!?]{0,140}\b(?:harmful\s+)?stereotypes?\b)[^.!?]{0,140}/giu,
+  /\bavoid\b(?=[^.!?]{0,96}\bstereotypes?\b)(?=[^.!?]{0,96}\boffensive\s+language\b)[^.!?]{0,96}/giu,
+  /\b(?:villain|antagonist)\b[^.!?]{0,40}\b(?:must not|should not|cannot)\b[^.!?]{0,80}\b(?:belong\s+to|be\s+(?:a\s+member\s+of|from))\s+(?:a\s+)?protected\s+group\b/giu,
+  /\b(?:protagonist|fraudsters?|criminals?|offenders?|wrongdoers?|he|she|they)\b[^.!?]{0,40}\b(?:must|should|has to|needs to|required to|is required to)\b[^.!?]{0,80}\b(?:not\s+be\s+rewarded|be\s+condemned|be\s+denounced)\b(?=[^.!?]{0,80}\b(?:crime|crimes|sin|sins|wrongdoing|fraud|abuse|violence)\b)[^.!?]{0,80}/giu,
+  /\b(?:story|plot|narrative|ending|character arc|protagonist(?:'s)? arc|his arc|her arc|their arc)\b[^.!?]{0,48}\b(?:ensures?|guarantees?|requires?|culminates?\s+in)\b[^.!?]{0,96}\b(?:punishment|remorse|repentance|an? apology|reform|rehabilitation|redemption|atonement|retribution|moral growth|moral lesson)\b/giu,
+  /\b(?:story|plot|narrative|ending|character arc|protagonist(?:'s)? arc|his arc|her arc|their arc)\b[^.!?]{0,48}\b(?:ensures?|guarantees?)\b(?=[^.!?]{0,140}\b(?:accountability|reckoning|moral consequences?)\b)(?=[^.!?]{0,160}\b(?:crime|crimes|sin|sins|wrongdoing|fraud|murder|abuse|exploitation|betrayal|immorality|unethical conduct)\b)[^.!?]{0,160}/giu,
+  /(?:반드시|무조건|마땅히|필수(?:로)?|해야\s*한다|필요하다)[^.!?]{0,80}(?:책임(?:을\s*(?:져|지|묻|감당))|응분의\s*대가|도덕적\s*책임)/giu,
+  /(?=[^.!?]{0,160}(?:범죄|죄악|악행|비윤리적?\s*행위))(?=[^.!?]{0,160}(?:책임|대가|응보|처벌))(?=[^.!?]{0,160}(?:이야기|서사|결말|인물\s*아크|주인공\s*아크))[^.!?]{0,160}(?:보장|귀결|반드시)/giu,
+  /(?=[^.!?]{0,160}(?:범죄|죄악|악행|비윤리적?\s*행위))(?=[^.!?]{0,160}(?:책임|대가|응보|처벌))(?=[^.!?]{0,160}독자\s*신뢰)[^.!?]{0,160}위해/giu,
+  /(?=[^.!?]{0,200}(?:이야기|서사|결말|회차|장))(?=[^.!?]{0,200}(?:반드시|무조건|마땅히|해야\s*한다|해서는\s*안\s*된다|하지\s*않아야\s*한다))(?=[^.!?]{0,200}(?:비판|규탄|잘못(?:임|이라는\s*점)|도덕적\s*균형|더\s*안전한\s*대안|미화|정상화))(?=[^.!?]{0,200}(?:범죄|죄|악행|폭력|학대|사기))[^.!?]{0,200}/giu,
+  /(?:결말|이야기|서사)[^.!?]{0,48}(?:반드시|무조건|마땅히|해야\s*한다)[^.!?]{0,64}도덕적\s*균형[^.!?]{0,32}(?:회복|제공|맞춰)/giu,
+  /(?=[^.!?]{0,140}(?:범죄|죄|악행|폭력|학대|사기))(?=[^.!?]{0,140}(?:미화|정상화))[^.!?]{0,140}(?:해서는|하면)\s*안\s*(?:된다|돼)/giu,
+  /(?=[^.!?]{0,160}(?:이번\s*화|회차|이야기|서사))(?=[^.!?]{0,160}(?:반드시|무조건|해야\s*한다))(?=[^.!?]{0,160}(?:다양한\s*대표성|대표성\s*다양성))[^.!?]{0,160}/giu,
+  /(?=[^.!?]{0,180}(?:모든\s*회차|(?:각|매)\s*(?:회차|화)(?:마다)?))(?=[^.!?]{0,180}(?:여성|퀴어|성소수자|소수자))(?=[^.!?]{0,180}(?:최소\s*한\s*명|한\s*명씩|한\s*명\s*이상|하나\s*이상))(?=[^.!?]{0,180}(?:넣|포함|배치|구성)(?:어야\s*한다|해야\s*한다|는다|한다|할\s*것))[^.!?]{0,180}/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)(?:각|매)\s*화(?:마다)?[^.!?]{0,48}(?:여성|퀴어|성소수자|소수자)\s*(?:인물|캐릭터)[^.!?]{0,32}(?:최소\s*한\s*명|한\s*명\s*이상|하나\s*이상)[^.!?]{0,32}(?:넣|(?:배치|포함)하)도록\s*한다/gimu,
+  /(?:등장인물|인물)\s*구성[^.!?]{0,48}(?:다양하게|포용적으로)[^.!?]{0,48}(?:유지해야\s*한다|유지한다)/giu,
+  /(?:매|각)\s*회차[^.!?]{0,48}(?:포용적|다양한)\s*대표성[^.!?]{0,48}(?:확보한다|포함한다|유지한다)/giu,
+  /(?=[^.!?]{0,160}(?:여성|퀴어|성소수자|소수자|보호\s*집단)\s*(?:인물|캐릭터|주연))(?=[^.!?]{0,160}(?:반드시|항상|모두|전부|해야\s*한다|해서는\s*안\s*된다|할\s*것))(?=[^.!?]{0,160}(?:주도성|주체적|긍정적?(?:으로|인)?\s*묘사|부정적?(?:으로|인)?\s*묘사))[^.!?]{0,160}/giu,
+  /(?:여성|퀴어|성소수자|소수자)\s*(?:주연|인물)[^.!?]{0,48}(?:모두|전부)[^.!?]{0,48}(?:주체적|호감\s*가게|긍정적)[^.!?]{0,48}(?:묘사한다|그린다)/giu,
+  /(?:소수자|성소수자|퀴어|보호\s*집단)\s*(?:인물|캐릭터|정체성)[^.!?]{0,48}(?:악인|악역|부정적)[^.!?]{0,48}(?:(?:묘사|설정|이용|연결)하지\s*않|(?:묘사|설정|이용|연결)해서는\s*안)/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)(?:퀴어|성소수자|소수자|보호\s*집단)\s*(?:인물|캐릭터|정체성)[^.!?]{0,48}(?:악인|악역|반동인물)[^.!?]{0,32}(?:쓰지|이용하지|설정하지|묘사하지)\s*말\s*것/gimu,
+  /(?:악역|반동인물)[^.!?]{0,48}(?:성소수자|퀴어|동성애자)[^.!?]{0,32}(?:설정하면|설정해서는)\s*안\s*(?:된다|돼)/giu,
+  /(?=[^.!?]{0,120}(?:고정관념|편견))(?=[^.!?]{0,120}(?:불쾌감|불쾌한|모욕적?)[^.!?]{0,32}표현)[^.!?]{0,120}(?:피한다|피해야\s*한다|쓰지\s*않는다)/giu,
+  /(?:악역|반동인물)[^.!?]{0,48}(?:소수자|보호\s*집단)[^.!?]{0,32}(?:속하면|이어서는|이면)\s*안\s*(?:된다|돼)/giu,
+  /(?:必须|务必|一定要|理应|应该|需要)[^。！？]{0,80}(?:承担责任|受到追责|得到追责|接受问责|付出应有代价)/gu,
+  /(?=[^。！？]{0,160}(?:罪行|犯罪|恶行|作恶))(?=[^。！？]{0,160}(?:追责|承担责任|问责|代价|报应|惩罚))(?=[^。！？]{0,160}(?:故事|叙事|结局|人物弧))[^。！？]{0,160}(?:确保|保证|必然|最终归于)/gu,
+  /(?=[^。！？]{0,160}(?:罪行|犯罪|恶行|作恶))(?=[^。！？]{0,160}(?:追责|承担责任|问责|代价|报应|惩罚))(?=[^。！？]{0,160}读者信任)[^。！？]{0,160}为了/gu,
+  /(?=[^。！？]{0,200}(?:故事|叙事|结局|章节|人物弧))(?=[^。！？]{0,200}(?:必须|务必|一定要|理应|应该|不得|不应))(?=[^。！？]{0,200}(?:谴责|批判|明确[^。！？]{0,32}(?:错误|不对)|道德平衡|安全替代方案|美化|正常化))(?=[^。！？]{0,200}(?:罪行|犯罪|恶行|暴力|虐待|欺诈))[^。！？]{0,200}/gu,
+  /(?:结局|故事|叙事)[^。！？]{0,48}(?:必须|务必|一定要|应该)[^。！？]{0,64}(?:恢复|提供|维持)道德平衡/gu,
+  /(?=[^。！？]{0,160}(?:本章|故事|叙事))(?=[^。！？]{0,160}(?:必须|务必|一定要|应该))(?=[^。！？]{0,160}(?:多元\s*代表性|代表性\s*多样化))[^。！？]{0,160}/gu,
+  /(?:^|[。！？]\s*|[-*+]\s*)所有章节均应[^。！？]{0,48}(?:包含|具备|保持)(?:多元\s*代表性|代表性\s*多样化)/gmu,
+  /(?=[^。！？]{0,180}每章)(?=[^。！？]{0,180}(?:女性|酷儿|少数族裔|少数群体))(?=[^。！？]{0,180}(?:至少一名|一名))[^。！？]{0,180}(?:加入|包含|安排)/gu,
+  /(?:确保|必须保持)[^。！？]{0,64}(?:角色阵容|人物构成)[^。！？]{0,48}(?:多元化|多样化)/gu,
+  /(?=[^。！？]{0,160}(?:女性|酷儿|少数群体|受保护群体)角色)(?=[^。！？]{0,160}(?:必须|应该|不得|不应))(?=[^。！？]{0,160}(?:能动性|正面描写|积极描写|负面描写))[^。！？]{0,160}/gu,
+  /所有(?:女性|酷儿|少数群体)(?:主角|角色)[^。！？]{0,64}(?:都应当|都应该|必须)[^。！？]{0,64}(?:坚强|讨喜|正面|积极)/gu,
+  /(?:不得|不应|不能)[^。！？]{0,48}把(?:少数群体|受保护群体|酷儿)角色[^。！？]{0,48}(?:描写成|塑造成)(?:恶人|反派|邪恶)/gu,
+  /(?:反派|反面角色)[^。！？]{0,48}(?:不能|不得|不应)[^。！？]{0,32}(?:是|设为)(?:同性恋|酷儿|少数群体)/gu,
+  /(?=[^。！？]{0,120}刻板印象)(?=[^。！？]{0,120}(?:冒犯性|侮辱性)语言)[^。！？]{0,120}(?:避免|不得使用|不应使用)/gu,
+  /(?:反派|反面角色)[^。！？]{0,48}(?:不得|不应|不能)[^。！？]{0,48}(?:属于|来自)受保护群体/gu,
+
+  // Representation / sensitivity rules are recognized by feature conjunction,
+  // not an enumerated sentence list: a quota or normative trigger, a protected-
+  // identity lexicon, and a casting/portrayal/language outcome must co-occur.
+  /(?=[^.!?]{0,220}\b(?:cast|characters?|speaking\s+roles?|roles?)\b)(?=[^.!?]{0,220}\b(?:women|female|queer|lgbtq?|racial\s+minorities?|minority|underrepresented\s+groups?|marginali[sz]ed\s+groups?|protected\s+groups?)\b)(?=[^.!?]{0,220}\b(?:at\s+least|no\s+less\s+than|half|\d+(?:\.\d+)?\s*(?:%|percent)|percentage|quota|proportion)\b)(?=[^.!?]{0,220}\b(?:must|should|required|reserve|allocate|assign|include|comprise|make\s+up)\b)[^.!?]{0,220}/giu,
+  /(?=[^.!?]{0,180}\b(?:all|every)\s+(?:villains?|antagonists?)\b)(?=[^.!?]{0,180}\b(?:must|should|required|only)\b)(?=[^.!?]{0,180}\b(?:cisgender|heterosexual|straight|able[- ]bodied|men|male)\b)[^.!?]{0,180}/giu,
+  /(?=[^.!?]{0,200}\b(?:marginali[sz]ed|minority|protected[- ]group|queer|lgbtq?)\s+(?:characters?|identit(?:y|ies)|people|groups?)\b)(?=[^.!?]{0,200}\b(?:perpetrators?|villains?|evil|vice|criminals?|abusers?)\b)(?=[^.!?]{0,200}\b(?:must\s+never|must\s+not|may\s+not|cannot|can\s+never|never\s+be|no\b[^.!?]{0,48}\bmay)\b)[^.!?]{0,200}/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:use|require|mandate)\s+inclusive\s+language\b[^.!?]{0,80}/gimu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\bavoid\b(?=[^.!?]{0,140}\b(?:ableist|sexist|racist|homophobic|transphobic)\b)(?=[^.!?]{0,140}\b(?:tropes?|language|expressions?|stereotypes?)\b)[^.!?]{0,140}/gimu,
+  /\b(?:story|book|narrative|chapter)\b[^.!?]{0,48}\b(?:must|should|has\s+to|needs\s+to|required\s+to)\b[^.!?]{0,80}\b(?:celebrate|promote|uphold|advance)\b[^.!?]{0,48}\b(?:diversity|inclusion|equity|inclusive\s+values?)\b/giu,
+  /\b(?:ensure|maintain|require)\b(?=[^.!?]{0,140}\b(?:gender\s+parity|gender\s+balance|balanced\s+gender\s+representation)\b)(?=[^.!?]{0,140}\b(?:cast|characters?|speaking\s+characters?|roles?)\b)[^.!?]{0,140}/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:give|provide|assign)\b(?=[^.!?]{0,140}\b(?:every|all)\s+(?:women|woman|female|queer|lgbtq?|minority|marginali[sz]ed)\b)(?=[^.!?]{0,140}\b(?:independent\s+(?:arc|storyline)|agency)\b)[^.!?]{0,140}/gimu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:include|add|provide)\b(?=[^.!?]{0,120}\b(?:queer|lgbtq?\+?|minority|marginali[sz]ed)\b)(?=[^.!?]{0,120}\b(?:positive\s+)?role\s+models?\b)[^.!?]{0,120}/gimu,
+  /\b(?:do\s+not|never|must\s+not|should\s+not)\s+use\b(?=[^.!?]{0,140}\b(?:marginali[sz]ed|minority|protected|queer|lgbtq?)\s+identit(?:y|ies)\b)(?=[^.!?]{0,140}\b(?:villains?|antagonists?|evil)\b)[^.!?]{0,140}/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:maintain|ensure|require)\s+cultural\s+sensitivity\b[^.!?]{0,80}/gimu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\buse\s+respectful\s+(?:terminology|language)\b[^.!?]{0,80}\b(?:marginali[sz]ed|minority|protected|queer|lgbtq?)\s+groups?\b/giu,
+  /(?=[^.!?]{0,220}(?:등장인물|배역|발화\s*역할))(?=[^.!?]{0,220}(?:여성|퀴어|성소수자|소수자|과소대표\s*집단))(?=[^.!?]{0,220}(?:절반\s*이상|최소|\d+(?:\.\d+)?\s*(?:퍼센트|%|프로)))(?=[^.!?]{0,220}(?:구성해야\s*한다|배정한다|할당한다|포함해야\s*한다))[^.!?]{0,220}/giu,
+  /(?=[^.!?]{0,180}(?:모든|전부)?\s*(?:악역|반동인물))(?=[^.!?]{0,180}(?:비장애인|이성애자|시스젠더|남성))(?=[^.!?]{0,180}(?:으로만|만\s*설정|설정해야\s*한다))[^.!?]{0,180}/giu,
+  /(?=[^.!?]{0,180}(?:소수자|성소수자|퀴어|보호\s*집단)\s*인물)(?=[^.!?]{0,180}(?:가해자|악인|악역|범죄자))(?=[^.!?]{0,180}(?:묘사해서는\s*안\s*된다|묘사하지\s*않는다|설정하면\s*안\s*된다))[^.!?]{0,180}/giu,
+  /(?:전반적으로|작품\s*전체에서|모든\s*문장에서)[^.!?]{0,48}포용적\s*언어[^.!?]{0,32}(?:사용한다|사용해야\s*한다)/giu,
+  /(?=[^.!?]{0,160}(?:성차별적|인종차별적|동성애\s*혐오|트랜스젠더\s*혐오|장애인\s*비하))(?=[^.!?]{0,160}(?:표현|언어|고정관념|클리셰))[^.!?]{0,160}(?:피한다|피해야\s*한다|사용하지\s*않는다)/giu,
+  /(?=[^.!?]{0,160}(?:모든|전부)\s*(?:발화\s*인물|등장인물))(?=[^.!?]{0,160}(?:성비|성별\s*비율))(?=[^.!?]{0,160}(?:동등하게|균형 있게|맞춘다|유지한다))[^.!?]{0,160}/giu,
+  /(?=[^.!?]{0,160}(?:모든|각|매)\s*남성\s*시점)(?=[^.!?]{0,160}여성\s*시점)(?=[^.!?]{0,160}(?:균형|동등|붙인다|배치한다|맞춘다))[^.!?]{0,160}/giu,
+  /(?=[^.!?]{0,160}(?:모든|각)\s*(?:여성|퀴어|성소수자|소수자)\s*인물)(?=[^.!?]{0,160}(?:독립적(?:인)?\s*아크|독자적(?:인)?\s*서사|주도성))[^.!?]{0,160}(?:부여한다|줘야\s*한다|보장한다)/giu,
+  /(?=[^.!?]{0,160}(?:소수자|성소수자|퀴어|보호\s*집단)\s*정체성)(?=[^.!?]{0,160}(?:악역|반동인물))[^.!?]{0,160}(?:이용하지\s*않는다|사용해서는\s*안\s*된다|연결하지\s*않는다)/giu,
+  /(?=[^。！？]{0,220}(?:角色|有台词角色|角色阵容))(?=[^。！？]{0,220}(?:女性|酷儿|少数族裔|少数群体|代表性不足群体))(?=[^。！？]{0,220}(?:至少一半|一半以上|百分之\s*(?:\d+|[零一二三四五六七八九十百]+)|\d+(?:\.\d+)?\s*%|配额|比例))(?=[^。！？]{0,220}(?:必须|应当|分配|安排|包含))[^。！？]{0,220}/gu,
+  /(?=[^。！？]{0,180}(?:所有|全部)(?:反派|反面角色))(?=[^。！？]{0,180}(?:顺性别|异性恋|健全人|男性))(?=[^。！？]{0,180}(?:必须|只能|应当))[^。！？]{0,180}/gu,
+  /(?=[^。！？]{0,180}(?:少数群体|少数族裔|酷儿|受保护群体)角色)(?=[^。！？]{0,180}(?:施害者|恶人|反派|罪犯))(?=[^。！？]{0,180}(?:不得|不能|不应|禁止))[^。！？]{0,180}/gu,
+  /(?:全文|通篇|作品全篇)[^。！？]{0,48}(?:使用|必须使用|应当使用)包容性语言/gu,
+  /(?=[^。！？]{0,160}(?:性别歧视|种族歧视|恐同|跨性别歧视|歧视残障))(?=[^。！？]{0,160}(?:表达|语言|套路|刻板印象))[^。！？]{0,160}(?:避免|不得使用|不应使用)/gu,
+  /(?=[^。！？]{0,160}(?:所有|全部)有台词角色)(?=[^。！？]{0,160}(?:性别平衡|性别比例|性别对等))[^。！？]{0,160}(?:确保|实现|保持)/gu,
+  /(?=[^。！？]{0,160}(?:每位|所有)(?:女性|酷儿|少数群体)角色)(?=[^。！？]{0,160}(?:独立的人物弧|独立故事线|能动性))(?=[^。！？]{0,160}(?:给|给予|赋予|保证))[^。！？]{0,160}/gu,
+  /(?=[^。！？]{0,160}(?:少数|酷儿|受保护群体)身份)(?=[^。！？]{0,160}(?:反派|恶人))[^。！？]{0,160}(?:不得|不能|不应)[^。！？]{0,80}(?:用于|用来|关联)/gu,
+
+  // Moral-duty aliases require a narrative/reader framing verb plus a moral
+  // outcome. Ordinary in-story wrongdoing and causal consequences lack this
+  // meta-obligation conjunction and remain untouched.
+  /\b(?:story|book|narrative)\b[^.!?]{0,48}\b(?:has\s+(?:a\s+)?duty\s+to|must|should|required\s+to)\b[^.!?]{0,96}\b(?:model|promote|uphold|teach|demonstrate)\b[^.!?]{0,64}\b(?:responsible\s+behavio(?:u)?r|prosocial\s+values?|wholesome\s+values?|moral\s+values?)\b/giu,
+  /\bensure\b[^.!?]{0,48}\b(?:readers?|the\s+audience)\b[^.!?]{0,80}\b(?:understand|recognize|know)\b(?=[^.!?]{0,120}\b(?:violence|fraud|abuse|crime|unethical\s+conduct)\b)(?=[^.!?]{0,120}\b(?:unacceptable|wrong|immoral|reprehensible)\b)[^.!?]{0,120}/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:frame|portray|present|depict)\b(?=[^.!?]{0,120}\b(?:fraud|violence|abuse|crime|unethical\s+conduct)\b)(?=[^.!?]{0,120}\b(?:morally\s+)?(?:reprehensible|condemnable|wrong|unacceptable)\b)[^.!?]{0,120}/gimu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:never|do\s+not)\s+(?:glamorize|glorify|romanticize|normalize)\b[^.!?]{0,96}\b(?:unethical\s+conduct|violence|abuse|crime|wrongdoing)\b/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\btreat\b(?=[^.!?]{0,120}\b(?:abusive|criminal|violent|fraudulent)\s+(?:protagonist|character)\b)(?=[^.!?]{0,120}\b(?:cautionary\s+(?:example|tale)|moral\s+warning)\b)[^.!?]{0,120}/gimu,
+  /(?=[^.!?]{0,180}\b(?:story|narrative|book|chapter)\b)(?=[^.!?]{0,180}\b(?:must|should|has\s+to|needs\s+to|required\s+to)\b)(?=[^.!?]{0,180}\b(?:signal|show|express|make\s+clear)\b[^.!?]{0,64}\b(?:disapproval|critique|wrong|unacceptable)\b)(?=[^.!?]{0,180}\b(?:exploitation|abuse|coercion|toxic\s+behavio(?:u)?r)\b)[^.!?]{0,180}/giu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\b(?:never|do\s+not)\b(?:(?=[^.!?]{0,140}\bdepict\b[^.!?]{0,80}\b(?:abuse|exploitation|coercion)\b)(?=[^.!?]{0,140}\bwithout\s+(?:critique|criticism|condemnation)\b)|(?=[^.!?]{0,140}\breward\b[^.!?]{0,80}\btoxic\s+behavio(?:u)?r\b))[^.!?]{0,140}/gimu,
+  /(?:^|[.!?]\s+|[-*+]\s+)\bmake\s+clear\b(?=[^.!?]{0,120}\b(?:coercion|abuse|exploitation)\b)(?=[^.!?]{0,120}\b(?:wrong|unacceptable|reprehensible)\b)[^.!?]{0,120}/gimu,
+  /(?=[^.!?]{0,180}(?:서사|작품|이야기))(?=[^.!?]{0,180}(?:책임\s*있는\s*행동|건전한\s*가치|도덕적\s*가치))(?=[^.!?]{0,180}(?:본보기|모범|지켜야\s*한다|되어야\s*한다|보여줘야\s*한다))[^.!?]{0,180}/giu,
+  /(?=[^.!?]{0,180}독자)(?=[^.!?]{0,180}(?:이해하게\s*한다|알게\s*한다|분명히\s*알려야\s*한다))(?=[^.!?]{0,180}(?:폭력|사기|학대|범죄))(?=[^.!?]{0,180}(?:용납될\s*수\s*없|잘못|비도덕적|비난받아\s*마땅))[^.!?]{0,180}/giu,
+  /(?=[^.!?]{0,160}(?:사기|폭력|학대|범죄|비윤리적\s*행동))(?=[^.!?]{0,160}(?:도덕적으로\s*비난|비난받아\s*마땅|매력적으로\s*그리지\s*않|미화하지\s*않|정상화하지\s*않))[^.!?]{0,160}(?:묘사한다|그린다|다룬다|않는다)/giu,
+  /(?=[^.!?]{0,140}(?:학대하는|범죄를\s*저지른|폭력적인)\s*주인공)(?=[^.!?]{0,140}반면교사)(?:[^.!?]{0,140})(?:다룬다|그린다|삼는다)/giu,
+  /(?=[^.!?]{0,180}(?:서사|작품|이야기))(?=[^.!?]{0,180}(?:착취|학대|강압|해로운\s*행동))(?=[^.!?]{0,180}(?:비판적\s*태도|반대|잘못|용납될\s*수\s*없))(?=[^.!?]{0,180}(?:분명히\s*해야\s*한다|묘사해서는\s*안\s*된다|비판\s*없이))[^.!?]{0,180}/giu,
+  /(?=[^.!?]{0,140}(?:학대|착취|강압))(?=[^.!?]{0,140}비판\s*없이)[^.!?]{0,140}묘사해서는\s*안\s*된다/giu,
+  /(?=[^。！？]{0,180}(?:叙事|作品|故事))(?=[^。！？]{0,180}(?:负责任的行为|正向价值观|道德价值))(?=[^。！？]{0,180}(?:有责任|应当|必须|示范|维护|树立榜样))[^。！？]{0,180}/gu,
+  /(?=[^。！？]{0,180}读者)(?=[^。！？]{0,180}(?:明白|理解|认识到))(?=[^。！？]{0,180}(?:暴力|欺诈|虐待|犯罪))(?=[^。！？]{0,180}(?:不可接受|错误|不道德|应受谴责))[^。！？]{0,180}/gu,
+  /(?=[^。！？]{0,160}(?:欺诈|暴力|虐待|犯罪|不道德行为))(?=[^。！？]{0,160}(?:道德谴责|不可接受|绝不美化|不得美化|不得正常化))[^。！？]{0,160}(?:描写|塑造|呈现|美化|正常化)/gu,
+  /(?=[^。！？]{0,140}(?:施虐|犯罪|暴力)的?主角)(?=[^。！？]{0,140}反面教材)[^。！？]{0,140}(?:当作|视为|塑造成)/gu,
+  /(?=[^。！？]{0,180}(?:叙事|作品|故事))(?=[^。！？]{0,180}(?:剥削|虐待|强迫|有害行为))(?=[^。！？]{0,180}(?:反对|批判|错误|不可接受))(?=[^。！？]{0,180}(?:必须|应当|不得|明确))[^。！？]{0,180}/gu,
+  /(?=[^。！？]{0,140}(?:虐待|剥削|强迫))(?=[^。！？]{0,140}(?:缺乏|没有|不加)批判)(?=[^。！？]{0,140}(?:不得|不能|不应))[^。！？]{0,140}描写/gu,
+];
+
+/**
+ * Detect only explicit meta-obligations. Natural consequences such as an
+ * arrest, loss, guilt, punishment, forgiveness, or redemption remain valid
+ * when the foundation presents them as story events rather than moral quotas.
+ */
+export function findUnauthorizedMandatoryMoralCorrections(
+  output: ArchitectOutput,
+  authorizedSources: string | ReadonlyArray<ArchitectMoralAuthoritySource> = [],
+): ReadonlyArray<string> {
+  const candidateSurfaces = [
+    output.storyFrame,
+    output.storyBible,
+    output.volumeMap,
+    output.volumeOutline,
+    ...(output.roles ?? []).map((role) => role.content),
+    output.bookRules,
+    output.pendingHooks,
+    output.rhythmPrinciples,
+  ].filter((surface): surface is string => typeof surface === "string" && surface.length > 0)
+    .map((surface) => surface.normalize("NFKC"));
+  const candidate = candidateSurfaces.join("\n");
+  const normalizedAuthoritySources = (typeof authorizedSources === "string"
+    ? [{ kind: "owner-direction" as const, text: authorizedSources }]
+    : authorizedSources)
+    .filter((source) => source.text.trim().length > 0)
+    .map((source) => ({ ...source, text: source.text.normalize("NFKC") }));
+  const findings = new Set<string>();
+  for (const pattern of MANDATORY_MORAL_CORRECTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of candidate.matchAll(pattern)) {
+      const matched = match[0].replace(/\s+/g, " ").trim();
+      if (!matched) continue;
+      const phrase = extractArchitectClause(
+        candidate,
+        match.index ?? 0,
+        (match.index ?? 0) + match[0].length,
+      );
+      if (phrase && !isAuthorizedMandatoryMoralCorrection(
+        matched,
+        phrase,
+        normalizedAuthoritySources,
+      )) findings.add(phrase);
+    }
+  }
+  for (const surface of candidateSurfaces) {
+    const collapsedSurface = collapseUnicodeWhitespaceWithMap(surface).text;
+    for (const pattern of [
+      ...MANDATORY_MORAL_CORRECTION_PATTERNS,
+      ...MANDATORY_MORAL_INEVITABILITY_PATTERNS,
+    ]) {
+      pattern.lastIndex = 0;
+      for (const match of collapsedSurface.matchAll(pattern)) {
+        const matched = match[0].replace(/\s+/gu, " ").trim();
+        if (!matched || isAuthorizedMandatoryMoralCorrection(
+          matched,
+          matched,
+          normalizedAuthoritySources,
+        )) continue;
+        findings.add(matched);
+      }
+    }
+  }
+  return [...findings];
+}
+
+/** Shared host-side gate for downstream planning and writing surfaces. */
+export function findUnauthorizedMandatoryMoralCorrectionsInText(
+  text: string,
+  authorizedSources: string | ReadonlyArray<ArchitectMoralAuthoritySource> = [],
+): ReadonlyArray<string> {
+  return findUnauthorizedMandatoryMoralCorrections({
+    storyBible: "",
+    volumeOutline: "",
+    bookRules: "",
+    currentState: "",
+    pendingHooks: "",
+    storyFrame: text,
+  }, authorizedSources);
+}
+
+/**
+ * Scan manuscript evidence without mistaking clearly attributed fictional
+ * speech, belief, mockery, or inscriptions for a host control instruction.
+ * Unattributed meta mandates remain visible to the normal detector.
+ */
+export function findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence(
+  text: string,
+  authorizedSources: string | ReadonlyArray<ArchitectMoralAuthoritySource> = [],
+): ReadonlyArray<string> {
+  const scanSurface = splitNarrativeSentences(text)
+    .filter((sentence) => !isClearlyAttributedFictionalClause(sentence))
+    .join("\n");
+  return findUnauthorizedMandatoryMoralCorrectionsInText(scanSurface, authorizedSources);
+}
+
+function splitNarrativeSentences(text: string): ReadonlyArray<string> {
+  return text.match(/[^.!?。！？\n]+(?:[.!?。！？]+["'”’」』）)]*)?|[.!?。！？]+/gu) ?? [text];
+}
+
+function isClearlyAttributedFictionalClause(sentence: string): boolean {
+  return /\b(?:priest|mother|father|parent|mentor|teacher|editor|antagonist|villain|protagonist|bystander|witness|he|she|they)\b[^.!?]{0,120}\b(?:insisted|believed|whispered|mocked|sneered|said|claimed|thought|argued|muttered|shouted|told)\b/i.test(sentence)
+    || /\b(?:graffiti|sign|note|letter|poster|inscription)\b[^.!?]{0,120}\b(?:read|said)\b/i.test(sentence)
+    || /(?:사제|어머니|아버지|부모|스승|교사|편집자|악역|주인공|행인|목격자|그|그녀)(?:가|이|은|는)?[^.!?]{0,120}(?:말했|주장했|믿었|속삭였|비웃었|중얼거렸|외쳤|생각했|말했다|주장했다|믿었다|속삭였다|비웃었다)/u.test(sentence)
+    || /(?:낙서|표지판|쪽지|편지|포스터|비문)[^.!?]{0,120}(?:적혀|쓰여|읽혔)/u.test(sentence)
+    || /(?:神父|母亲|父亲|父母|导师|老师|编辑|反派|主角|路人|目击者|他|她)[^。！？]{0,120}(?:坚持|相信|低声说|嘲笑|说道|声称|认为|喊道)/u.test(sentence)
+    || /(?:涂鸦|标牌|纸条|信件|海报|铭文)[^。！？]{0,120}(?:写着|写道)/u.test(sentence);
+}
+
+/** Exact-text authority check shared by BookRules and chapter-memo gates. */
+export function isExactTextAuthorizedBySources(
+  text: string,
+  authorizedSources: string | ReadonlyArray<ArchitectMoralAuthoritySource> = [],
+): boolean {
+  const normalizedText = text.normalize("NFKC").trim();
+  if (!normalizedText) return false;
+  const normalizedSources = (typeof authorizedSources === "string"
+    ? [{ kind: "owner-direction" as const, text: authorizedSources }]
+    : authorizedSources)
+    .filter((source) => source.text.trim().length > 0)
+    .map((source) => ({ ...source, text: source.text.normalize("NFKC") }));
+  return isAuthorizedMandatoryMoralCorrection(
+    normalizedText,
+    normalizedText,
+    normalizedSources,
+  );
+}
+
+function isAuthorizedMandatoryMoralCorrection(
+  matched: string,
+  phrase: string,
+  sources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): boolean {
+  const needles = [...new Set([phrase, matched].filter(Boolean))];
+  return sources.some((source) => needles.some((needle) => {
+    const haystack = collapseUnicodeWhitespaceWithMap(source.text);
+    const lowerHaystack = haystack.text.toLocaleLowerCase("en-US");
+    const lowerNeedle = collapseUnicodeWhitespaceWithMap(needle).text.toLocaleLowerCase("en-US");
+    let from = 0;
+    while (from <= lowerHaystack.length - lowerNeedle.length) {
+      const start = lowerHaystack.indexOf(lowerNeedle, from);
+      if (start < 0) break;
+      const end = start + lowerNeedle.length;
+      const rawStart = haystack.rawStarts[start];
+      const rawEnd = haystack.rawEnds[end - 1];
+      if (
+        rawStart !== undefined
+        && rawEnd !== undefined
+        && isPositiveAuthorityOccurrence(source.text, rawStart, rawEnd, {
+          requireExplicitOwnerAdoption: source.kind === "owner-direction",
+        })
+      ) return true;
+      from = Math.max(end, start + 1);
+    }
+    return false;
+  }));
+}
+
+function isPositiveAuthorityOccurrence(
+  source: string,
+  start: number,
+  end: number,
+  options: { readonly requireExplicitOwnerAdoption?: boolean } = {},
+): boolean {
+  const prefix = source.slice(Math.max(0, start - 220), start);
+  const suffix = source.slice(end, Math.min(source.length, end + 120));
+  const normalizedPrefix = prefix.replace(/\s+/gu, " ");
+  const normalizedSuffix = suffix.replace(/\s+/gu, " ");
+  const lineStart = source.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const lineEnd = source.indexOf("\n", end);
+  const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+
+  if (/^\s*>/.test(line) || isInsideQuotedSpan(source, start, end)) return false;
+
+  const negatedBefore = /(?:do\s+not|don't|never)\s+(?:require|demand|mandate|say|write|include|add|force|use|keep)[^.!?]{0,80}$/i.test(normalizedPrefix)
+    || /(?:remove|delete|drop|exclude|omit)\s+(?:(?:the|this|that)\s+)?(?:idea|claim|rule|requirement|demand|proposal|mandate)?(?:\s*(?:that|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:reject(?:ed)?|deny|denied|oppose|opposed|dismiss(?:ed)?|veto(?:ed)?|discard(?:ed)?|declin(?:e|ed)|refus(?:e|ed)|withdraw|withdrew|withdrawn|revoke(?:d)?|rescind(?:ed)?)\s+(?:(?:the|this|that)\s+)?(?:idea|claim|rule|requirement|demand|proposal|mandate)?(?:\s*(?:that|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:do|does|did)\s+not\s+(?:approve|authorize|adopt|accept|keep|require)(?:\s+(?:(?:the|this|that)\s+)?(?:idea|claim|rule|requirement|demand|proposal|mandate))?(?:\s*(?:that|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:never|not)\s+(?:approved|authorized|adopted|accepted|kept|required)(?:\s+(?:(?:the|this|that)\s+)?(?:idea|claim|rule|requirement|demand|proposal|mandate))?(?:\s*(?:that|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:said|stated|confirmed)\s+(?:that\s+)?(?:this|that|it)\s+(?:was|is)\s+not\s+(?:canon|authorized|approved|a\s+rule)(?:\s*(?:that|:|-))?[^.!?]{0,48}$/i.test(normalizedPrefix)
+    || /(?:요구|강제|명시|작성|포함|추가|말)[^.!?]{0,16}(?:하지\s*마|하지\s*말|않(?:는|는다|았다)|금지)[^.!?]{0,56}$/u.test(normalizedPrefix)
+    || /(?:거부|부정|반대)[^.!?]{0,56}$/u.test(normalizedPrefix)
+    || /(?:기각|폐기|철회|취소|반려)(?!하지\s*않|하지\s*말)[^.!?]{0,56}$/u.test(normalizedPrefix)
+    || /(?:不要|不得|禁止|无需|不必)[^。！？]{0,64}$/u.test(normalizedPrefix)
+    || /(?:拒绝|否认|反对|否决|驳回|撤回|废弃|撤销)[^。！？]{0,56}$/u.test(normalizedPrefix);
+  const nonAdoptiveBefore = /(?:reviewer|model|assistant|auditor|audit\s+report|review\s+report|current\s+draft|draft)[^.!?]{0,96}(?:suggest(?:ed|s)?|propos(?:ed|es)?|recommend(?:ed|s)?|generated|wrote|says?|contains?|mentions?|uses?|requires?)(?:\s+(?:(?:the|this|that)\s+)?(?:idea|claim|rule|requirement|demand|proposal|mandate))?(?:\s*(?:that|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /\b(?:hypothetically|in\s+a\s+hypothetical|for\s+the\s+sake\s+of\s+argument)\b[\s\S]{0,180}$/i.test(normalizedPrefix)
+    || /\bif\b[\s\S]{0,120}\b(?:owner|user|author)\b[\s\S]{0,64}\b(?:adopted|approved|authorized|required)\b[\s\S]{0,96}$/i.test(normalizedPrefix)
+    || /\b(?:suppose|assuming)\b[\s\S]{0,180}$/i.test(normalizedPrefix)
+    || /\baccording\s+to\s+(?:the\s+)?(?:reviewer|model|assistant|auditor)\b[\s\S]{0,180}$/i.test(normalizedPrefix)
+    || /\b(?:draft\s+memo|draft|audit\s+report|review\s+report)\b[\s\S]{0,64}\b(?:alleges?|claims?|reports?)\b[\s\S]{0,160}$/i.test(normalizedPrefix)
+    || /\b(?:owner|user|author)\b[^.!?]{0,64}\b(?:supposedly|reportedly|allegedly)\s+(?:adopted|approved|authorized|required)\b[^.!?]{0,80}$/i.test(normalizedPrefix)
+    || /\b(?:owner|user|author)\b[^.!?]{0,64}\b(?:might|may|could|would)\s+(?:adopt|approve|authorize|require)\b[^.!?]{0,80}$/i.test(normalizedPrefix)
+    || /\b(?:reviewer|model|assistant|auditor|someone)\b[\s\S]{0,64}\b(?:falsely\s+)?(?:claimed|wrote|said|reported)\b[\s\S]{0,96}\b(?:owner|user|author)\b[\s\S]{0,48}\b(?:adopts?|requires?|approves?|authorizes?)\b[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /\b(?:asked|wondered|questioned|debated)\s+whether\b[\s\S]{0,96}\b(?:owner|user|author)\b[\s\S]{0,48}\b(?:approves?|adopts?|authorizes?|requires?)\b[\s\S]{0,64}$/i.test(normalizedPrefix)
+    || /(?:priest|mother|father|parent|antagonist|villain|mentor|teacher|character|bystander|crowd|he|she|they)\s+(?:insisted|believed|said|mocked|claimed|thought|argued|muttered|shouted)(?:\s+(?:that|:|-))?[^.!?]{0,96}$/i.test(normalizedPrefix)
+    || /(?:graffiti|sign|note|letter|poster|inscription)(?:\s+on\s+[^.!?]{0,48})?\s+(?:read|said)(?:\s*(?:that|:|-))?[^.!?]{0,96}$/i.test(normalizedPrefix)
+    || /(?:unapproved|unadopted|unverified|hypothetical|example|sample|bad)\s+(?:suggestion|proposal|rule|requirement|mandate|example)(?:\s*(?:is|would\s+be|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:discussing|debating|considering|evaluating)\s+whether\s+to\s+(?:adopt|approve|authorize|use|require)[^.!?]{0,80}$/i.test(normalizedPrefix)
+    || /(?:for\s+comparison[^.!?]{0,80}(?:another|other)\s+(?:book|story)[^.!?]{0,48}(?:uses?|has|requires?)|example\s+of\s+what\s+not\s+to\s+do|a\s+bad\s+rule\s+would\s+be|if\s+we\s+chose[^.!?]{0,64}(?:the\s+rule\s+would\s+be)?|the\s+following\s+is\s+only\s+a\s+hypothetical)[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:should\s+we\s+(?:adopt|approve|authorize|use|require)[^?]{0,80}\?|did\s+(?:the\s+)?(?:reviewer|model|assistant|auditor)\s+(?:suggest|propose|recommend)[^?]{0,80}\?)\s*$/i.test(normalizedPrefix)
+    || /(?:리뷰어|검토자|모델|어시스턴트|감리자|감리\s*보고서|검토\s*보고서|현재\s*초안)[^.!?]{0,80}(?:제안|권고|작성|언급|포함|사용)[^.!?]{0,64}$/u.test(normalizedPrefix)
+    || /(?:미승인|미채택|가정|가상의|예시|나쁜)\s*(?:제안|규칙|요구|예시)[^.!?]{0,64}$/u.test(normalizedPrefix)
+    || /(?:채택|승인|사용|요구)할지\s*(?:논의|검토|고려)[^.!?]{0,64}$/u.test(normalizedPrefix)
+    || /(?:비교를\s*위해|하지\s*말아야\s*할\s*예시|가정한다면)[^.!?]{0,96}$/u.test(normalizedPrefix)
+    || /(?:评审|审核者|模型|助手|审计员|审计报告|评审报告|当前草稿)[^。！？]{0,80}(?:建议|提议|推荐|写道|提到|包含|使用)[^。！？]{0,64}$/u.test(normalizedPrefix)
+    || /(?:未经批准|尚未采纳|假设|示例|反例|坏规则)[^。！？]{0,80}$/u.test(normalizedPrefix)
+    || /(?:正在讨论|正在考虑|正在评估)[^。！？]{0,64}(?:采纳|批准|授权|使用|要求)[^。！？]{0,48}$/u.test(normalizedPrefix)
+    || /(?:作为比较|不要这样做的例子|仅作假设)[^。！？]{0,96}$/u.test(normalizedPrefix);
+  const negatedAfter = /^(?:[^.!?]{0,40})?(?:is|was|are|were)\s+not\s+(?:required|a\s+rule|canon|authorized)/i.test(normalizedSuffix)
+    || /^[\s"'‘’“”`().!?{}:;-]*(?:was\s+)?(?:rejected|denied|dismissed|vetoed|discarded|declined|refused|withdrawn|revoked|rescinded|not\s+(?:requested|approved|authorized|adopted|accepted)|removed|deleted|must\s+be\s+removed)/i.test(normalizedSuffix)
+    || /^(?:[^.!?]{0,40})?(?:was\s+)?(?:rejected|denied|dismissed|vetoed|discarded|declined|refused|withdrawn|revoked|rescinded|not\s+(?:requested|approved|authorized|adopted|accepted)|removed|deleted|must\s+be\s+removed)/i.test(normalizedSuffix)
+    || /^(?:[^.!?]{0,48})?(?:do|does|did)\s+not\s+(?:approve|authorize|adopt|accept|keep|require)/i.test(normalizedSuffix)
+    || /^(?:라는|한다는|해야\s*한다는)?[^.!?]{0,24}(?:요구|주장|문구|뜻|규칙)?[^.!?]{0,20}(?:이\s*아니|아니|거부|부정|금지|삭제|제거|빼|기각|폐기|철회|취소|반려)/u.test(normalizedSuffix)
+    || /^[\s\S]{0,80}(?:이\s*아니|아니|거부|부정|금지|삭제|제거|빼|기각|폐기|철회|취소|반려)/u.test(normalizedSuffix)
+    || /^(?:[^。！？]{0,32})?(?:说法|要求|主张|规则)?[^。！？]{0,20}(?:并非|不是|被拒绝|遭拒绝|被否决|遭否决|被驳回|撤回|废弃|撤销|不成立|删除|移除)/u.test(normalizedSuffix)
+    || /^[\s\S]{0,80}(?:并非|不是|被拒绝|遭拒绝|被否决|遭否决|被驳回|撤回|废弃|撤销|不成立|删除|移除)/u.test(normalizedSuffix);
+  if (negatedBefore || nonAdoptiveBefore || negatedAfter) return false;
+  if (!options.requireExplicitOwnerAdoption) return true;
+
+  const normalizedSource = collapseUnicodeWhitespaceWithMap(source.trim()).text;
+  const normalizedOccurrence = collapseUnicodeWhitespaceWithMap(source.slice(start, end).trim()).text;
+  if (normalizedSource.localeCompare(normalizedOccurrence, "en", { sensitivity: "base" }) === 0) {
+    return true;
+  }
+  const singleClauseSource = normalizedSource.replace(/[.!?。！？]\s*$/u, "");
+  if (
+    !/[.!?。！？:：;]/u.test(singleClauseSource)
+    && singleClauseSource.toLocaleLowerCase("en-US")
+      .includes(normalizedOccurrence.toLocaleLowerCase("en-US"))
+  ) {
+    return true;
+  }
+
+  const explicitOwnerAdoption = /(?:\b(?:owner|user|author|i|we)\b[^.!?]{0,48}\b(?:explicitly\s+)?(?:adopt|adopts|adopted|require|requires|required|authorize|authorizes|authorized|approve|approves|approved|mandate|mandates|instruct|instructs|direct|directs)\b|\b(?:owner|user|author)\s+(?:instruction|requirement|rule)\b|\b(?:confirmed|approved|adopted|authorized)\s+(?:book|story)?\s*(?:rule|requirement)\b)(?:[^.!?]{0,48}(?:that|:|-))?[^.!?]{0,64}$/i.test(normalizedPrefix)
+    || /(?:사용자|소유자|작가|저자)[^.!?]{0,32}(?:명시적으로\s*)?(?:채택|요구|승인|허가|지시|규칙으로\s*정)[^.!?]{0,48}$/u.test(normalizedPrefix)
+    || /(?:사용자|소유자|작가|저자)\s*(?:지시|요구|승인\s*규칙)[^.!?]{0,24}$/u.test(normalizedPrefix)
+    || /(?:작품의\s*)?(?:확정|승인된|채택된)\s*규칙[^.!?]{0,24}$/u.test(normalizedPrefix)
+    || /(?:用户|所有者|作者)[^。！？]{0,32}(?:明确)?(?:采纳|要求|授权|批准|指示|定为规则)[^。！？]{0,48}$/u.test(normalizedPrefix)
+    || /(?:本书)?(?:已确认|已批准|已采纳)的?规则[^。！？]{0,24}$/u.test(normalizedPrefix);
+  return explicitOwnerAdoption;
+}
+
+function collapseUnicodeWhitespaceWithMap(source: string): {
+  readonly text: string;
+  readonly rawStarts: ReadonlyArray<number>;
+  readonly rawEnds: ReadonlyArray<number>;
+} {
+  let text = "";
+  const rawStarts: number[] = [];
+  const rawEnds: number[] = [];
+  let index = 0;
+  while (index < source.length) {
+    const htmlBreak = source.slice(index).match(/^<br\s*\/?\s*>/iu)?.[0];
+    if (htmlBreak) {
+      text += " ";
+      rawStarts.push(index);
+      rawEnds.push(index + htmlBreak.length);
+      index += htmlBreak.length;
+      continue;
+    }
+    const namedWhitespaceEntity = source.slice(index)
+      .match(/^&(?:nbsp|ensp|emsp|thinsp);/iu)?.[0];
+    const numericEntity = source.slice(index)
+      .match(/^&#(x[0-9a-f]+|\d+);/iu);
+    const numericWhitespaceEntity = numericEntity?.[0]
+      && (() => {
+        const token = numericEntity[1]!;
+        const codePoint = Number.parseInt(token.startsWith("x") || token.startsWith("X")
+          ? token.slice(1)
+          : token, token.startsWith("x") || token.startsWith("X") ? 16 : 10);
+        return Number.isFinite(codePoint)
+          && codePoint <= 0x10FFFF
+          && /\s/u.test(String.fromCodePoint(codePoint));
+      })()
+      ? numericEntity[0]
+      : undefined;
+    const whitespaceEntity = namedWhitespaceEntity ?? numericWhitespaceEntity;
+    if (whitespaceEntity) {
+      text += " ";
+      rawStarts.push(index);
+      rawEnds.push(index + whitespaceEntity.length);
+      index += whitespaceEntity.length;
+      continue;
+    }
+    const markdownLink = source.slice(index)
+      .match(/^\[([^\]\n]{1,512})\]\((?:\\.|[^)\n]){1,2048}\)/u);
+    if (markdownLink) {
+      const label = markdownLink[1]!;
+      const collapsedLabel = collapseUnicodeWhitespaceWithMap(label);
+      text += collapsedLabel.text;
+      rawStarts.push(...collapsedLabel.rawStarts.map((offset) => index + 1 + offset));
+      rawEnds.push(...collapsedLabel.rawEnds.map((offset) => index + 1 + offset));
+      index += markdownLink[0].length;
+      continue;
+    }
+    if (/\s/u.test(source[index]!)) {
+      const start = index;
+      while (index < source.length && /\s/u.test(source[index]!)) index++;
+      text += " ";
+      rawStarts.push(start);
+      rawEnds.push(index);
+      continue;
+    }
+    // Inline Markdown emphasis/code markers and zero-width formatting are not
+    // semantic separators. Ignore them only on the scan copy; raw offsets are
+    // retained for quote/negation checks and the persisted text is untouched.
+    const ignoredFormatting = source.slice(index)
+      .match(/^[*_~`\u00AD\u200B\u200C\u200D\u2060\uFE00-\uFE0F\uFEFF\u{E0100}-\u{E01EF}]/u)?.[0];
+    if (ignoredFormatting) {
+      index += ignoredFormatting.length;
+      continue;
+    }
+    text += source[index]!;
+    rawStarts.push(index);
+    rawEnds.push(index + 1);
+    index++;
+  }
+  return { text, rawStarts, rawEnds };
+}
+
+function isInsideQuotedSpan(source: string, start: number, end: number): boolean {
+  const asymmetricPairs: ReadonlyArray<readonly [string, string]> = [
+    ["“", "”"], ["‘", "’"], ["「", "」"], ["『", "』"], ["《", "》"],
+  ];
+  for (const [open, close] of asymmetricPairs) {
+    const lastOpen = source.lastIndexOf(open, start);
+    const lastClose = source.lastIndexOf(close, start);
+    const nextClose = source.indexOf(close, end);
+    if (lastOpen > lastClose && nextClose >= end) return true;
+  }
+  for (const quote of ['"', "`"]) {
+    let count = 0;
+    for (let i = 0; i < start; i++) {
+      if (source[i] === quote && source[i - 1] !== "\\") count++;
+    }
+    if (count % 2 === 1 && source.indexOf(quote, end) >= end) return true;
+  }
+  const singleOpen = source.lastIndexOf("'", start);
+  const singleClose = source.indexOf("'", end);
+  if (
+    singleOpen >= 0
+    && singleClose >= end
+    && (singleOpen === 0 || !/[\p{L}\p{N}]/u.test(source[singleOpen - 1] ?? ""))
+    && (singleClose === source.length - 1 || !/[\p{L}\p{N}]/u.test(source[singleClose + 1] ?? ""))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function extractArchitectClause(source: string, start: number, end: number): string {
+  const boundaries = [".", "!", "?", "。", "！", "？", "\n"];
+  let clauseStart = 0;
+  let clauseEnd = source.length;
+  for (const boundary of boundaries) {
+    clauseStart = Math.max(clauseStart, source.lastIndexOf(boundary, Math.max(0, start - 1)) + 1);
+    const next = source.indexOf(boundary, end);
+    if (next >= 0) clauseEnd = Math.min(clauseEnd, next + boundary.length);
+  }
+  return source.slice(clauseStart, clauseEnd).replace(/\s+/g, " ").trim();
 }
 
 export type FutureAdvantageFoundationMode = "required" | "preserve" | "forbidden";
@@ -161,6 +719,18 @@ class MissingArchitectSectionsError extends Error {
   }
 }
 
+class ArchitectContentNeutralityContractError extends Error {
+  readonly findings: readonly string[];
+  readonly content: string;
+
+  constructor(findings: readonly string[], content: string) {
+    super("Architect output contains an unrequested mandatory moral-correction beat");
+    this.name = "ArchitectContentNeutralityContractError";
+    this.findings = findings;
+    this.content = content;
+  }
+}
+
 export class ArchitectAgent extends BaseAgent {
   get name(): string {
     return "architect";
@@ -178,6 +748,10 @@ export class ArchitectAgent extends BaseAgent {
         characterMatrix: string;
         userFeedback: string;
       };
+      /** Explicit, host-authenticated owner/canon artifacts eligible for exact BookRule authority. */
+      bookRuleAuthoritySources?: ReadonlyArray<ArchitectBookRuleAuthoritySource>;
+      /** Explicit, separately confirmed Studio owner-adoption decisions. */
+      bookRuleOwnerDecisions?: ReadonlyArray<ArchitectBookRuleOwnerDecision>;
     },
   ): Promise<ArchitectOutput> {
     const { profile: gp, body: genreBody } =
@@ -267,7 +841,29 @@ export class ArchitectAgent extends BaseAgent {
       { role: "user", content: userMessage },
     ], { temperature: 0.8 });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage, futureAdvantageMode);
+    const authoritySources: ArchitectMoralAuthoritySource[] = [
+      ...(options?.bookRuleAuthoritySources ?? []).map((source) => ({
+        kind: source.source === "book-canon"
+          ? "persisted-book-canon" as const
+          : "owner-direction" as const,
+        text: source.artifactContent,
+      })),
+      ...(options?.bookRuleOwnerDecisions ?? []).map((decision) => ({
+        kind: "owner-direction" as const,
+        text: `Owner explicitly adopts this Book rule: ${decision.text}`,
+      })),
+    ];
+    const foundation = await this.parseSectionsWithRepair(
+      response.content,
+      resolvedLanguage,
+      futureAdvantageMode,
+      authoritySources,
+    );
+    return this.attachBookRuleAuthority(
+      foundation,
+      options?.bookRuleAuthoritySources ?? [],
+      options?.bookRuleOwnerDecisions ?? [],
+    );
   }
 
   private buildFutureAdvantageFoundationBlock(
@@ -475,7 +1071,7 @@ ${genreContract ? `\n## 장르 전용 약속\n${genreContract}\n- 후보 목록�
 작가가 사건을 만들 때 지켜야 할 세계의 규칙을 설명합니다. 법, 돈, 기술, 신분, 조직의 권한처럼 실제 선택을 제한하는 조건을 우선합니다. 감각 묘사는 대표 장소 한두 곳에 붙입니다.
 
 ## 04_끝까지_갈_목표
-마지막에 주인공이 어디서 무엇을 하고 있는지, 누가 곁에 남는지, 어떤 대가를 치렀는지 적습니다. 끝에는 "전권 목표:"로 시작하는 한 문장을 둡니다. 외부 사람이 달성 여부를 판정할 수 있는 상태여야 합니다.
+마지막에 주인공이 어디서 무엇을 하고 있는지, 누가 곁에 남는지 적습니다. 사건의 인과상 실제 대가가 생기는 작품이면 그 대가도 적되, 대가·벌·반성·속죄·내적 성장을 완결 조건으로 만들지 않습니다. 변화나 대가가 없는 결말도 작품의 약속과 인과에 맞으면 유효합니다. 끝에는 "전권 목표:"로 시작하는 한 문장을 둡니다. 외부 사람이 달성 여부를 판정할 수 있는 상태여야 합니다.
 
 === SECTION: volume_map ===
 
@@ -508,13 +1104,13 @@ name: <인물 이름>
 독자가 첫 등장 장면에서 확인할 태도와 버릇을 적습니다.
 
 ## 욕망과 약점
-지금 원하는 것, 그것을 원하는 이유, 원하는 것을 얻기 위해 감수할 손해를 적습니다.
+지금 원하는 것, 그것을 원하는 이유, 원하는 것을 위해 어디까지 행동할 의향이 있는지 적습니다. 손해를 감수하지 않으려는 인물도 그대로 적으며, 모든 욕망에 대가를 붙이지 않습니다.
 
 ## 과거
 현재의 선택에 영향을 주는 사건만 짧게 적습니다.
 
 ## 처음과 끝
-주인공에게 필수입니다. 시작할 때의 처지와 판단 버릇, 마지막에 차지할 자리, 그 과정에서 치를 대가를 적습니다.
+주인공에게 필수입니다. 시작할 때의 처지와 판단 버릇, 마지막에 차지할 자리를 적습니다. 과정에서 실제로 잃거나 바뀌는 것이 있을 때만 대가나 내적 변화를 덧붙입니다. 변화 없음과 대가 없음도 합법이며, 도덕적 교정·벌·속죄를 자동으로 만들지 않습니다.
 
 ## 첫 등장 때 처지
 첫 등장 직전 무슨 일을 겪었고 무엇이 급한지 적습니다.
@@ -526,7 +1122,7 @@ name: <인물 이름>
 이 인물이 포기하지 않는 것과 궁지에서 먼저 버리는 것을 적습니다.
 
 ## 변하게 되는 계기
-생각이나 행동이 달라지는 사건을 적습니다. 추상적인 성장 평가로 끝내지 않습니다.
+변화가 예정된 인물만 생각이나 행동이 달라지는 사건을 적습니다. 변화가 없는 인물은 "변화 없음"이라고 적을 수 있습니다. 범죄·비도덕적 선택을 했다는 이유만으로 반성·개심·속죄를 만들지 않습니다.
 
 보조 인물은 같은 구분자를 쓰고 "첫인상과 버릇 / 욕망과 약점 / 첫 등장 때 처지 / 주인공과 얽히는 일" 네 항목만 씁니다.
 
@@ -537,7 +1133,7 @@ name: <인물 이름>
 ## 주인공
 - 이름: <이름>
 - 끝까지 지킬 성격: <구체적인 행동 기준>
-- 하지 않을 행동: <작품이 편해져도 시키지 않을 행동>
+- 하지 않을 행동: <사용자 지시나 기존 Book 정본에 실제로 있는 경우만 적고, 없으면 이 줄을 생략>
 
 ## 장르 약속
 - 주 장르: ${book.genre}
@@ -555,7 +1151,7 @@ ${gp.eraResearch ? `## 시대 고증
 - <가격, 법, 기술, 사회상에서 사건을 제한하는 사실 2~3개>` : ""}
 
 ## 금지 사항
-- <이 작품에서 쓰지 않을 편의적 해결이나 문체 3~5개>
+- <사용자 지시나 기존 Book 정본에서 확인되는 금지만 적습니다. 모델이 도덕·안전·성별 규칙을 새로 만들지 않으며, 확인된 금지가 없으면 "없음" 한 줄만 씁니다.>
 
 === SECTION: pending_hooks ===
 
@@ -641,7 +1237,7 @@ ${futureAdvantageBlock}
 两条线必须有因果关联，不能是平行宇宙——每一段前台冲突的背后都应该能追溯到后台故事的某个齿轮在转。**如果只有前台没有后台，故事会散成"独立事件集"，没有往前拉的引力；如果只有后台没有前台，故事会憋闷、看不到爽感**。本段用散文明确写出：本书前台是什么、后台是什么、两者怎么咬合。
 
 ### 段 3：世界观底色（铁律 + 质感 + 本书专属规则）
-这个世界的运行规则是什么？3-5 条**不可违反的铁律**——以 prose 写出，不要 bullet。这个世界的质感是什么——湿的还是干的、快的还是慢的、噪的还是静的？给 writer 一个明确的感官锚（这是原来 particle_ledger 承载的基调部分）。**这一段同时承担原先 book_rules 正文里写的"叙事视角 / 本书专属规则 / 核心冲突驱动"等 prose 内容**——全部合并到这里写一次就够，不要再去 book_rules 重复。
+这个世界的运行规则是什么？写 3-5 条关于法律、金钱、技术、身份、组织权限或超自然机制的因果铁律——以 prose 写出，不要 bullet。不要把道德评价、赎罪、惩罚或人物必须改过写成世界铁律。这个世界的质感是什么——湿的还是干的、快的还是慢的、噪的还是静的？给 writer 一个明确的感官锚（这是原来 particle_ledger 承载的基调部分）。**这一段同时承担原先 book_rules 正文里写的"叙事视角 / 本书专属规则 / 核心冲突驱动"等 prose 内容**——全部合并到这里写一次就够，不要再去 book_rules 重复。
 
 ### 段 4：终局方向 + 全书 Objective（OKR 大纲的根）
 这本书最后一章大概是什么感觉——不是"主角登顶"、"大结局"这种套话，而是**最后一个镜头**大致长什么样。主角最后在哪、做什么、身边有谁、心里想什么。这是给全书所有后面的规划一个远方靶子。
@@ -704,8 +1300,8 @@ name: <角色名>
 ## 人物小传（过往经历）
 （一段散文，说这个人怎么变成现在这样。童年/重大事件/塑造性格的那件事。只写关键过往，简版。）
 
-## 主角弧线（起点 → 终点 → 代价）
-**只有主角必须写本段；其他 major 角色如果弧线分量重也可以写，否则略过。**主角从哪里出发（身份、处境、核心缺陷、一开始最想要什么），到哪里落脚（最终变成什么样的人、拿到/失去什么），为了这个落脚他付出了什么不可逆的代价（关系、身体、信念、某段过去）。不要只写"变强"这种平面变化，要写**内在的位移**。本段是之前 story_frame.段 2 迁移过来的权威位置，写足写实。
+## 主角弧线（起点 → 终点；代价与内在变化可选）
+**只有主角必须写本段；其他 major 角色如果弧线分量重也可以写，否则略过。**写清主角从哪里出发（身份、处境、一开始最想要什么），到哪里落脚（最终处境、拿到/失去什么）。只有事件因果实际产生不可逆损失时才写代价；只有作品确实安排了内在位移时才写变化。"无额外代价"和"内在立场不变"都是合法结果。不要因为犯罪、不道德或令人不适就自动添加惩罚、反省、改过或赎罪。本段是之前 story_frame.段 2 迁移过来的权威位置，写足写实。
 
 ## 当前现状（第 0 章初始状态）
 （第 0 章时他在哪、做什么、处境如何、最近最烦心的事。**只写角色个人处境**——初始钩子写在 pending_hooks 的 startChapter=0 行；环境/时代锚（如果是需要年份的题材）织进 story_frame.世界观底色。不再有独立的 current_state section。）
@@ -714,10 +1310,10 @@ name: <角色名>
 （与主角、与其他重要角色的关系——一句话一条，关系不是标签是动态。）
 
 ## 内在驱动
-（他想要什么、为什么想要、愿意付出什么代价。）
+（他想要什么、为什么想要、愿意做到哪一步；如果他不愿承担损失，也照实写，不给每个欲望强加代价。）
 
 ## 成长弧光
-（他在这本书里会经历什么内在位移——变好变坏变复杂，落在哪里。非主角可短可长。）
+（只有确有内在位移时才写；也可明确写"无内在变化"。变化可以变好、变坏或更复杂，不以道德改善为默认。）
 
 ---ROLE---
 tier: major
@@ -742,11 +1338,11 @@ name: <次要角色名>
 ## 主角
 - 名字：<主角名>
 - 性格锁：<3-5 个性格关键词，用顿号分隔>
-- 行为约束：<3-5 条主角不能违背的行为边界，用顿号分隔>
+- 行为约束：<只写用户明确要求或既有 Book 正典已经确认的边界；没有则省略本行>
 
 ## 题材锁
 - 主类型：${book.genre}
-- 禁止混入：<2-3 种禁止混入的文风/体系>
+- 禁止混入：<只写用户或既有 Book 正典确认的禁区；不得自行添加道德、安全或性别规范，没有则省略本行>
 
 ## 叙事人称
 <只有当用户明确指定第一人称或第三人称时才写；没指定就写"无">
@@ -849,7 +1445,7 @@ The book's main tension — not "good vs evil" but "because A believes X and B b
 The two layers must be causally linked, not parallel universes — every foreground conflict should trace back to some gear of the background machine turning. **Foreground-only story collapses into a set of disconnected episodes with no forward pull; background-only story is suffocating and never delivers. Write both in prose here, and name how they interlock.**
 
 ## 03_World_Tonal_Ground (hard rules + sensory tone + book-specific rules)
-The world's operating rules. 3-5 unbreakable laws written as prose, not bullets. Sensory texture: wet or dry, fast or slow, noisy or quiet — give the writer an anchor. **This paragraph also absorbs the narrative prose that used to live in book_rules (narrative perspective, core conflict driver, book-specific rules).** Write them all here once. Do not repeat them in book_rules.
+The world's operating rules: 3-5 causal constraints grounded in law, money, technology, status, institutional authority, or supernatural mechanics, written as prose rather than bullets. Do not turn moral approval, punishment, redemption, or compulsory character reform into world law. Sensory texture: wet or dry, fast or slow, noisy or quiet — give the writer an anchor. **This paragraph also absorbs the narrative prose that used to live in book_rules (narrative perspective, core conflict driver, book-specific rules).** Write them all here once. Do not repeat them in book_rules.
 
 ## 04_Endgame_Direction_and_Book_Objective
 What the last chapter roughly feels like. The final shot: where, doing what, around whom, thinking what. A distant target for every planner call downstream.
@@ -904,8 +1500,8 @@ name: <character name>
 ## Back_Story
 (Prose paragraph — how this person became who they are. Key past only, keep it lean.)
 
-## Protagonist_Arc (start → end → cost)
-**Mandatory for the protagonist; optional for other majors with substantial arcs.** Where they start (identity, situation, core flaw, initial desire); where they land (who they become, what they gain or lose); the irreversible cost they pay for that landing. Show internal displacement, not just growth. This section absorbs what used to live in story_frame.02_Protagonist_Arc.
+## Protagonist_Arc (start → end; cost and internal change optional)
+**Mandatory for the protagonist; optional for other majors with substantial arcs.** State where they start and the concrete end-state they reach. Add an irreversible cost only when the planned events causally produce one, and add internal displacement only when this book actually calls for it. "No extra cost" and "no internal change" are valid. Never invent punishment, remorse, reform, or redemption merely because the character commits crimes or acts immorally. This section absorbs what used to live in story_frame.02_Protagonist_Arc.
 
 ## Current_State (initial state at chapter 0)
 (Where they are at chapter 0, what's on their mind, most recent worry. **Character-only**: initial hooks go in pending_hooks start_chapter=0 rows; environment / era anchors (when the genre has a real year) are woven into story_frame's world-tonal-ground paragraph. No separate current_state section is produced.)
@@ -914,10 +1510,10 @@ name: <character name>
 (With protagonist, with other major characters. One line each. Relationships are dynamic, not labels.)
 
 ## Inner_Driver
-(What they want, why, what they're willing to pay.)
+(What they want, why, and how far they are willing to act. If they refuse loss, state that honestly; do not force a cost onto every desire.)
 
 ## Growth_Arc
-(Internal displacement across the book. Can be short for non-protagonists.)
+(Write this only when the character has an internal displacement; "no internal change" is valid. Change may be better, worse, or more complex and is not synonymous with moral improvement.)
 
 ---ROLE---
 tier: major
@@ -942,11 +1538,11 @@ Output ordinary Markdown. Do NOT output YAML frontmatter, JSON, or code fences. 
 ## Protagonist
 - Name: <protagonist name>
 - Personality lock: <3-5 personality keywords, comma-separated>
-- Behavioral constraints: <3-5 behavioral boundaries>
+- Behavioral constraints: <only boundaries explicitly supplied by the user or confirmed existing Book canon; omit this line when none exist>
 
 ## Genre Lock
 - Primary: ${book.genre}
-- Forbidden: <2-3 forbidden style/system intrusions>
+- Forbidden: <only exclusions confirmed by the user or existing Book canon; do not invent moral, safety, or demographic rules; omit this line when none exist>
 
 ## Narrative Person
 <Write first person or third person ONLY if the user explicitly requested it; otherwise write "none".>
@@ -959,7 +1555,7 @@ ${gp.eraResearch ? `## Era Constraints
 - <2-3 constraints tied to policy, prices, technology, or social environment>` : ""}
 
 ## Prohibitions
-- <3-5 book-specific prohibitions>
+- <only prohibitions confirmed by the user or existing Book canon; write "none" when there are none, and do not invent moral correction>
 
 === SECTION: pending_hooks ===
 
@@ -998,23 +1594,40 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     content: string,
     language: "zh" | "ko" | "en",
     futureAdvantageMode: FutureAdvantageFoundationMode = "forbidden",
+    authorizedSources: ReadonlyArray<ArchitectMoralAuthoritySource> = [],
   ): Promise<ArchitectOutput> {
     try {
       const parsed = this.parseSections(content, language);
       this.validateFutureAdvantageFoundation(parsed, futureAdvantageMode, content);
+      this.validateArchitectContentNeutrality(parsed, content, authorizedSources);
       return parsed;
     } catch (error) {
       if (!(error instanceof MissingArchitectSectionsError)
-        && !(error instanceof FutureAdvantageFoundationContractError)) {
+        && !(error instanceof FutureAdvantageFoundationContractError)
+        && !(error instanceof ArchitectContentNeutralityContractError)) {
         throw error;
       }
 
-      const repaired = await this.repairMissingSections(error, language);
+      const repaired = error instanceof ArchitectContentNeutralityContractError
+        ? await this.repairContentNeutrality(error, language)
+        : await this.repairMissingSections(error, language);
       try {
         const parsed = this.parseSections(repaired, language);
         this.validateFutureAdvantageFoundation(parsed, futureAdvantageMode, repaired);
+        this.validateArchitectContentNeutrality(parsed, repaired, authorizedSources);
         return parsed;
       } catch (repairError) {
+        if (repairError instanceof ArchitectContentNeutralityContractError) {
+          throw new ArchitectIncompleteFoundationError(
+            ["unauthorized_mandatory_moral_correction"],
+            repairError.content,
+            language === "ko"
+              ? "작품 기획에 사용자가 요청하지 않은 의무적 처벌·반성·속죄가 남아 있어 저장하지 않았습니다. 다시 생성해 주세요."
+              : language === "en"
+                ? "The foundation still contains an unrequested mandatory punishment, remorse, or redemption beat, so it was not saved. Regenerate it."
+                : "基础设定仍包含用户未要求的强制惩罚、反省或赎罪，因此未保存。请重新生成。",
+          );
+        }
         if (repairError instanceof MissingArchitectSectionsError
           || repairError instanceof FutureAdvantageFoundationContractError) {
           const missingItems = repairError instanceof MissingArchitectSectionsError
@@ -1045,6 +1658,53 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
         throw repairError;
       }
     }
+  }
+
+  private validateArchitectContentNeutrality(
+    output: ArchitectOutput,
+    content: string,
+    authorizedSources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+  ): void {
+    const findings = findUnauthorizedMandatoryMoralCorrections(output, authorizedSources);
+    if (findings.length > 0) {
+      throw new ArchitectContentNeutralityContractError(findings, content);
+    }
+  }
+
+  private async repairContentNeutrality(
+    error: ArchitectContentNeutralityContractError,
+    language: "zh" | "ko" | "en",
+  ): Promise<string> {
+    const system = language === "ko"
+      ? [
+          "InkOS 작품 기획의 콘텐츠 중립 계약을 복구합니다.",
+          "인물·사건·승부·보상·캐논은 그대로 보존합니다.",
+          "사용자나 기존 정본이 요구하지 않은 의무적 처벌, 반성, 사과, 개심, 교화, 속죄, 응보, 도덕적 성장만 제거하거나 선택값으로 바꿉니다.",
+          "사건 인과에서 실제로 생기는 체포, 손실, 죄책감, 복수, 처벌, 용서, 구원은 지우지 않습니다.",
+          "story_frame, volume_map, roles, book_rules, pending_hooks 다섯 SECTION 전체를 같은 순서로 반환하고 복구 과정은 설명하지 않습니다.",
+        ].join("\n")
+      : language === "en"
+        ? [
+            "Repair this InkOS foundation under its fiction-content-neutral contract.",
+            "Preserve characters, events, conflict, payoff, and canon.",
+            "Remove or make optional only mandatory punishment, remorse, apology, reform, rehabilitation, redemption, retribution, or moral growth that the user and existing canon did not request.",
+            "Do not remove arrest, loss, guilt, revenge, punishment, forgiveness, or redemption that already follows from established scene causality.",
+            "Return all five SECTION blocks in the same order and do not explain the repair.",
+          ].join("\n")
+        : [
+            "按 InkOS 的虚构内容中立契约修复本书基础设定。",
+            "保留人物、事件、冲突、兑现与正典。",
+            "只删除或改为可选：用户与既有正典未要求的强制惩罚、反省、道歉、改过、教化、赎罪、报应或道德成长。",
+            "不要删除由既有场景因果自然产生的逮捕、损失、内疚、复仇、惩罚、宽恕或救赎。",
+            "按原顺序返回全部五个 SECTION，不解释修复过程。",
+          ].join("\n");
+    const user = `${language === "ko" ? "문제 구절" : language === "en" ? "Flagged phrases" : "问题语句"}:\n`
+      + `${error.findings.map((finding) => `- ${finding}`).join("\n")}\n\n${error.content}`;
+    const response = await this.chat([
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ], { temperature: 0.2 });
+    return response.content;
   }
 
   private async repairMissingSections(
@@ -1324,6 +1984,29 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     language: "zh" | "ko" | "en" = "zh",
     mode: "init" | "revise" = "init",
   ): Promise<void> {
+    const isPhase5Output = Boolean(output.storyFrame?.trim());
+    if (mode === "revise" && !isPhase5Output) {
+      throw new Error(
+        "Architect revise mode produced legacy-format output (storyFrame empty). " +
+        "The book's architecture files have NOT been modified.",
+      );
+    }
+
+    // Fully validate rules, exact selectors, carried authority, and new source
+    // receipts before creating directories, replacing role cards, or writing
+    // any foundation surface. Authority artifacts are prepared in memory here
+    // and are persisted only after the remaining foundation writes succeed.
+    const rulesFileContent = isPhase5Output
+      ? `${output.bookRules.trim()}\n`
+      : output.bookRules;
+    const preparedBookRules = await this.prepareHostProvenancedBookRules(
+      bookDir,
+      rulesFileContent,
+      mode,
+      output.bookRuleAuthoritySources,
+      output.bookRuleOwnerDecisions,
+    );
+
     const storyDir = join(bookDir, "story");
     const outlineDir = join(storyDir, "outline");
     const rolesDir = join(storyDir, "roles");
@@ -1343,14 +2026,6 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     const volumeMap = output.volumeMap ?? output.volumeOutline;
     const rhythmPrinciples = output.rhythmPrinciples ?? "";
     const roles = output.roles ?? [];
-    const isPhase5Output = Boolean(output.storyFrame?.trim());
-
-    if (mode === "revise" && !isPhase5Output) {
-      throw new Error(
-        "Architect revise mode produced legacy-format output (storyFrame empty). " +
-        "The book's architecture files have NOT been modified.",
-      );
-    }
 
     if (mode === "revise") {
       await rm(rolesMajorDir, { recursive: true, force: true });
@@ -1362,7 +2037,6 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     if (!isPhase5Output) {
       writes.push(writeFile(join(storyDir, "story_bible.md"), output.storyBible, "utf-8"));
       writes.push(writeFile(join(storyDir, "volume_outline.md"), output.volumeOutline, "utf-8"));
-      writes.push(writeFile(join(storyDir, "book_rules.md"), output.bookRules, "utf-8"));
       writes.push(writeFile(
         join(storyDir, "character_matrix.md"),
         language === "ko"
@@ -1395,6 +2069,7 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
       }
 
       await Promise.all(writes);
+      await this.persistPreparedHostProvenancedBookRules(bookDir, preparedBookRules);
       return;
     }
 
@@ -1440,8 +2115,6 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     // outline/volume_map.md and falls back to legacy volume_outline.md for
     // books initialized before Phase 5.
 
-    writes.push(writeFile(join(storyDir, "book_rules.md"), output.bookRules.trim() + "\n", "utf-8"));
-
     // Runtime state files.
     // Phase 5 consolidation: the architect no longer emits a current_state
     // section (only 3 genres — 港综同人/年代文/都市重生 — benefit from a
@@ -1483,6 +2156,291 @@ You MUST emit all **5 SECTION blocks in order**: story_frame → volume_map → 
     // compatibility with existing callers.
 
     await Promise.all(writes);
+    await this.persistPreparedHostProvenancedBookRules(bookDir, preparedBookRules);
+  }
+
+  private async prepareHostProvenancedBookRules(
+    bookDir: string,
+    rulesFileContent: string,
+    mode: "init" | "revise",
+    authoritySources: ReadonlyArray<ArchitectBookRuleAuthoritySource> = [],
+    ownerDecisionValues: ReadonlyArray<ArchitectBookRuleOwnerDecision> = [],
+  ): Promise<PreparedArchitectBookRules> {
+    const parsed = parseBookRules(rulesFileContent);
+    if (!parsed) {
+      throw new Error("Architect BookRules output is not parseable; refusing an unpaired rules write.");
+    }
+    const ownerDecisions = ownerDecisionValues.map((decision) => (
+      BookRuleOwnerDecisionInputSchema.parse(decision)
+    ));
+    const rules = this.applyOwnerDecisionsToRules(parsed.rules, ownerDecisions);
+    const normalizedRulesFileContent = ownerDecisions.length > 0
+      ? renderBookRulesDocument(rules, parsed.body)
+      : rulesFileContent;
+    const bookId = await readFile(join(bookDir, "book.json"), "utf8")
+      .then((raw) => {
+        const value = JSON.parse(raw) as { id?: unknown };
+        return typeof value.id === "string" && value.id.trim() ? value.id : basename(bookDir);
+      })
+      .catch(() => basename(bookDir));
+    let carriedEntries: ReadonlyArray<BookRuleProvenanceEntry> = [];
+    if (mode === "revise") {
+      const previousRaw = await readFile(join(bookDir, "story", "book_rules.md"), "utf8")
+        .catch(() => "");
+      const previousParsed = previousRaw ? parseBookRules(previousRaw) : null;
+      if (previousParsed) {
+        const verification = verifyBookRuleProvenance(
+          await readBookRuleProvenance(bookDir),
+          {
+            bookId,
+            rulesFileContent: previousRaw,
+            rules: previousParsed.rules,
+          },
+        );
+        if (verification.status === "current") {
+          const authority = await verifyBookRuleAuthorityEvidence(verification.receipt, bookDir);
+          if (authority.status === "verified") {
+            carriedEntries = carryForwardBookRuleProvenanceEntries(
+              verification,
+              rules,
+            );
+          }
+        }
+      }
+    }
+    const preparedAuthority = this.prepareExactBookRuleAuthorityAssignments({
+      bookId,
+      rules,
+      authoritySources,
+      ownerDecisions,
+    });
+    const receipt = compileBookRuleProvenance({
+      bookId,
+      rulesFileContent: normalizedRulesFileContent,
+      rules,
+      assignments: preparedAuthority.assignments,
+      carriedEntries,
+    });
+    return {
+      bookId,
+      rulesFileContent: normalizedRulesFileContent,
+      rules,
+      receipt,
+      authorityWrites: preparedAuthority.writes,
+    };
+  }
+
+  private async persistPreparedHostProvenancedBookRules(
+    bookDir: string,
+    prepared: PreparedArchitectBookRules,
+  ): Promise<void> {
+    if (prepared.authorityWrites.size > 0) {
+      await Promise.all([...prepared.authorityWrites.entries()].map(async ([relativePath, content]) => {
+        const target = join(bookDir, relativePath);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, content, "utf8");
+      }));
+    }
+    await persistBookRulesPair({
+      bookDir,
+      bookId: prepared.bookId,
+      rulesFileContent: prepared.rulesFileContent,
+      rules: prepared.rules,
+      receipt: prepared.receipt,
+    });
+  }
+
+  private prepareExactBookRuleAuthorityAssignments(input: {
+    readonly bookId: string;
+    readonly rules: BookRules;
+    readonly authoritySources: ReadonlyArray<ArchitectBookRuleAuthoritySource>;
+    readonly ownerDecisions: ReadonlyArray<ArchitectBookRuleOwnerDecision>;
+  }): {
+    readonly assignments: ReadonlyArray<BookRuleAuthorityAssignment>;
+    readonly writes: ReadonlyMap<string, string>;
+  } {
+    if (input.authoritySources.length === 0 && input.ownerDecisions.length === 0) {
+      return { assignments: [], writes: new Map() };
+    }
+    const rules = this.enumerateArchitectEnforcementRules(input.rules);
+    const assignments: BookRuleAuthorityAssignment[] = [];
+    const writes = new Map<string, string>();
+    const ownerDecisionByKey = new Map(input.ownerDecisions.map((decision) => [
+      `${decision.collection}\u0000${decision.text}`,
+      decision,
+    ]));
+
+    for (const rule of rules) {
+      const collection = rule.fieldPath.slice(0, rule.fieldPath.lastIndexOf("[")) as BookRuleProvenanceCollection;
+      const ownerDecision = ownerDecisionByKey.get(`${collection}\u0000${rule.text}`);
+      if (ownerDecision) {
+        const receipt = compileBookRuleOwnerAdoptionReceipt({
+          bookId: input.bookId,
+          decisionId: ownerDecision.decisionId,
+          adoptedByActorId: ownerDecision.adoptedByActorId,
+          fieldPath: rule.fieldPath,
+          text: rule.text,
+        });
+        const receiptContent = renderBookRuleOwnerAdoptionReceipt(receipt);
+        const receiptHash = createHash("sha256").update(receiptContent, "utf8").digest("hex");
+        const receiptPath = `story/authority/book-rules/receipts/${receiptHash}.json`;
+        writes.set(receiptPath, receiptContent);
+        assignments.push({
+          fieldPath: rule.fieldPath,
+          text: rule.text,
+          source: "user-explicit",
+          strength: "hard",
+          ownerAdoptionReceipt: { receiptPath, receiptContent },
+        });
+        continue;
+      }
+      let selected: {
+        readonly source: ArchitectBookRuleAuthoritySource;
+        readonly start: number;
+      } | undefined;
+      for (const source of input.authoritySources) {
+        let from = 0;
+        while (from <= source.artifactContent.length - rule.text.length) {
+          const start = source.artifactContent.indexOf(rule.text, from);
+          if (start < 0) break;
+          if (isPositiveAuthorityOccurrence(
+            source.artifactContent,
+            start,
+            start + rule.text.length,
+            { requireExplicitOwnerAdoption: source.source !== "book-canon" },
+          )) {
+            selected = { source, start };
+            break;
+          }
+          from = Math.max(start + rule.text.length, start + 1);
+        }
+        if (selected) break;
+      }
+      if (!selected) continue;
+
+      const artifactHash = createHash("sha256")
+        .update(selected.source.artifactContent, "utf8")
+        .digest("hex");
+      const artifactPath = `story/authority/book-rules/sources/${artifactHash}.txt`;
+      const sourceSelector = {
+        artifactPath,
+        artifactContent: selected.source.artifactContent,
+        start: selected.start,
+        end: selected.start + rule.text.length,
+      };
+      const receipt = compileBookRuleSourceAuthorityReceipt({
+        bookId: input.bookId,
+        source: selected.source.source,
+        authorityOrigin: selected.source.authorityOrigin,
+        intent: selected.source.intent,
+        decisionId: selected.source.decisionId,
+        authorizedByActorId: selected.source.authorizedByActorId,
+        fieldPath: rule.fieldPath,
+        text: rule.text,
+        sourceSelector,
+      });
+      const receiptContent = renderBookRuleSourceAuthorityReceipt(receipt);
+      const receiptHash = createHash("sha256").update(receiptContent, "utf8").digest("hex");
+      const receiptPath = `story/authority/book-rules/receipts/${receiptHash}.json`;
+      writes.set(artifactPath, selected.source.artifactContent);
+      writes.set(receiptPath, receiptContent);
+      assignments.push({
+        fieldPath: rule.fieldPath,
+        text: rule.text,
+        source: selected.source.source,
+        strength: "hard",
+        sourceSelector,
+        sourceAuthorityReceipt: { receiptPath, receiptContent },
+      });
+    }
+
+    return { assignments, writes };
+  }
+
+  private applyOwnerDecisionsToRules(
+    rulesValue: BookRules,
+    ownerDecisions: ReadonlyArray<ArchitectBookRuleOwnerDecision>,
+  ): BookRules {
+    if (ownerDecisions.length === 0) return rulesValue;
+    const seen = new Set<string>();
+    let rules = BookRulesSchema.parse(rulesValue);
+    for (const decision of ownerDecisions) {
+      const key = `${decision.collection}\u0000${decision.text}`;
+      if (seen.has(key)) {
+        throw new Error(`Duplicate owner hard-rule decision: ${decision.collection}`);
+      }
+      seen.add(key);
+      if (decision.collection === "prohibitions") {
+        rules = {
+          ...rules,
+          prohibitions: appendExactRule(rules.prohibitions, decision.text),
+        };
+        continue;
+      }
+      if (decision.collection === "protagonist.behavioralConstraints") {
+        if (!rules.protagonist) {
+          throw new Error("Cannot adopt a protagonist behavioral constraint before the foundation names a protagonist");
+        }
+        rules = {
+          ...rules,
+          protagonist: {
+            ...rules.protagonist,
+            behavioralConstraints: appendExactRule(
+              rules.protagonist.behavioralConstraints,
+              decision.text,
+            ),
+          },
+        };
+        continue;
+      }
+      if (decision.collection === "genreLock.forbidden") {
+        if (!rules.genreLock) {
+          throw new Error("Cannot adopt a genre-lock rule before the foundation defines its primary genre");
+        }
+        rules = {
+          ...rules,
+          genreLock: {
+            ...rules.genreLock,
+            forbidden: appendExactRule(rules.genreLock.forbidden, decision.text),
+          },
+        };
+        continue;
+      }
+      if (!rules.futureAdvantage) {
+        throw new Error("Cannot adopt a future-advantage shortcut rule when future advantage is not configured");
+      }
+      rules = {
+        ...rules,
+        futureAdvantage: {
+          ...rules.futureAdvantage,
+          forbiddenShortcuts: appendExactRule(
+            rules.futureAdvantage.forbiddenShortcuts,
+            decision.text,
+          ),
+        },
+      };
+    }
+    return BookRulesSchema.parse(rules);
+  }
+
+  private enumerateArchitectEnforcementRules(
+    rules: BookRules,
+  ): ReadonlyArray<{ readonly fieldPath: BookRuleFieldPath; readonly text: string }> {
+    const entries: Array<{ fieldPath: BookRuleFieldPath; text: string }> = [];
+    const push = (
+      collection: "protagonist.behavioralConstraints" | "genreLock.forbidden" | "prohibitions" | "futureAdvantage.forbiddenShortcuts",
+      values: ReadonlyArray<string>,
+    ): void => {
+      values.forEach((text, index) => entries.push({
+        fieldPath: `${collection}[${index}]`,
+        text,
+      }));
+    };
+    push("protagonist.behavioralConstraints", rules.protagonist?.behavioralConstraints ?? []);
+    push("genreLock.forbidden", rules.genreLock?.forbidden ?? []);
+    push("prohibitions", rules.prohibitions);
+    push("futureAdvantage.forbiddenShortcuts", rules.futureAdvantage?.forbiddenShortcuts ?? []);
+    return entries;
   }
 
   /**
@@ -1639,7 +2597,13 @@ ${continuationDirective}
       { role: "user", content: userMessage },
     ], { temperature: 0.5 });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage, futureAdvantageMode);
+    const foundation = await this.parseSectionsWithRepair(
+      response.content,
+      resolvedLanguage,
+      futureAdvantageMode,
+      [],
+    );
+    return foundation;
   }
 
   async generateFanficFoundation(
@@ -1687,7 +2651,7 @@ ${continuationDirective}
     const KO_MODE_INSTRUCTIONS: Record<FanficMode, string> = {
       canon: "원작의 빈 시기나 원작이 보여 주지 않은 인물의 시점을 씁니다. 원작에서 확정된 사건은 바꾸지 않습니다.",
       au: "원작과 갈라지는 사건을 하나 정하고, 그 사건 뒤의 결과를 끝까지 따릅니다. 인물의 핵심 성격은 유지합니다.",
-      ooc: "인물이 원작과 다른 선택을 하게 된 사건과 대가를 먼저 정합니다. 이유 없이 성격을 바꾸지 않습니다.",
+      ooc: "인물이 원작과 다른 선택을 하게 된 사건과 동기를 먼저 정합니다. 인과 없이 성격을 바꾸지 않으며, 대가·벌·개심은 실제 사건이 요구할 때만 둡니다.",
       cp: "두 인물이 함께 행동해야만 풀리는 사건을 중심에 둡니다. 각 권에서 말이 아닌 선택으로 관계가 달라져야 합니다.",
     };
 
@@ -1701,7 +2665,7 @@ ${continuationDirective}
           gp.numericalSystem
             ? "- 원작의 수치와 자원 한계를 유지하며 새 수치를 편의상 만들지 않습니다."
             : "- 원작에 없는 수치 체계를 새로 만들지 않습니다.",
-          gp.powerScaling ? "- 원작의 힘의 서열을 지킵니다. 이를 뒤집을 때는 원작 안의 수단과 대가가 필요합니다." : "",
+          gp.powerScaling ? "- 원작의 힘의 서열을 지킵니다. 이를 뒤집을 때는 원작 안의 수단과 인과가 필요하며, 대가는 실제 사건이 만들 때만 둡니다." : "",
           gp.eraResearch ? "- 원작과 실제 시대의 연표를 함께 지킵니다." : "",
           futureAdvantageBlock,
         )}
@@ -1756,37 +2720,74 @@ ${genreBody}
       },
     ], { temperature: 0.7 });
 
-    return this.parseSectionsWithRepair(response.content, resolvedLanguage, futureAdvantageMode);
+    const foundation = await this.parseSectionsWithRepair(
+      response.content,
+      resolvedLanguage,
+      futureAdvantageMode,
+      [],
+    );
+    return foundation;
   }
 
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+  private attachBookRuleAuthority(
+    foundation: ArchitectOutput,
+    sources: ReadonlyArray<ArchitectBookRuleAuthoritySource>,
+    ownerDecisions: ReadonlyArray<ArchitectBookRuleOwnerDecision>,
+  ): ArchitectOutput {
+    const usable = sources.filter((source) => source.artifactContent.trim().length > 0);
+    const adopted = ownerDecisions.map((decision) => BookRuleOwnerDecisionInputSchema.parse(decision));
+    return usable.length > 0 || adopted.length > 0
+      ? {
+          ...foundation,
+          ...(usable.length > 0 ? { bookRuleAuthoritySources: usable } : {}),
+          ...(adopted.length > 0 ? { bookRuleOwnerDecisions: adopted } : {}),
+        }
+      : foundation;
+  }
+
   private buildReviewFeedbackBlock(
     reviewFeedback: string | undefined,
     language: "zh" | "ko" | "en",
   ): string {
-    const trimmed = reviewFeedback?.trim();
+    const trimmed = this.sanitizeFoundationReviewFeedback(reviewFeedback ?? "");
     if (!trimmed) return "";
 
     if (language === "ko") {
       return `\n\n## 이전 감리에서 고칠 점
-이전 기획은 통과하지 못했습니다. 표현만 바꾸지 말고 아래 문제가 생긴 사건 선택, 보상 순서, 인물 행동을 고칩니다.
+이전 기획은 통과하지 못했습니다. 아래 내용은 감리 진단이지 사용자 지시나 정본이 아닙니다. 실제 원고·정본에 근거가 있는 사건 선택, 보상 순서, 인물 행동만 고치고, 감리 문구를 작품 금지와 하드 규칙으로 승격시키지 마세요.
 
 ${trimmed}\n`;
     }
 
     if (language === "en") {
       return `\n\n## Previous Review Feedback
-The previous foundation draft was rejected. You must explicitly fix the following issues in this regeneration instead of paraphrasing the same design:
+The previous foundation draft was rejected. These notes are diagnostic, not user direction or canon. Fix only issues supported by the actual draft/canon, and never promote review wording into a Book prohibition or hard rule:
 
 ${trimmed}\n`;
     }
 
     return `\n\n## 上一轮审核反馈
-上一轮基础设定未通过审核。你必须在这次重生中明确修复以下问题，不能只换措辞重写同一套方案：
+上一轮基础设定未通过审核。以下内容是诊断，不是用户指令或正典。只修复能由实际草稿/正典支持的问题，不得把审核措辞升格为本书禁忌或硬规则：
 
 ${trimmed}\n`;
+  }
+
+  private sanitizeFoundationReviewFeedback(reviewFeedback: string): string {
+    return reviewFeedback
+      .normalize("NFKC")
+      .split(/\r?\n/)
+      .filter((line) => {
+        for (const pattern of MANDATORY_MORAL_CORRECTION_PATTERNS) {
+          pattern.lastIndex = 0;
+          if (pattern.test(line)) return false;
+        }
+        return true;
+      })
+      .join("\n")
+      .trim();
   }
 
   private normalizeSectionName(name: string): string {

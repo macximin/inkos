@@ -73,7 +73,7 @@ describe("buildForecastContext", () => {
     expect(context.sections.authorIntent).toContain("复仇主线");
     expect(context.sections.currentFocus).toContain("推进证据链");
     expect(context.sections.pendingHooks).toContain("hook-03");
-    expect(context.sections.bookRules).toContain("不得无代价获胜");
+    expect(context.sections.bookRules).not.toContain("不得无代价获胜");
     expect(context.futureAdvantageEnabled).toBe(false);
     expect(context.sections.storyFrame).toContain("都市复仇");
     expect(context.sections.recentChapterSummaries).toContain("拿到证据");
@@ -120,7 +120,22 @@ describe("buildForecastContext", () => {
 
     expect(after.futureAdvantageEnabled).toBe(true);
     expect(after.sections.bookRules).toContain("未来先机");
+    expect(after.sections.bookRules).not.toContain("回归基准时点: 1996年");
     expect(after.contextFingerprint).not.toBe(before.contextFingerprint);
+  });
+
+  it("does not inject or fingerprint an unprovenanced restriction body", async () => {
+    const before = await buildForecastContext({ bookDir, bookId: "demo" });
+    await writeFile(join(bookDir, "story", "book_rules.md"), [
+      "## 禁止事项",
+      "- 恶人必须悔过并受到惩罚",
+      "RAW_FORECAST_BOOK_RULES_BODY_MUST_NOT_LEAK",
+    ].join("\n"), "utf-8");
+    const after = await buildForecastContext({ bookDir, bookId: "demo" });
+
+    expect(before.sections.bookRules).toBe("");
+    expect(after.sections.bookRules).toBe("");
+    expect(after.contextFingerprint).toBe(before.contextFingerprint);
   });
 
   it("changes the fingerprint when the story frame changes", async () => {

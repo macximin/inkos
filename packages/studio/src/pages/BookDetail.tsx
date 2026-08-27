@@ -58,6 +58,14 @@ interface ChapterAuditDisplay {
   readonly creativePassed?: boolean;
   readonly researchStatus?: "not-applicable" | "not-checked" | "needs-research" | "verified" | "conflict";
   readonly issues?: ReadonlyArray<{ readonly track?: "creative" | "research" }>;
+  readonly publicationCompatibility?: {
+    readonly track: "publication-compatibility";
+    readonly found: ReadonlyArray<{
+      readonly word: string;
+      readonly count: number;
+      readonly severity: "block" | "warn";
+    }>;
+  };
   readonly futureAdvantageExecution?: {
     readonly implemented: boolean;
     readonly moveId: string;
@@ -869,6 +877,10 @@ export function BookDetail({
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs leading-5 text-muted-foreground">
             <span>창작 이슈 {lastAudit.issues?.filter((issue) => issue.track !== "research").length ?? 0}건</span>
             <span>고증 이슈 {lastAudit.issues?.filter((issue) => issue.track === "research").length ?? 0}건</span>
+            <span>
+              공개 호환성 {lastAudit.publicationCompatibility?.found.length ?? 0}건
+              {lastAudit.publicationCompatibility?.found.length ? " (자동 수정 안 함)" : ""}
+            </span>
             {lastAudit.futureAdvantageExecution?.implemented ? (
               <span>미래 선점 {lastAudit.futureAdvantageExecution.moveId} 실행 후보 · 기억 {memoryReliabilityLabel(lastAudit.futureAdvantageExecution.memoryReliability)}</span>
             ) : null}

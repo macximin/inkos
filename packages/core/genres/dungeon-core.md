@@ -15,7 +15,7 @@ auditDimensions: [1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,24,25,26]
 ## Genre Prohibitions
 
 - Dungeon leaving its location — immobility is the core constraint, not a bug
-- No consequence for poor trap design or weak minions — adventurers must punish strategic failure
+- When poor trap design or weak minions give informed adventurers a real opening, let them exploit that opening. Do not force punishment when the design still works or canon supports a clean success
 - Overemphasis on adventurer POV (>70%) — this is dungeon core, not dungeon crawl
 - Lone-wolf dungeon with zero NPC dialogue or relationships
 - Resource management without scarcity — dungeon must make meaningful choices between defense, expansion, and treasure

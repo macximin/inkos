@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BookConfig } from "../models/book.js";
+import { writeCompletedOperationEvidenceFixture } from "./helpers/fiction-content-evidence.js";
 
 const ZERO_USAGE = {
   promptTokens: 0,
@@ -193,6 +194,7 @@ describe("PipelineRunner structured-state memory sync", () => {
       model: "test-model",
       projectRoot: root,
       inputGovernanceMode: "legacy",
+      testOnlyFictionContentEvidenceWriter: writeCompletedOperationEvidenceFixture,
     });
 
     const originalSaveChapter = WriterAgent.prototype.saveChapter;

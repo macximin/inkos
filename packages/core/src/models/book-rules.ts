@@ -68,6 +68,18 @@ export interface ParsedBookRules {
   readonly body: string;
 }
 
+/** Render a host-normalized rules document while retaining the human body. */
+export function renderBookRulesDocument(rulesValue: BookRules, body = ""): string {
+  const rules = BookRulesSchema.parse(rulesValue);
+  const frontmatter = yaml.dump(rules, {
+    noRefs: true,
+    lineWidth: -1,
+    sortKeys: false,
+  }).trimEnd();
+  const trimmedBody = body.trim();
+  return `---\n${frontmatter}\n---${trimmedBody ? `\n\n${trimmedBody}` : ""}\n`;
+}
+
 /**
  * Legacy Phase 5 books may still contain a compat pointer instead of real
  * rules. Detect that shim so callers can fall back to old story_frame

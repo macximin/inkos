@@ -170,6 +170,69 @@ describe("pipeline.reviseFoundation", () => {
     }
   });
 
+  it.each([
+    { failure: "non-pass" as const, expected: /did not pass.*existing canon was preserved/ },
+    { failure: "exception" as const, expected: /review failed.*existing canon was preserved/ },
+  ])("keeps existing canon when the foundation reviewer returns $failure", async ({ failure, expected }) => {
+    const { mkdtemp, writeFile, mkdir, rm, readFile, access } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { PipelineRunner } = await import("../pipeline/runner.js");
+    const { StateManager } = await import("../state/manager.js");
+    const root = await mkdtemp(join(tmpdir(), `inkos-revise-review-${failure}-`));
+    const bookDir = join(root, "books", "review-safe-book");
+    const framePath = join(bookDir, "story", "outline", "story_frame.md");
+    const rolePath = join(bookDir, "story", "roles", "主要角色", "Existing.md");
+
+    try {
+      await mkdir(join(bookDir, "story", "outline"), { recursive: true });
+      await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
+      await mkdir(join(bookDir, "story", "roles", "次要角色"), { recursive: true });
+      await writeFile(framePath, "existing frame", "utf8");
+      await writeFile(join(bookDir, "story", "outline", "volume_map.md"), "existing map", "utf8");
+      await writeFile(rolePath, "existing role", "utf8");
+      await writeFile(join(bookDir, "story", "story_bible.md"), "shim", "utf8");
+      await writeFile(join(bookDir, "story", "character_matrix.md"), "shim", "utf8");
+      await writeFile(join(bookDir, "story", "book_rules.md"), "## 规则", "utf8");
+      await writeFile(join(bookDir, "story", "volume_outline.md"), "shim", "utf8");
+      await writeFile(join(bookDir, "book.json"), JSON.stringify({
+        id: "review-safe-book", title: "Review Safe", platform: "qidian", genre: "xuanhuan",
+        status: "active", targetChapters: 50, chapterWordCount: 3000, language: "zh",
+        createdAt: "2026-04-01T00:00:00.000Z", updatedAt: "2026-04-10T00:00:00.000Z",
+      }), "utf8");
+
+      vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockResolvedValue({
+        storyBible: "replacement", volumeOutline: "replacement",
+        bookRules: "## 主角\n- 名字：X", currentState: "", pendingHooks: "| hook_id |",
+        storyFrame: "replacement frame", volumeMap: "replacement map",
+        roles: [{ tier: "major", name: "Replacement", content: "replacement role" }],
+      });
+      const reviewSpy = vi.spyOn(FoundationReviewerAgent.prototype, "review");
+      if (failure === "non-pass") {
+        reviewSpy.mockResolvedValue({
+          passed: false,
+          totalScore: 55,
+          dimensions: [],
+          overallFeedback: "unsafe rewrite",
+        });
+      } else {
+        reviewSpy.mockRejectedValue(new Error("review unavailable"));
+      }
+
+      const runner = new PipelineRunner({
+        state: new StateManager(root), projectRoot: root, client: TEST_CLIENT, model: "test-model",
+      } as unknown as ConstructorParameters<typeof PipelineRunner>[0]);
+
+      await expect(runner.reviseFoundation("review-safe-book", "rewrite it"))
+        .rejects.toThrow(expected);
+      expect(await readFile(framePath, "utf8")).toBe("existing frame");
+      expect(await readFile(rolePath, "utf8")).toBe("existing role");
+      await expect(access(join(bookDir, "story", "roles", "主要角色", "Replacement.md"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   // ---- Bug fix regression suite ----
 
   it("revise 不重置运行时状态文件（current_state / pending_hooks / particle_ledger / subplot_board / emotional_arcs 保留章节累积）", async () => {

@@ -2,6 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { PlanChapterOutput } from "../agents/planner.js";
 import {
+  findUnauthorizedMandatoryMoralCorrectionsInText,
+  type ArchitectMoralAuthoritySource,
+} from "../agents/architect.js";
+import { readEffectiveBookRules } from "../agents/effective-book-rules.js";
+import {
   ChapterArcProvenanceSchema,
   type ChapterArcProvenance,
 } from "../models/chapter.js";
@@ -10,6 +15,7 @@ import {
   type ChapterIntent,
 } from "../models/input-governance.js";
 import { parseMemo, PlannerParseError } from "../utils/chapter-memo-parser.js";
+import { findUnauthorizedMemoProhibitions } from "../utils/chapter-memo-authority.js";
 
 /**
  * Persisted governed plans are stored as a human-readable markdown file.
@@ -57,7 +63,10 @@ export async function loadPersistedPlan(
   try {
     raw = await readFile(planPath(bookDir, chapterNumber), "utf-8");
   } catch {
-    return loadLegacyIntentPlan(bookDir, chapterNumber);
+    const legacy = await loadLegacyIntentPlan(bookDir, chapterNumber);
+    return legacy && await isPersistedPlanMoralAuthorityValid(bookDir, legacy)
+      ? legacy
+      : null;
   }
 
   if (raw.trimStart().startsWith("---")) return null;
@@ -130,7 +139,7 @@ export async function loadPersistedPlan(
     // fall through — memo body is a safe default.
   }
 
-  return {
+  const plan: PlanChapterOutput = {
     intent,
     memo,
     intentMarkdown,
@@ -138,6 +147,68 @@ export async function loadPersistedPlan(
     runtimePath: intentPath(bookDir, chapterNumber),
     ...(arcProvenance ? { arcProvenance } : {}),
   };
+  return await isPersistedPlanMoralAuthorityValid(bookDir, plan) ? plan : null;
+}
+
+async function isPersistedPlanMoralAuthorityValid(
+  bookDir: string,
+  plan: PlanChapterOutput,
+): Promise<boolean> {
+  const readOptional = (relativePath: string): Promise<string> => (
+    readFile(join(bookDir, relativePath), "utf8").catch(() => "")
+  );
+  const [brief, authorIntent, currentFocus, storyFrame, legacyStoryBible, volumeMap, legacyVolumeOutline, bookRaw] = await Promise.all([
+    readOptional("story/brief.md"),
+    readOptional("story/author_intent.md"),
+    readOptional("story/current_focus.md"),
+    readOptional("story/outline/story_frame.md"),
+    readOptional("story/story_bible.md"),
+    readOptional("story/outline/volume_map.md"),
+    readOptional("story/volume_outline.md"),
+    readOptional("book.json"),
+  ]);
+  const bookId = (() => {
+    try {
+      const parsed = JSON.parse(bookRaw) as { id?: unknown };
+      return typeof parsed.id === "string" && parsed.id.trim() ? parsed.id : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const effectiveRules = bookId
+    ? await readEffectiveBookRules(bookDir, bookId).catch(() => null)
+    : null;
+  const authoritySources: ArchitectMoralAuthoritySource[] = [
+    { kind: "owner-direction", text: brief },
+    { kind: "owner-direction", text: authorIntent },
+    { kind: "owner-direction", text: currentFocus },
+    { kind: "persisted-book-canon", text: storyFrame || legacyStoryBible },
+    { kind: "persisted-book-canon", text: volumeMap || legacyVolumeOutline },
+    ...(effectiveRules?.hardEntries ?? []).map((entry) => ({
+      kind: "persisted-book-canon" as const,
+      text: entry.text,
+    })),
+  ];
+  if (findUnauthorizedMemoProhibitions(plan.memo, authoritySources).length > 0) return false;
+
+  const surfaces = [
+    plan.memo.goal,
+    plan.memo.body,
+    plan.intentMarkdown,
+    ...collectPersistedPlanStringLeaves(plan.intent),
+    ...collectPersistedPlanStringLeaves(plan.arcProvenance),
+  ];
+  return surfaces.every((surface) => (
+    findUnauthorizedMandatoryMoralCorrectionsInText(surface, authoritySources).length === 0
+  ));
+}
+
+function collectPersistedPlanStringLeaves(value: unknown): ReadonlyArray<string> {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectPersistedPlanStringLeaves(entry));
+  if (!value || typeof value !== "object") return [];
+  return Object.values(value as Record<string, unknown>)
+    .flatMap((entry) => collectPersistedPlanStringLeaves(entry));
 }
 
 function renderPersistedPlanMarkdown(

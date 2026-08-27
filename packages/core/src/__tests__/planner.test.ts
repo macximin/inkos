@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PlannerAgent } from "../agents/planner.js";
 import * as llmProvider from "../llm/provider.js";
 import type { LLMClient } from "../llm/provider.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterArcProvenance } from "../models/chapter.js";
+import { parseBookRules } from "../models/book-rules.js";
+import {
+  compileBookRuleProvenance,
+  compileBookRuleSourceAuthorityReceipt,
+  persistBookRulesPair,
+  renderBookRuleSourceAuthorityReceipt,
+} from "../models/book-rule-provenance.js";
 
 const VALID_BODY = `
 ## 当前任务
@@ -292,6 +299,161 @@ describe("PlannerAgent.planChapter memo generation", () => {
     expect(userPrompt).not.toContain("Fix and re-emit.");
   });
 
+  it.each([
+    "Do not let the criminal escape justice",
+    "범죄자가 처벌 없이 승리하게 두지 않는다",
+    "The chapter must include diverse representation.",
+    "여성 인물에게는 반드시 주도성과 긍정적 묘사를 부여한다.",
+    "本章必须包含多元代表性。",
+    "Ensure the cast is diverse.",
+    "Include at least one woman, one queer character, and one racial minority in every arc.",
+    "Every chapter requires inclusive representation.",
+    "All female leads should be empowered and sympathetic.",
+    "No protected-group character may be portrayed as evil.",
+    "The antagonist cannot be gay.",
+    "The narrative may not use offensive language or perpetuate harmful stereotypes.",
+    "각 회차마다 여성, 퀴어, 소수자 인물을 최소 한 명씩 넣는다.",
+    "등장인물 구성을 다양하게 유지해야 한다.",
+    "여성 주연은 모두 주체적이고 호감 가게 묘사한다.",
+    "소수자 인물을 악인으로 묘사하지 않는다.",
+    "악역을 성소수자로 설정하면 안 된다.",
+    "매 회차 포용적 대표성을 확보한다.",
+    "每章至少加入一名女性、一名酷儿和一名少数族裔角色。",
+    "确保角色阵容多元化。",
+    "所有女性主角都应当坚强、讨喜。",
+    "不得把少数群体角色描写成恶人。",
+    "反派不能是同性恋。",
+    "At least half the cast must be women.",
+    "Reserve 50 percent of speaking roles for underrepresented groups.",
+    "All villains must be cisgender heterosexual men.",
+    "Marginalized characters must never be portrayed as perpetrators.",
+    "Use inclusive language throughout.",
+    "Avoid ableist, sexist, racist, or homophobic tropes.",
+    "The story should celebrate diversity and inclusion.",
+    "No marginalized identity may be associated with vice.",
+    "등장인물 절반 이상을 여성으로 구성해야 한다.",
+    "발화 역할의 50퍼센트를 소수자에게 배정한다.",
+    "악역은 비장애인 이성애자 남성으로만 설정한다.",
+    "소수자 인물을 가해자로 묘사해서는 안 된다.",
+    "전반적으로 포용적 언어를 사용한다.",
+    "성차별적·인종차별적·동성애 혐오 표현을 피한다.",
+    "至少一半角色必须是女性。",
+    "把百分之五十的有台词角色分配给少数群体。",
+    "所有反派必须是顺性别异性恋男性。",
+    "少数群体角色不得被描写为施害者。",
+    "全文使用包容性语言。",
+    "避免性别歧视、种族歧视或恐同表达。",
+    "The narrative has a duty to model responsible behavior.",
+    "서사는 책임 있는 행동의 본보기가 되어야 한다.",
+    "叙事有责任示范负责任的行为。",
+  ])("removes an invented memo prohibition before it reaches Writer: %s", async (mandate) => {
+    const output = validMemoRaw(2).replace(
+      "- 不要让对手突然降智",
+      `- ${mandate}`,
+    );
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: output,
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const result = await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 2,
+    });
+
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(result.memo.body).not.toContain(mandate);
+    expect(result.memo.body).toContain("- 不要直接点破幕后主使");
+  });
+
+  it("keeps an exact owner prohibition but removes vetoed or unapproved mentions", async () => {
+    const mandate = "Do not let the criminal escape justice";
+    const output = validMemoRaw(2).replace(
+      "- 不要让对手突然降智",
+      `- ${mandate}`,
+    );
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: output,
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const authorized = await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 2,
+      externalContext: mandate,
+    });
+    expect(authorized.memo.body).toContain(mandate);
+
+    for (const externalContext of [
+      `The owner vetoed this rule: ${mandate}`,
+      `The owner never approved this rule: ${mandate}`,
+      `The owner said this was not canon: ${mandate}`,
+    ]) {
+      const result = await makePlanner().planChapter({
+        book: makeBook(),
+        bookDir,
+        chapterNumber: 2,
+        externalContext,
+      });
+      expect(result.memo.body).not.toContain(mandate);
+    }
+    expect(chatSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it("fails closed before an LLM call when legacy current_state contains a moral command", async () => {
+    const poison = "The chapter must include diverse representation, and the criminal protagonist must repent before success.";
+    await writeFile(join(bookDir, "story/current_state.md"), `# State\n- ${poison}`, "utf8");
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validMemoRaw(2),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    await expect(makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 2,
+    })).rejects.toThrow(/repair the source before continuing/);
+    expect(chatSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows attributed fictional dialogue in prior evidence but blocks a raw meta mandate", async () => {
+    const mandate = "The protagonist must repent for his crimes before success.";
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: validMemoRaw(2),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+    for (const previousEndingExcerpt of [
+      `The priest insisted that ${mandate}`,
+      `His mother whispered, "${mandate}"`,
+      `The antagonist mocked him: ${mandate}`,
+      "사제가 주인공은 범죄를 반성해야 한다고 말했다.",
+    ]) {
+      await expect(makePlanner().planChapterMemo({
+        storyDir: join(bookDir, "story"),
+        bookDir,
+        chapterNumber: 2,
+        isGoldenOpening: false,
+        fallbackGoal: "Continue the auction conflict",
+        chapterSummariesRaw: "",
+        previousEndingExcerpt,
+      })).resolves.toMatchObject({ chapter: 2 });
+    }
+    expect(chatSpy).toHaveBeenCalledTimes(4);
+
+    await expect(makePlanner().planChapterMemo({
+      storyDir: join(bookDir, "story"),
+      bookDir,
+      chapterNumber: 2,
+      isGoldenOpening: false,
+      fallbackGoal: "Continue the auction conflict",
+      chapterSummariesRaw: "",
+      previousEndingExcerpt: mandate,
+    })).rejects.toThrow(/repair the source before continuing/);
+    expect(chatSpy).toHaveBeenCalledTimes(4);
+  });
+
   it("keeps an omitted-language Korean profile inside the three-chapter opening boundary", async () => {
     vi.spyOn(llmProvider, "chatCompletion")
       .mockResolvedValueOnce({
@@ -325,7 +487,7 @@ describe("PlannerAgent.planChapter memo generation", () => {
   });
 
   it("routes only the current Arc future-advantage move into chapter intent", async () => {
-    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
       content: validMemoRaw(1),
       usage: ZERO_USAGE,
     } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
@@ -608,10 +770,9 @@ Do not invent an unrelated quest.
     expect(english.memo.body).not.toContain("so the chapter is not only summary");
   });
 
-  // Phase hotfix 5: planner.intent.mustAvoid must come from the Phase 5
-  // authoritative loader (story_frame frontmatter), not from raw
-  // book_rules.md — for new-layout books the legacy file is just a shim.
-  it("derives intent.mustAvoid from outline/story_frame.md frontmatter (new layout)", async () => {
+  // A parsed rule without host-owned provenance remains display-only. It must
+  // never become a silent planning prohibition.
+  it("does not derive intent.mustAvoid from unprovenanced story-frame rules", async () => {
     // Replace book_rules.md with a Phase 5 compat shim (no YAML, just pointer)
     // and put the authoritative YAML on outline/story_frame.md.
     const storyDir = join(bookDir, "story");
@@ -641,7 +802,7 @@ Do not invent an unrelated quest.
       "utf-8",
     );
 
-    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
       content: validMemoRaw(2),
       usage: ZERO_USAGE,
     } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
@@ -652,7 +813,82 @@ Do not invent an unrelated quest.
       chapterNumber: 2,
     });
 
-    expect(result.intent.mustAvoid).toContain("禁止主角降智");
-    expect(result.intent.mustAvoid).toContain("禁止神化反派");
+    expect(result.intent.mustAvoid).not.toContain("禁止主角降智");
+    expect(result.intent.mustAvoid).not.toContain("禁止神化反派");
+
+    const verifiedText = "禁止主角降智";
+    const rulesFileContent = [
+      "---",
+      "prohibitions:",
+      `  - ${verifiedText}`,
+      "---",
+      "# Verified rules",
+    ].join("\n");
+    const rules = parseBookRules(rulesFileContent)!.rules;
+    const artifactPath = "story/authority/planner-user-instruction.md";
+    const receiptPath = "story/authority/planner-user-instruction.receipt.json";
+    const artifactContent = `사용자 지시: ${verifiedText}`;
+    const start = artifactContent.indexOf(verifiedText);
+    const sourceSelector = {
+      artifactPath,
+      artifactContent,
+      start,
+      end: start + verifiedText.length,
+    };
+    const authorityReceipt = compileBookRuleSourceAuthorityReceipt({
+      bookId: makeBook().id,
+      source: "user-explicit",
+      authorityOrigin: "authenticated-owner-instruction",
+      intent: "authorize-rule",
+      decisionId: "planner-owner-rule-test-1",
+      authorizedByActorId: "owner-test",
+      fieldPath: "prohibitions[0]",
+      text: verifiedText,
+      sourceSelector,
+    });
+    const receiptContent = renderBookRuleSourceAuthorityReceipt(authorityReceipt);
+    for (const [relativePath, content] of [
+      [artifactPath, artifactContent],
+      [receiptPath, receiptContent],
+    ] as const) {
+      await mkdir(dirname(join(bookDir, relativePath)), { recursive: true });
+      await writeFile(join(bookDir, relativePath), content, "utf8");
+    }
+    const provenance = compileBookRuleProvenance({
+      bookId: makeBook().id,
+      rulesFileContent,
+      rules,
+      assignments: [{
+        fieldPath: "prohibitions[0]",
+        text: verifiedText,
+        source: "user-explicit",
+        strength: "hard",
+        sourceSelector,
+        sourceAuthorityReceipt: { receiptPath, receiptContent },
+      }],
+    });
+    await persistBookRulesPair({
+      bookDir,
+      bookId: makeBook().id,
+      rulesFileContent,
+      rules,
+      receipt: provenance,
+    });
+
+    chatSpy.mockResolvedValue({
+      content: validMemoRaw(2).replace(
+        "- 不要让对手突然降智",
+        `- ${verifiedText}`,
+      ),
+      usage: ZERO_USAGE,
+    } as unknown as Awaited<ReturnType<typeof llmProvider.chatCompletion>>);
+
+    const verifiedResult = await makePlanner().planChapter({
+      book: makeBook(),
+      bookDir,
+      chapterNumber: 2,
+    });
+    expect(verifiedResult.intent.mustAvoid).toContain(verifiedText);
+    expect(verifiedResult.memo.body).toContain(verifiedText);
   });
 });

@@ -17,6 +17,7 @@ import { writeExportArtifact } from "./export-artifact.js";
 import { safeNonSymlinkChildPath } from "../utils/path-safety.js";
 import { deriveBookIdFromTitle } from "../utils/book-id.js";
 import { normalizePlatformOrOther } from "../models/book.js";
+import type { BookRuleOwnerDecisionInput } from "../models/book-rule-provenance.js";
 
 const SAFE_TRUTH_FLAT_FILE_NAMES = new Set([
   "project_pitch.md",
@@ -24,7 +25,6 @@ const SAFE_TRUTH_FLAT_FILE_NAMES = new Set([
   "current_focus.md",
   "story_bible.md",
   "volume_outline.md",
-  "book_rules.md",
   "particle_ledger.md",
   "subplot_board.md",
   "emotional_arcs.md",
@@ -72,11 +72,13 @@ type PipelineLike = Pick<PipelineRunner, "writeNextChapter" | "reviseDraft"> & {
       readonly externalContext?: string;
       readonly authorIntent?: string;
       readonly currentFocus?: string;
+      readonly bookRuleOwnerDecisions?: ReadonlyArray<BookRuleOwnerDecisionInput>;
     },
   ) => Promise<void>;
 };
 type StateLike = Pick<StateManager, "ensureControlDocuments" | "bookDir" | "loadBookConfig" | "loadChapterIndex" | "saveChapterIndex" | "listBooks" | "acquireBookLock">;
 type InstrumentablePipelineLike = PipelineLike & {
+  readonly completeBookBound?: PipelineRunner["completeBookBound"];
   readonly config?: {
     logger?: Logger;
     client?: LLMClient;
@@ -369,6 +371,7 @@ export function createInteractionToolsFromDeps(
         externalContext: buildCreationExternalContext(input),
         authorIntent: input.authorIntent,
         currentFocus: input.currentFocus,
+        bookRuleOwnerDecisions: input.hardRules,
       });
       return {
         bookId: book.id,
@@ -406,32 +409,48 @@ export function createInteractionToolsFromDeps(
       const bookLabel = options.bookId ?? "none";
       const chatRequestOptions = hooks?.getChatRequestOptions?.() ?? {};
       let response: Awaited<ReturnType<typeof chatCompletion>> | undefined;
-      if (instrumentedPipeline.config?.client && instrumentedPipeline.config?.model) {
+      const messages = [
+        {
+          role: "system" as const,
+          content: [
+            "You are InkOS inside the terminal workbench.",
+            "Respond conversationally and briefly.",
+            "If there is no active book, help the user decide what to write next.",
+            "If there is an active book, keep the answer grounded in that book context.",
+          ].join(" "),
+        },
+        {
+          role: "user" as const,
+          content: `activeBook=${bookLabel}\nautomationMode=${options.automationMode}\nmessage=${input}`,
+        },
+      ];
+      if (
+        instrumentedPipeline.config?.client
+        && instrumentedPipeline.config?.model
+        && (!options.bookId || instrumentedPipeline.completeBookBound)
+      ) {
         try {
-          response = await chatCompletion(
-            instrumentedPipeline.config.client,
-            instrumentedPipeline.config.model,
-            [
-              {
-                role: "system",
-                content: [
-                  "You are InkOS inside the terminal workbench.",
-                  "Respond conversationally and briefly.",
-                  "If there is no active book, help the user decide what to write next.",
-                  "If there is an active book, keep the answer grounded in that book context.",
-                ].join(" "),
-              },
-              {
-                role: "user",
-                content: `activeBook=${bookLabel}\nautomationMode=${options.automationMode}\nmessage=${input}`,
-              },
-            ],
-            {
-              temperature: chatRequestOptions.temperature ?? 0.4,
-              ...(chatRequestOptions.maxTokens !== undefined && { maxTokens: chatRequestOptions.maxTokens }),
-              onTextDelta: hooks?.onChatTextDelta,
-            },
-          );
+          response = options.bookId && instrumentedPipeline.completeBookBound
+            ? await instrumentedPipeline.completeBookBound(options.bookId, {
+                agentName: "terminal-book-chat",
+                stage: "interaction-chat",
+                messages,
+                options: {
+                  temperature: chatRequestOptions.temperature ?? 0.4,
+                  ...(chatRequestOptions.maxTokens !== undefined && { maxTokens: chatRequestOptions.maxTokens }),
+                  onTextDelta: hooks?.onChatTextDelta,
+                },
+              })
+            : await chatCompletion(
+                instrumentedPipeline.config.client,
+                instrumentedPipeline.config.model,
+                messages,
+                {
+                  temperature: chatRequestOptions.temperature ?? 0.4,
+                  ...(chatRequestOptions.maxTokens !== undefined && { maxTokens: chatRequestOptions.maxTokens }),
+                  onTextDelta: hooks?.onChatTextDelta,
+                },
+              );
         } catch (err) {
           // Thinking models (e.g. kimi-k2.5) may return empty content for simple inputs.
           // Only swallow empty-content errors; re-throw everything else (network, auth, etc.)

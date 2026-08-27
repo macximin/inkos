@@ -15,7 +15,7 @@ auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ## Genre Prohibitions
 
 - Tech rules changing to serve plot convenience — once physics/tech is established, it must stay consistent
-- Technology solving everything — every tech must have limitations; introduce problems tech cannot fix (corruption, emotion, human greed)
+- Technology used as an unexplained universal answer — when canon establishes a limit, tradeoff, or human resistance, keep it causal; a deliberately clean breakthrough may solve the problem it was built to solve
 - Info-dumping science/tech explanations outside of plot-critical moments
 - Ignoring logical consequences of technology — FTL, AI, biotech all have societal implications
 - Hand-waving hard-science concepts in hard sci-fi without clear intent to treat science as soft
@@ -23,8 +23,8 @@ auditDimensions: [1,2,3,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 
 ## Tech Consistency Rules
 
-- Every technology must have defined limitations and side effects
-- New technologies create new problems — they don't just solve old ones
+- Give technology the rules, scope, and consequences the story actually needs; do not invent a limitation or side effect merely to punish an effective solution
+- New technologies may create problems, remove old ones, or both. Follow the established causal chain instead of imposing a mandatory cost pattern
 - If the story uses FTL, hyperdrives, or teleportation, establish rules and stick to them
 - Hard sci-fi: explain the science, make it plausible, build consequences. Readers will check
 - Space opera: science can be soft, but internal rules must be consistent across the narrative

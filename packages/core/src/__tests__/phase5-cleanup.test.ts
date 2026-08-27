@@ -89,7 +89,7 @@ const SAMPLE_RESPONSE = [
   "- 仙侠升级口吻",
   "",
   "## 禁止事项",
-  "- 不得美化体制暴力",
+  "- 不得突然切换叙事视角",
   "",
   "=== SECTION: current_state ===",
   "| 字段 | 值 |",
@@ -312,7 +312,7 @@ describe("Phase 5 cleanup (3) — book_rules is authoritative Markdown", () => {
     expect(parsed).not.toBeNull();
     expect(parsed?.rules.protagonist?.name).toBe("主角甲");
     expect(parsed?.rules.protagonist?.personalityLock).toEqual(["沉默", "执拗"]);
-    expect(parsed?.rules.prohibitions).toEqual(["不得美化体制暴力"]);
+    expect(parsed?.rules.prohibitions).toEqual(["不得突然切换叙事视角"]);
     expect(parsed?.rules.narrativePerson).toBe("third");
   });
 
@@ -373,7 +373,7 @@ describe("Phase 5 cleanup (3) — book_rules is authoritative Markdown", () => {
     expect(parsed?.rules.prohibitions).toEqual(["No lazy tropes"]);
   });
 
-  it("planner-context readBookRules renders structured fields as a markdown block", async () => {
+  it("planner-context excludes unprovenanced personality and restriction text from chapter control", async () => {
     const storyDir = join(bookDir, "story");
     await mkdir(storyDir, { recursive: true });
     await writeFile(
@@ -392,11 +392,13 @@ describe("Phase 5 cleanup (3) — book_rules is authoritative Markdown", () => {
 
     const rendered = await readPlannerBookRules(storyDir);
     expect(rendered).toContain("林辞");
-    expect(rendered).toContain("沉默");
-    expect(rendered).toContain("执拗");
-    expect(rendered).toContain("不得美化体制暴力");
-    expect(rendered).toContain("不得神化主角");
-    expect(rendered).toContain("不对长辈失礼");
+    expect(rendered).not.toContain("沉默");
+    expect(rendered).not.toContain("执拗");
+    expect(rendered).not.toContain("性格参考");
+    expect(rendered).not.toContain("人设锁：");
+    expect(rendered).not.toContain("不得美化体制暴力");
+    expect(rendered).not.toContain("不得神化主角");
+    expect(rendered).not.toContain("不对长辈失礼");
   });
 
   it("readBookRules() extracts fanfic, numerical, and era constraints from markdown rules", async () => {

@@ -1,16 +1,30 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { LLMClient, OnStreamProgress } from "../llm/provider.js";
-import { chatCompletion, createLLMClient } from "../llm/provider.js";
+import type { LLMClient, LLMMessage, LLMResponse, OnStreamProgress } from "../llm/provider.js";
+import { createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, FanficMode, RevisionGate } from "../models/book.js";
 import { ChapterMetaSchema, type ChapterArcProvenance, type ChapterMeta } from "../models/chapter.js";
 import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
-import { ArchitectAgent, type ArchitectOutput } from "../agents/architect.js";
+import {
+  ArchitectAgent,
+  type ArchitectBookRuleAuthoritySource,
+  type ArchitectBookRuleOwnerDecision,
+  type ArchitectMoralAuthoritySource,
+  type ArchitectOutput,
+} from "../agents/architect.js";
 import { FoundationReviewerAgent } from "../agents/foundation-reviewer.js";
 import { PlannerAgent, type PlanChapterOutput } from "../agents/planner.js";
 import { ComposerAgent, composeGovernedChapter, contextBudgetFromClient, type ComposeChapterOutput } from "../agents/composer.js";
-import { WriterAgent, type WriteChapterInput, type WriteChapterOutput } from "../agents/writer.js";
+import {
+  WriterAgent,
+  assertNarrativeEvidenceMoralAuthority,
+  assertProductionContextMoralAuthority,
+  UnauthorizedProductionContextMoralCorrectionError,
+  type WriteChapterInput,
+  type WriteChapterOutput,
+} from "../agents/writer.js";
+import { readEffectiveBookRules } from "../agents/effective-book-rules.js";
 import { LengthNormalizerAgent } from "../agents/length-normalizer.js";
 import { ChapterAnalyzerAgent } from "../agents/chapter-analyzer.js";
 import {
@@ -24,7 +38,8 @@ import { RadarAgent } from "../agents/radar.js";
 import type { RadarSource } from "../agents/radar-source.js";
 import { readGenreProfile } from "../agents/rules-reader.js";
 import { analyzeAITells } from "../agents/ai-tells.js";
-import { analyzeSensitiveWords } from "../agents/sensitive-words.js";
+import { analyzeSensitiveWords, type SensitiveWordResult } from "../agents/sensitive-words.js";
+import { BookBoundCompletionAgent } from "../agents/book-bound-completion.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
@@ -48,7 +63,7 @@ import type { AgentContext } from "../agents/base.js";
 import type { AuditResult, AuditIssue } from "../agents/continuity.js";
 import type { RadarResult } from "../agents/radar.js";
 import type { LengthSpec, LengthTelemetry } from "../models/length-governance.js";
-import type { ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
+import { RuleStackSchema, type ChapterMemo, type ContextPackage, type RuleStack } from "../models/input-governance.js";
 import type { ContextCompressionCallback } from "../models/context-compression.js";
 import { buildLengthSpec, countChapterLength, formatLengthCount, isOutsideHardRange, resolveLengthCountingMode, type LengthLanguage } from "../utils/length-metrics.js";
 import { analyzeLongSpanFatigue } from "../utils/long-span-fatigue.js";
@@ -62,18 +77,26 @@ import {
 import { loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts } from "../state/runtime-state-store.js";
 import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
 import { readFile, readdir, writeFile, mkdir, rename, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   parseStateDegradedReviewNote,
   resolveStateDegradedBaseStatus,
   retrySettlementAfterValidationFailure,
 } from "./chapter-state-recovery.js";
-import { persistChapterArtifacts } from "./chapter-persistence.js";
+import { persistChapterArtifacts, runChapterPersistenceTransaction } from "./chapter-persistence.js";
 import { runChapterReviewCycle } from "./chapter-review-cycle.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
 import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persisted-governed-plan.js";
 import { selectBookReferenceContext } from "../references/reference-context.js";
 import { ensureFireflyLongformPreflight } from "../reference/firefly-preflight.js";
+import {
+  beginFictionContentOperation,
+  runWithFictionContentOperation,
+  sealFictionContentOperationManifest,
+  verifyFictionContentOperationEvidence,
+  verifyFictionContentOperationManifest,
+  type FictionContentOperationStart,
+} from "../production/fiction-content-contract.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -375,6 +398,15 @@ export interface PipelineConfig {
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
   readonly onContextCompression?: ContextCompressionCallback;
+  /**
+   * Vitest-only adapter for high-level agent mocks that intentionally bypass
+   * BaseAgent. It must write real trace/receipt/outcome artifacts; the runtime
+   * still applies the same exact-delta and immutable-manifest checks.
+   */
+  readonly testOnlyFictionContentEvidenceWriter?: (input: {
+    readonly projectRoot: string;
+    readonly operation: FictionContentOperationStart;
+  }) => Promise<void>;
 }
 
 export interface TokenUsageSummary {
@@ -388,6 +420,8 @@ export interface ChapterPipelineResult {
   readonly title: string;
   readonly wordCount: number;
   readonly auditResult: AuditResult;
+  /** Advisory publishing-platform preflight; excluded from creative and canon gates. */
+  readonly publicationCompatibility?: SensitiveWordResult;
   readonly revised: boolean;
   readonly status: "drafted" | "ready-for-review" | "audit-failed" | "state-degraded";
   readonly lengthWarnings?: ReadonlyArray<string>;
@@ -483,6 +517,7 @@ export interface BookStatusInfo {
 
 interface MergedAuditEvaluation {
   readonly auditResult: AuditResult;
+  readonly publicationCompatibility: SensitiveWordResult;
   readonly aiTellCount: number;
   readonly blockingCount: number;
   readonly criticalCount: number;
@@ -509,6 +544,31 @@ export interface InitBookOptions {
   readonly externalContext?: string;
   readonly authorIntent?: string;
   readonly currentFocus?: string;
+  /** Authenticated direct-owner/canon artifacts; model-mediated instructions must not populate this. */
+  readonly bookRuleAuthoritySources?: ReadonlyArray<ArchitectBookRuleAuthoritySource>;
+  /** Separately confirmed owner-adoption decisions from a typed host ingress. */
+  readonly bookRuleOwnerDecisions?: ReadonlyArray<ArchitectBookRuleOwnerDecision>;
+}
+
+const FICTION_CONTENT_STAGES: Readonly<Record<string, string>> = {
+  architect: "architect",
+  "foundation-reviewer": "commercial-hil-reviewer",
+  planner: "planner",
+  composer: "planner",
+  writer: "writer",
+  auditor: "auditor",
+  reviser: "reviser",
+  polisher: "polisher",
+  "chapter-analyzer": "auditor",
+  "length-normalizer": "polisher",
+  "state-validator": "auditor",
+  consolidator: "auditor",
+  "style-analyzer": "style-reference",
+  "canon-importer": "canon-import",
+};
+
+function fictionContentStage(agent: string): string | undefined {
+  return FICTION_CONTENT_STAGES[agent];
 }
 
 export function renderChapterHeading(
@@ -550,6 +610,17 @@ export class PipelineRunner {
 
   private throwIfOperationAborted(): void {
     this.currentAbortSignal()?.throwIfAborted();
+  }
+
+  private async writeExplicitTestOnlyFictionContentEvidence(
+    operation: FictionContentOperationStart,
+  ): Promise<void> {
+    const writer = this.config.testOnlyFictionContentEvidenceWriter;
+    if (!writer) return;
+    if (process.env.VITEST !== "true") {
+      throw new Error("testOnlyFictionContentEvidenceWriter is restricted to an explicit Vitest run.");
+    }
+    await writer({ projectRoot: this.config.projectRoot, operation });
   }
 
   private localize(language: LengthLanguage, messages: { zh: string; ko?: string; en: string }): string {
@@ -605,10 +676,27 @@ export class PipelineRunner {
     sourceName: string | undefined,
     language?: LengthLanguage,
   ): Promise<void> {
+    const book = await this.state.loadBookConfig(bookId);
+    await this.tryGenerateStyleGuideAt(
+      book,
+      this.state.bookDir(bookId),
+      referenceText,
+      sourceName,
+      language,
+    );
+  }
+
+  private async tryGenerateStyleGuideAt(
+    book: BookConfig,
+    bookDir: string,
+    referenceText: string,
+    sourceName: string | undefined,
+    language?: LengthLanguage,
+  ): Promise<void> {
     try {
-      await this.generateStyleGuide(bookId, referenceText, sourceName);
+      await this.generateStyleGuideAt(book, bookDir, referenceText, sourceName);
     } catch (error) {
-      const resolvedLanguage = language ?? await this.resolveBookLanguageById(bookId);
+      const resolvedLanguage = language ?? await this.resolveBookLanguage(book);
       const detail = error instanceof Error ? error.message : String(error);
       this.logWarn(resolvedLanguage, {
         zh: `风格指纹提取失败，已跳过：${detail}`,
@@ -687,12 +775,15 @@ export class PipelineRunner {
         readonly name: string;
         readonly score: number;
         readonly feedback: string;
+        readonly gating?: boolean;
+        readonly contentNeutralized?: boolean;
       }>;
       readonly overallFeedback: string;
     },
     language: "zh" | "ko" | "en",
   ): string {
     const dimensionLines = review.dimensions
+      .filter((dimension) => dimension.gating !== false && !dimension.contentNeutralized && dimension.score < 80)
       .map((dimension) => (
         language !== "zh"
           ? `- ${dimension.name} [${dimension.score}]: ${dimension.feedback}`
@@ -776,7 +867,7 @@ export class PipelineRunner {
     return { model: override.model, client };
   }
 
-  private agentCtxFor(agent: string, bookId?: string): AgentContext {
+  private agentCtxFor(agent: string, bookId?: string, evidenceBookDir?: string): AgentContext {
     const { model, client } = this.resolveOverride(agent);
     return {
       client,
@@ -786,6 +877,8 @@ export class PipelineRunner {
       logger: this.config.logger?.child(agent),
       onStreamProgress: this.config.onStreamProgress,
       signal: this.currentAbortSignal(),
+      fictionContentStage: bookId ? fictionContentStage(agent) : undefined,
+      fictionContentEvidenceBookDir: evidenceBookDir,
     };
   }
 
@@ -802,6 +895,129 @@ export class PipelineRunner {
     }
   }
 
+  /**
+   * Build one complete Book in an isolated sibling directory and expose it at
+   * the canonical path only after every required artifact succeeds. Failed
+   * staging Books are retained outside the canonical namespace together with
+   * their immutable provider evidence.
+   */
+  private async initializeBookAtomically(
+    book: BookConfig,
+    initialize: (stagingBookDir: string) => Promise<void>,
+  ): Promise<void> {
+    const bookDir = this.state.bookDir(book.id);
+    const stagingBookDir = join(
+      this.state.booksDir,
+      `.tmp-book-create-${book.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    let displacedIncompleteBookDir: string | null = null;
+    try {
+      await initialize(stagingBookDir);
+
+      if (await this.pathExists(bookDir)) {
+        if (await this.state.isCompleteBookDirectory(bookDir)) {
+          throw new Error(`Book "${book.id}" already exists at books/${book.id}/. Use a different title or delete the existing book first.`);
+        }
+        const failedRoot = join(this.state.booksDir, ".failed-book-creations");
+        await mkdir(failedRoot, { recursive: true });
+        displacedIncompleteBookDir = join(
+          failedRoot,
+          `.preexisting-${book.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        );
+        await rename(bookDir, displacedIncompleteBookDir);
+      }
+
+      try {
+        await rename(stagingBookDir, bookDir);
+      } catch (error) {
+        if (displacedIncompleteBookDir && !(await this.pathExists(bookDir))) {
+          await rename(displacedIncompleteBookDir, bookDir).catch(() => undefined);
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (await this.pathExists(stagingBookDir)) {
+        const failedRoot = join(this.state.booksDir, ".failed-book-creations");
+        const failedDir = join(failedRoot, basename(stagingBookDir));
+        await mkdir(failedRoot, { recursive: true });
+        await rename(stagingBookDir, failedDir).catch(() => {
+          // If archival itself fails, leave staging in place. Never erase the
+          // only refusal/error evidence during exception cleanup.
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async initializeOriginalBookAt(
+    book: BookConfig,
+    options: InitBookOptions,
+    stagingBookDir: string,
+  ): Promise<void> {
+    const stageLanguage = await this.resolveBookLanguage(book);
+    const effectiveExternalContext = options.externalContext ?? this.config.externalContext;
+    const architect = new ArchitectAgent(
+      this.agentCtxFor("architect", book.id, stagingBookDir),
+    );
+    const reviewer = new FoundationReviewerAgent(
+      this.agentCtxFor("foundation-reviewer", book.id, stagingBookDir),
+    );
+    this.logStage(stageLanguage, { zh: "生成基础设定", en: "generating foundation" });
+    const { profile: gp } = await this.loadGenreProfile(book.genre);
+    const resolvedLanguage = normalizeLengthLanguage(book.language ?? gp.language);
+    const foundation = await this.generateAndReviewFoundation({
+      generate: (reviewFeedback) => architect.generateFoundation(
+        book,
+        effectiveExternalContext,
+        reviewFeedback,
+        {
+          bookRuleAuthoritySources: options.bookRuleAuthoritySources ?? [],
+          bookRuleOwnerDecisions: options.bookRuleOwnerDecisions ?? [],
+        },
+      ),
+      reviewer,
+      mode: "original",
+      language: resolvedLanguage,
+      stageLanguage,
+      targetChapters: book.targetChapters,
+    });
+
+    this.logStage(stageLanguage, { zh: "保存书籍配置", en: "saving book config" });
+    await this.state.saveBookConfigAt(stagingBookDir, book);
+
+    this.logStage(stageLanguage, { zh: "写入基础设定文件", en: "writing foundation files" });
+    await architect.writeFoundationFiles(
+      stagingBookDir,
+      foundation,
+      gp.numericalSystem,
+      book.language ?? gp.language,
+    );
+
+    if (effectiveExternalContext && effectiveExternalContext.trim().length > 0) {
+      const storyDir = join(stagingBookDir, "story");
+      await mkdir(storyDir, { recursive: true });
+      await writeFile(join(storyDir, "brief.md"), effectiveExternalContext, "utf-8");
+    }
+
+    this.logStage(stageLanguage, { zh: "初始化控制文档", en: "initializing control documents" });
+    await this.state.ensureControlDocumentsAt(
+      stagingBookDir,
+      book.language ?? gp.language,
+      options.authorIntent ?? effectiveExternalContext,
+    );
+    if (options.currentFocus?.trim()) {
+      await writeFile(
+        join(stagingBookDir, "story", "current_focus.md"),
+        options.currentFocus.trimEnd() + "\n",
+        "utf-8",
+      );
+    }
+
+    await this.state.saveChapterIndexAt(stagingBookDir, []);
+    this.logStage(stageLanguage, { zh: "创建初始快照", en: "creating initial snapshot" });
+    await this.state.snapshotStateAt(stagingBookDir, 0);
+  }
+
   private async loadGenreProfile(genre: string): Promise<{ profile: GenreProfile }> {
     const parsed = await readGenreProfile(this.config.projectRoot, genre);
     return { profile: parsed.profile };
@@ -816,81 +1032,42 @@ export class PipelineRunner {
     return radar.scan();
   }
 
-  async initBook(book: BookConfig, options: InitBookOptions = {}): Promise<void> {
-    const architect = new ArchitectAgent(this.agentCtxFor("architect", book.id));
-    const bookDir = this.state.bookDir(book.id);
-    const stagingBookDir = join(
-      this.state.booksDir,
-      `.tmp-book-create-${book.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    );
-    const stageLanguage = await this.resolveBookLanguage(book);
-    const effectiveExternalContext = options.externalContext ?? this.config.externalContext;
-
-    this.logStage(stageLanguage, { zh: "生成基础设定", en: "generating foundation" });
-    const { profile: gp } = await this.loadGenreProfile(book.genre);
-    const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", book.id));
-    const resolvedLanguage = normalizeLengthLanguage(book.language ?? gp.language);
-    const foundation = await this.generateAndReviewFoundation({
-      generate: (reviewFeedback) => architect.generateFoundation(
-        book,
-        effectiveExternalContext,
-        reviewFeedback,
-      ),
-      reviewer,
-      mode: "original",
-      language: resolvedLanguage,
-      stageLanguage,
-      targetChapters: book.targetChapters,
-    });
-    try {
-      this.logStage(stageLanguage, { zh: "保存书籍配置", en: "saving book config" });
-      await this.state.saveBookConfigAt(stagingBookDir, book);
-
-      this.logStage(stageLanguage, { zh: "写入基础设定文件", en: "writing foundation files" });
-      await architect.writeFoundationFiles(
-        stagingBookDir,
-        foundation,
-        gp.numericalSystem,
-        book.language ?? gp.language,
-      );
-
-      if (effectiveExternalContext && effectiveExternalContext.trim().length > 0) {
-        const storyDir = join(stagingBookDir, "story");
-        await mkdir(storyDir, { recursive: true });
-        await writeFile(join(storyDir, "brief.md"), effectiveExternalContext, "utf-8");
-      }
-
-      this.logStage(stageLanguage, { zh: "初始化控制文档", en: "initializing control documents" });
-      await this.state.ensureControlDocumentsAt(
-        stagingBookDir,
-        book.language ?? gp.language,
-        options.authorIntent ?? effectiveExternalContext,
-      );
-      if (options.currentFocus?.trim()) {
-        await writeFile(
-          join(stagingBookDir, "story", "current_focus.md"),
-          options.currentFocus.trimEnd() + "\n",
-          "utf-8",
-        );
-      }
-
-      await this.state.saveChapterIndexAt(stagingBookDir, []);
-
-      this.logStage(stageLanguage, { zh: "创建初始快照", en: "creating initial snapshot" });
-      await this.state.snapshotStateAt(stagingBookDir, 0);
-
-      if (await this.pathExists(bookDir)) {
-        if (await this.state.isCompleteBookDirectory(bookDir)) {
-          throw new Error(`Book "${book.id}" already exists at books/${book.id}/. Use a different title or delete the existing book first.`);
-        }
-        await rm(bookDir, { recursive: true, force: true });
-      }
-
-      await rename(stagingBookDir, bookDir);
-    } catch (error) {
-      await rm(stagingBookDir, { recursive: true, force: true }).catch(() => undefined);
-      throw error;
+  /**
+   * Host-governed completion for Book-adjacent UI/control surfaces. This keeps
+   * Studio inspiration cards and terminal Book chat on the same immutable
+   * contract/receipt boundary as production agents without granting them
+   * direct canon-write authority.
+   */
+  async completeBookBound(
+    bookId: string,
+    input: {
+      readonly agentName: string;
+      readonly stage: string;
+      readonly messages: ReadonlyArray<LLMMessage>;
+      readonly options?: {
+        readonly temperature?: number;
+        readonly maxTokens?: number;
+        readonly onTextDelta?: (text: string) => void;
+      };
+    },
+  ): Promise<LLMResponse> {
+    await this.state.loadBookConfig(bookId);
+    const agentName = input.agentName.trim();
+    const stage = input.stage.trim();
+    if (!agentName || !stage) {
+      throw new Error("Book-bound completion requires non-empty host agent and stage names.");
     }
+    const ctx = this.agentCtxFor(agentName, bookId);
+    const agent = new BookBoundCompletionAgent({
+      ...ctx,
+      fictionContentStage: stage,
+    }, agentName);
+    return agent.complete(input.messages, input.options);
+  }
+
+  async initBook(book: BookConfig, options: InitBookOptions = {}): Promise<void> {
+    await this.initializeBookAtomically(book, (stagingBookDir) =>
+      this.initializeOriginalBookAt(book, options, stagingBookDir));
   }
 
   /**
@@ -900,7 +1077,13 @@ export class PipelineRunner {
    * the authoritative outline/ and roles/ files instead of the compatibility
    * shims, otherwise large role/story details can be lost during rewrite.
    */
-  async reviseFoundation(bookId: string, feedback: string): Promise<void> {
+  async reviseFoundation(
+    bookId: string,
+    feedback: string,
+    options: {
+      readonly bookRuleAuthoritySources?: ReadonlyArray<ArchitectBookRuleAuthoritySource>;
+    } = {},
+  ): Promise<void> {
     const bookDir = this.state.bookDir(bookId);
     const storyDir = join(bookDir, "story");
     const isPhase5 = await isNewLayoutBook(bookDir);
@@ -956,25 +1139,28 @@ export class PipelineRunner {
         characterMatrix: oldCharacterMatrix,
         userFeedback: feedback,
       },
+      bookRuleAuthoritySources: options.bookRuleAuthoritySources ?? [],
     });
 
     const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", bookId));
     const resolvedLanguage = normalizeLengthLanguage(book.language);
+    let review: Awaited<ReturnType<FoundationReviewerAgent["review"]>>;
     try {
-      const review = await reviewer.review({
+      review = await reviewer.review({
         foundation,
         mode: "original",
         language: resolvedLanguage,
         targetChapters: book.targetChapters,
       } as Parameters<FoundationReviewerAgent["review"]>[0]);
-      if (!review.passed) {
-        this.config.logger?.warn?.(
-          `[reviseFoundation] Foundation review did not pass; accepting rewrite. Feedback: ${review.overallFeedback ?? ""}`,
-        );
-      }
     } catch (error) {
-      this.config.logger?.warn?.(
-        `[reviseFoundation] Foundation review failed and was skipped: ${error instanceof Error ? error.message : String(error)}`,
+      throw new Error(
+        `[reviseFoundation] Foundation review failed; existing canon was preserved: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    if (!review.passed) {
+      throw new Error(
+        `[reviseFoundation] Foundation review did not pass (${review.totalScore}/100); existing canon was preserved. Feedback: ${review.overallFeedback ?? ""}`,
       );
     }
 
@@ -1040,11 +1226,36 @@ export class PipelineRunner {
     sourceName: string,
     fanficMode: FanficMode,
   ): Promise<string> {
-    const { FanficCanonImporter } = await import("../agents/fanfic-canon-importer.js");
-    const importer = new FanficCanonImporter(this.agentCtxFor("fanfic-canon-importer", bookId));
-    const result = await importer.importFromText(sourceText, sourceName, fanficMode);
+    return this.importFanficCanonAt(
+      bookId,
+      sourceText,
+      sourceName,
+      fanficMode,
+      this.state.bookDir(bookId),
+    );
+  }
 
-    const bookDir = this.state.bookDir(bookId);
+  private async importFanficCanonAt(
+    bookId: string,
+    sourceText: string,
+    sourceName: string,
+    fanficMode: FanficMode,
+    bookDir: string,
+  ): Promise<string> {
+    const { FanficCanonImporter } = await import("../agents/fanfic-canon-importer.js");
+    const importer = new FanficCanonImporter(
+      this.agentCtxFor("fanfic-canon-importer", bookId, bookDir),
+    );
+    const result = await importer.importFromText(sourceText, sourceName, fanficMode);
+    const moralAuthoritySources = await this.loadBookMoralAuthoritySources(bookDir, bookId);
+    assertProductionContextMoralAuthority(
+      [result.fullDocument],
+      [
+        ...moralAuthoritySources,
+        { kind: "persisted-book-canon", text: sourceText },
+      ],
+    );
+
     const storyDir = join(bookDir, "story");
     await mkdir(storyDir, { recursive: true });
     await writeFile(join(storyDir, "fanfic_canon.md"), result.fullDocument, "utf-8");
@@ -1059,57 +1270,77 @@ export class PipelineRunner {
     sourceName: string,
     fanficMode: FanficMode,
   ): Promise<void> {
-    const bookDir = this.state.bookDir(book.id);
-    const stageLanguage = await this.resolveBookLanguage(book);
+    await this.initializeBookAtomically(book, async (stagingBookDir) => {
+      const stageLanguage = await this.resolveBookLanguage(book);
+      this.logStage(stageLanguage, { zh: "保存书籍配置", en: "saving book config" });
+      await this.state.saveBookConfigAt(stagingBookDir, book);
 
-    this.logStage(stageLanguage, { zh: "保存书籍配置", en: "saving book config" });
-    await this.state.saveBookConfig(book.id, book);
-
-    // Step 1: Import source material → fanfic_canon.md
-    this.logStage(stageLanguage, { zh: "导入同人正典", en: "importing fanfic canon" });
-    const fanficCanon = await this.importFanficCanon(book.id, sourceText, sourceName, fanficMode);
-
-    // Step 2: Generate foundation with review loop
-    const architect = new ArchitectAgent(this.agentCtxFor("architect", book.id));
-    const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", book.id));
-    this.logStage(stageLanguage, { zh: "生成同人基础设定", en: "generating fanfic foundation" });
-    const { profile: gp } = await this.loadGenreProfile(book.genre);
-    const resolvedLanguage = normalizeLengthLanguage(book.language ?? gp.language);
-    const foundation = await this.generateAndReviewFoundation({
-      generate: (reviewFeedback) => architect.generateFanficFoundation(
-        book,
-        fanficCanon,
+      // Step 1: Import source material → fanfic_canon.md
+      this.logStage(stageLanguage, { zh: "导入同人正典", en: "importing fanfic canon" });
+      const fanficCanon = await this.importFanficCanonAt(
+        book.id,
+        sourceText,
+        sourceName,
         fanficMode,
-        reviewFeedback,
-      ),
-      reviewer,
-      mode: "fanfic",
-      sourceCanon: fanficCanon,
-      language: resolvedLanguage,
-      stageLanguage,
-      targetChapters: book.targetChapters,
+        stagingBookDir,
+      );
+
+      // Step 2: Generate foundation with review loop
+      const architect = new ArchitectAgent(
+        this.agentCtxFor("architect", book.id, stagingBookDir),
+      );
+      const reviewer = new FoundationReviewerAgent(
+        this.agentCtxFor("foundation-reviewer", book.id, stagingBookDir),
+      );
+      this.logStage(stageLanguage, { zh: "生成同人基础设定", en: "generating fanfic foundation" });
+      const { profile: gp } = await this.loadGenreProfile(book.genre);
+      const resolvedLanguage = normalizeLengthLanguage(book.language ?? gp.language);
+      const foundation = await this.generateAndReviewFoundation({
+        generate: (reviewFeedback) => architect.generateFanficFoundation(
+          book,
+          fanficCanon,
+          fanficMode,
+          reviewFeedback,
+        ),
+        reviewer,
+        mode: "fanfic",
+        sourceCanon: fanficCanon,
+        language: resolvedLanguage,
+        stageLanguage,
+        targetChapters: book.targetChapters,
+      });
+      this.logStage(stageLanguage, { zh: "写入基础设定文件", en: "writing foundation files" });
+      await architect.writeFoundationFiles(
+        stagingBookDir,
+        foundation,
+        gp.numericalSystem,
+        book.language ?? gp.language,
+      );
+      this.logStage(stageLanguage, { zh: "初始化控制文档", en: "initializing control documents" });
+      await this.state.ensureControlDocumentsAt(
+        stagingBookDir,
+        book.language ?? gp.language,
+        this.config.externalContext,
+      );
+
+      // Step 3: Generate style guide from source material. This is optional for
+      // fanfic, but any attempted provider call still writes evidence in staging.
+      if (sourceText.length >= 500) {
+        this.logStage(stageLanguage, { zh: "提取原作风格指纹", en: "extracting source style fingerprint" });
+        await this.tryGenerateStyleGuideAt(
+          book,
+          stagingBookDir,
+          sourceText,
+          sourceName,
+          stageLanguage,
+        );
+      }
+
+      // Step 4: Initialize chapters directory + snapshot
+      this.logStage(stageLanguage, { zh: "创建初始快照", en: "creating initial snapshot" });
+      await this.state.saveChapterIndexAt(stagingBookDir, []);
+      await this.state.snapshotStateAt(stagingBookDir, 0);
     });
-    this.logStage(stageLanguage, { zh: "写入基础设定文件", en: "writing foundation files" });
-    await architect.writeFoundationFiles(
-      bookDir,
-      foundation,
-      gp.numericalSystem,
-      book.language ?? gp.language,
-    );
-    this.logStage(stageLanguage, { zh: "初始化控制文档", en: "initializing control documents" });
-    await this.state.ensureControlDocuments(book.id, this.config.externalContext);
-
-    // Step 3: Generate style guide from source material
-    if (sourceText.length >= 500) {
-      this.logStage(stageLanguage, { zh: "提取原作风格指纹", en: "extracting source style fingerprint" });
-      await this.tryGenerateStyleGuide(book.id, sourceText, sourceName, stageLanguage);
-    }
-
-    // Step 4: Initialize chapters directory + snapshot
-    this.logStage(stageLanguage, { zh: "创建初始快照", en: "creating initial snapshot" });
-    await mkdir(join(bookDir, "chapters"), { recursive: true });
-    await this.state.saveChapterIndex(book.id, []);
-    await this.state.snapshotState(book.id, 0);
   }
 
   /**
@@ -1120,41 +1351,63 @@ export class PipelineRunner {
    * side-story writing) + the standard original-foundation architect path.
    */
   async initSpinoffBook(book: BookConfig, parentBookId: string, direction?: string): Promise<void> {
-    const bookDir = this.state.bookDir(book.id);
-    const stageLanguage = await this.resolveBookLanguage(book);
+    await this.initializeBookAtomically(book, async (stagingBookDir) => {
+      const stageLanguage = await this.resolveBookLanguage(book);
+      this.logStage(stageLanguage, { zh: "保存书籍配置", en: "saving book config" });
+      await this.state.saveBookConfigAt(stagingBookDir, book);
 
-    this.logStage(stageLanguage, { zh: "保存书籍配置", en: "saving book config" });
-    await this.state.saveBookConfig(book.id, book);
+      this.logStage(stageLanguage, { zh: "导入正传正典参照", en: "importing parent canon" });
+      const parentCanon = await this.importCanonAt(book, stagingBookDir, parentBookId);
 
-    this.logStage(stageLanguage, { zh: "导入正传正典参照", en: "importing parent canon" });
-    const parentCanon = await this.importCanon(book.id, parentBookId);
+      const architect = new ArchitectAgent(
+        this.agentCtxFor("architect", book.id, stagingBookDir),
+      );
+      const reviewer = new FoundationReviewerAgent(
+        this.agentCtxFor("foundation-reviewer", book.id, stagingBookDir),
+      );
+      const { profile: gp } = await this.loadGenreProfile(book.genre);
+      const resolvedLanguage = normalizeLengthLanguage(book.language ?? gp.language);
+      const spinoffContext = buildSpinoffFoundationContext(parentCanon, direction, resolvedLanguage);
 
-    const architect = new ArchitectAgent(this.agentCtxFor("architect", book.id));
-    const reviewer = new FoundationReviewerAgent(this.agentCtxFor("foundation-reviewer", book.id));
-    const { profile: gp } = await this.loadGenreProfile(book.genre);
-    const resolvedLanguage = normalizeLengthLanguage(book.language ?? gp.language);
-    const spinoffContext = buildSpinoffFoundationContext(parentCanon, direction, resolvedLanguage);
+      this.logStage(stageLanguage, { zh: "生成番外基础设定", en: "generating side-story foundation" });
+      const foundation = await this.generateAndReviewFoundation({
+        generate: (reviewFeedback) => architect.generateFoundation(
+          book,
+          spinoffContext,
+          reviewFeedback,
+          {
+            // `direction` is useful creative context, but this generic runner
+            // API cannot prove authenticated human authorship. Keep BookRules
+            // authority empty until a confirmed ingress passes provenance.
+            bookRuleAuthoritySources: [],
+          },
+        ),
+        reviewer,
+        mode: "original",
+        language: resolvedLanguage,
+        stageLanguage,
+        targetChapters: book.targetChapters,
+      });
 
-    this.logStage(stageLanguage, { zh: "生成番外基础设定", en: "generating side-story foundation" });
-    const foundation = await this.generateAndReviewFoundation({
-      generate: (reviewFeedback) => architect.generateFoundation(book, spinoffContext, reviewFeedback),
-      reviewer,
-      mode: "original",
-      language: resolvedLanguage,
-      stageLanguage,
-      targetChapters: book.targetChapters,
+      this.logStage(stageLanguage, { zh: "写入基础设定文件", en: "writing foundation files" });
+      await architect.writeFoundationFiles(
+        stagingBookDir,
+        foundation,
+        gp.numericalSystem,
+        book.language ?? gp.language,
+      );
+
+      this.logStage(stageLanguage, { zh: "初始化控制文档", en: "initializing control documents" });
+      await this.state.ensureControlDocumentsAt(
+        stagingBookDir,
+        book.language ?? gp.language,
+        direction?.trim() || this.config.externalContext,
+      );
+
+      this.logStage(stageLanguage, { zh: "创建初始快照", en: "creating initial snapshot" });
+      await this.state.saveChapterIndexAt(stagingBookDir, []);
+      await this.state.snapshotStateAt(stagingBookDir, 0);
     });
-
-    this.logStage(stageLanguage, { zh: "写入基础设定文件", en: "writing foundation files" });
-    await architect.writeFoundationFiles(bookDir, foundation, gp.numericalSystem, book.language ?? gp.language);
-
-    this.logStage(stageLanguage, { zh: "初始化控制文档", en: "initializing control documents" });
-    await this.state.ensureControlDocuments(book.id, direction?.trim() || this.config.externalContext);
-
-    this.logStage(stageLanguage, { zh: "创建初始快照", en: "creating initial snapshot" });
-    await mkdir(join(bookDir, "chapters"), { recursive: true });
-    await this.state.saveChapterIndex(book.id, []);
-    await this.state.snapshotState(book.id, 0);
   }
 
   /**
@@ -1171,10 +1424,17 @@ export class PipelineRunner {
     storyIdea: string,
     sourceName?: string,
   ): Promise<void> {
-    await this.initBook(book, { externalContext: storyIdea });
-    const stageLanguage = await this.resolveBookLanguage(book);
-    this.logStage(stageLanguage, { zh: "提取参考作品风格指纹", en: "extracting reference style fingerprint" });
-    await this.generateStyleGuide(book.id, referenceText, sourceName?.trim() || "reference");
+    await this.initializeBookAtomically(book, async (stagingBookDir) => {
+      await this.initializeOriginalBookAt(book, { externalContext: storyIdea }, stagingBookDir);
+      const stageLanguage = await this.resolveBookLanguage(book);
+      this.logStage(stageLanguage, { zh: "提取参考作品风格指纹", en: "extracting reference style fingerprint" });
+      await this.generateStyleGuideAt(
+        book,
+        stagingBookDir,
+        referenceText,
+        sourceName?.trim() || "reference",
+      );
+    });
   }
 
   /** Write a single draft chapter. Saves chapter file + truth files + index + snapshot. */
@@ -1187,6 +1447,14 @@ export class PipelineRunner {
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
       const chapterNumber = await this.state.getNextChapterNumber(bookId);
+      const fictionOperation = await beginFictionContentOperation({
+        projectRoot: this.config.projectRoot,
+        bookId,
+        operationKind: "write-draft",
+        chapterNumber,
+        requiredStages: ["writer"],
+      });
+      return await runWithFictionContentOperation(fictionOperation, async () => {
       const stageLanguage = await this.resolveBookLanguage(book);
       this.logStage(stageLanguage, { zh: "准备章节输入", en: "preparing chapter inputs" });
       const writeInput = await this.prepareWriteInput(
@@ -1248,7 +1516,20 @@ export class PipelineRunner {
       });
       this.logLengthWarnings(lengthWarnings);
 
-      // Save chapter file
+      await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+      const fictionManifest = await sealFictionContentOperationManifest({
+        projectRoot: this.config.projectRoot,
+        operation: fictionOperation,
+      });
+      await verifyFictionContentOperationManifest({
+        projectRoot: this.config.projectRoot,
+        operation: fictionOperation,
+        expectedManifest: fictionManifest,
+      });
+
+      // Resolve the exact path Writer.saveChapter will commit. Do not pre-write
+      // the chapter here: that would leave an orphaned durable chapter if the
+      // following atomic chapter/truth transaction failed.
       const chaptersDir = join(bookDir, "chapters");
       const paddedNum = String(chapterNumber).padStart(4, "0");
       const sanitized = draftOutput.title.replace(/[/\\?%*:|"<>]/g, "").replace(/\s+/g, "_").slice(0, 50);
@@ -1256,44 +1537,47 @@ export class PipelineRunner {
       const filePath = join(chaptersDir, filename);
 
       const resolvedLang = book.language ?? gp.language;
-      const heading = renderChapterHeading(resolvedLang, chapterNumber, draftOutput.title);
-      await writeFile(filePath, `${heading}\n\n${draftOutput.content}`, "utf-8");
-
       // Save truth files
       this.logStage(stageLanguage, { zh: "落盘草稿与真相文件", en: "persisting draft and truth files" });
-      await writer.saveChapter(bookDir, draftOutput, gp.numericalSystem, resolvedLang);
-      await writer.saveNewTruthFiles(bookDir, draftOutput, resolvedLang);
-      await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, draftOutput);
-      await this.syncNarrativeMemoryIndex(bookId);
+      await runChapterPersistenceTransaction({
+        bookDir,
+        chapterNumber,
+        persist: async (): Promise<void> => {
+          await writer.saveChapter(bookDir, draftOutput, gp.numericalSystem, resolvedLang);
+          await writer.saveNewTruthFiles(bookDir, draftOutput, resolvedLang);
+          await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, draftOutput);
+          await this.syncNarrativeMemoryIndex(bookId);
 
-      // Update index
-      const existingIndex = await this.state.loadChapterIndex(bookId);
-      const now = new Date().toISOString();
-      const newEntry: ChapterMeta = {
-        number: chapterNumber,
-        title: draftOutput.title,
-        status: "drafted",
-        wordCount: draftOutput.wordCount,
-        createdAt: now,
-        updatedAt: now,
-        auditIssues: [],
-        lengthWarnings,
-        lengthTelemetry,
-        ...(draftOutput.arcProvenance ? { arcProvenance: draftOutput.arcProvenance } : {}),
-        ...(draftOutput.tokenUsage ? { tokenUsage: draftOutput.tokenUsage } : {}),
-      };
-      const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
-      const updatedIndex = existingIdx >= 0
-        ? existingIndex.map((e, i) => i === existingIdx ? newEntry : e)
-        : [...existingIndex, newEntry];
-      await this.state.saveChapterIndex(bookId, updatedIndex);
-      await this.markBookActiveIfNeeded(bookId);
+          // Update index
+          const existingIndex = await this.state.loadChapterIndex(bookId);
+          const now = new Date().toISOString();
+          const entry: ChapterMeta = {
+            number: chapterNumber,
+            title: draftOutput.title,
+            status: "drafted",
+            wordCount: draftOutput.wordCount,
+            createdAt: now,
+            updatedAt: now,
+            auditIssues: [],
+            lengthWarnings,
+            lengthTelemetry,
+            ...(draftOutput.arcProvenance ? { arcProvenance: draftOutput.arcProvenance } : {}),
+            ...(draftOutput.tokenUsage ? { tokenUsage: draftOutput.tokenUsage } : {}),
+          };
+          const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
+          const updatedIndex = existingIdx >= 0
+            ? existingIndex.map((e, i) => i === existingIdx ? entry : e)
+            : [...existingIndex, entry];
+          await this.state.saveChapterIndex(bookId, updatedIndex);
+          await this.markBookActiveIfNeeded(bookId);
 
-      // Snapshot
-      this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" });
-      await this.state.snapshotState(bookId, chapterNumber);
-      await this.syncCurrentStateFactHistory(bookId, chapterNumber);
-      await this.persistStoryRailTruthReceipt(bookId, newEntry);
+          // Snapshot
+          this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" });
+          await this.state.snapshotState(bookId, chapterNumber);
+          await this.syncCurrentStateFactHistory(bookId, chapterNumber);
+          await this.persistStoryRailTruthReceipt(bookId, entry);
+        },
+      });
 
       await this.emitWebhook("chapter-complete", bookId, chapterNumber, {
         title: draftOutput.title,
@@ -1309,6 +1593,7 @@ export class PipelineRunner {
         lengthTelemetry,
         tokenUsage: draftOutput.tokenUsage,
       };
+      });
     } finally {
       await releaseLock();
     }
@@ -1366,7 +1651,10 @@ export class PipelineRunner {
   }
 
   /** Audit the latest (or specified) chapter and persist its review status. */
-  async auditDraft(bookId: string, chapterNumber?: number): Promise<AuditResult & { readonly chapterNumber: number }> {
+  async auditDraft(bookId: string, chapterNumber?: number): Promise<AuditResult & {
+    readonly chapterNumber: number;
+    readonly publicationCompatibility: SensitiveWordResult;
+  }> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
       return await this._auditDraftLocked(bookId, chapterNumber);
@@ -1376,7 +1664,10 @@ export class PipelineRunner {
   }
 
   /** Audit while the caller owns StateManager.acquireBookLock(bookId). */
-  private async _auditDraftLocked(bookId: string, chapterNumber?: number): Promise<AuditResult & { readonly chapterNumber: number }> {
+  private async _auditDraftLocked(bookId: string, chapterNumber?: number): Promise<AuditResult & {
+    readonly chapterNumber: number;
+    readonly publicationCompatibility: SensitiveWordResult;
+  }> {
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
     const targetChapter = chapterNumber ?? (await this.state.getNextChapterNumber(bookId)) - 1;
@@ -1400,6 +1691,40 @@ export class PipelineRunner {
     const arcContext = chapterMeta?.arcProvenance
       ? renderChapterArcProvenance(chapterMeta.arcProvenance)
       : undefined;
+    const standaloneRuleStack = (this.config.inputGovernanceMode ?? "v2") === "legacy"
+      ? undefined
+      : await (async (): Promise<RuleStack> => {
+          const { readEffectiveBookRules } = await import("../agents/effective-book-rules.js");
+          const effective = await readEffectiveBookRules(bookDir, book.id);
+          if (persistedPlan) {
+            const { buildGovernedRuleStack } = await import("../utils/context-assembly.js");
+            return buildGovernedRuleStack(
+              persistedPlan,
+              targetChapter,
+              effective?.ruleRefs ?? [],
+            );
+          }
+          return RuleStackSchema.parse({
+            layers: [
+              { id: "L1", name: "hard_facts", precedence: 100, scope: "global" },
+              { id: "L2", name: "author_intent", precedence: 80, scope: "book" },
+              { id: "L3", name: "planning", precedence: 60, scope: "arc" },
+              { id: "L4", name: "current_task", precedence: 70, scope: "local" },
+            ],
+            sections: {
+              hard: ["story_frame", "current_state", "roles"],
+              soft: ["author_intent", "current_focus", "volume_map", "book_rules"],
+              diagnostic: ["anti_ai_checks", "continuity_audit", "style_regression_checks"],
+            },
+            overrideEdges: [
+              { from: "L4", to: "L3", allowed: true, scope: "current_chapter" },
+              { from: "L4", to: "L2", allowed: false, scope: "current_chapter" },
+              { from: "L4", to: "L1", allowed: false, scope: "current_chapter" },
+            ],
+            activeOverrides: [],
+            ruleRefs: effective?.ruleRefs ?? [],
+          });
+        })();
     this.logStage(language, {
       zh: `审计第${targetChapter}章`,
       en: `auditing chapter ${targetChapter}`,
@@ -1416,8 +1741,9 @@ export class PipelineRunner {
             chapterIntent: persistedPlan?.intentMarkdown,
             chapterMemo: persistedPlan?.memo,
             arcContext,
+            ruleStack: standaloneRuleStack,
           }
-        : undefined,
+        : standaloneRuleStack ? { ruleStack: standaloneRuleStack } : undefined,
     });
     const result = evaluation.auditResult;
     const newlyAuditedFutureAdvantageExecution = chapterMeta
@@ -1469,7 +1795,11 @@ export class PipelineRunner {
       { summary: result.summary, issueCount: result.issues.length },
     );
 
-    return { ...result, chapterNumber: targetChapter };
+    return {
+      ...result,
+      chapterNumber: targetChapter,
+      publicationCompatibility: evaluation.publicationCompatibility,
+    };
   }
 
   /** Revise the latest (or specified) chapter based on audit issues. */
@@ -1482,6 +1812,32 @@ export class PipelineRunner {
       if (targetChapter < 1) {
         throw new Error(`No chapters to revise for "${bookId}"`);
       }
+      const fictionOperation = await beginFictionContentOperation({
+        projectRoot: this.config.projectRoot,
+        bookId,
+        operationKind: "revise-draft",
+        chapterNumber: targetChapter,
+        // Every revision path is grounded by the pre-revision audit. Reviser,
+        // planner, composer, normalizer, and post-audit calls remain part of the
+        // exact operation delta when that path invokes them.
+        requiredStages: ["auditor"],
+      });
+      return await runWithFictionContentOperation(fictionOperation, async () => {
+      let fictionOperationSealed = false;
+      const sealRevisionOperation = async (): Promise<void> => {
+        if (fictionOperationSealed) return;
+        await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+        const manifest = await sealFictionContentOperationManifest({
+          projectRoot: this.config.projectRoot,
+          operation: fictionOperation,
+        });
+        await verifyFictionContentOperationManifest({
+          projectRoot: this.config.projectRoot,
+          operation: fictionOperation,
+          expectedManifest: manifest,
+        });
+        fictionOperationSealed = true;
+      };
 
       const stageLanguage = await this.resolveBookLanguage(book);
       // Read the current audit issues from index
@@ -1559,6 +1915,7 @@ export class PipelineRunner {
         : buildLengthSpec(book.chapterWordCount, language);
       const revisionBaseCount = countChapterLength(content, lengthSpec.countingMode);
       const persistOriginalAuditState = async (evaluation: MergedAuditEvaluation): Promise<void> => {
+        await sealRevisionOperation();
         const retainedLengthWarnings = this.buildLengthWarnings(
           targetChapter,
           revisionBaseCount,
@@ -1588,6 +1945,9 @@ export class PipelineRunner {
         }
       };
 
+      // A concrete brief or a non-auto mode is an explicit user/HIL edit.
+      // A bare default revise call remains an audit-driven no-op when there is
+      // no trusted blocker, which keeps publication-only findings advisory.
       const explicitRevisionRequested = Boolean(requestedRevisionContext?.trim())
         || mode !== "auto";
       if (preRevision.auditResult.parseFailed && !explicitRevisionRequested) {
@@ -1792,6 +2152,7 @@ export class PipelineRunner {
         };
       }
       this.logLengthWarnings(lengthWarnings);
+      await sealRevisionOperation();
 
       // Save revised chapter file
       this.logStage(stageLanguage, {
@@ -1805,21 +2166,25 @@ export class PipelineRunner {
       if (!existingFile) {
         throw new Error(`Chapter ${targetChapter} file not found in ${chaptersDir} (expected filename starting with ${paddedNum})`);
       }
-      await archiveChapterVersion(
+      await runChapterPersistenceTransaction({
         bookDir,
-        targetChapter,
-        content,
-        "revision",
-        new Date(),
-        { arcProvenance: chapterMeta.arcProvenance },
-      );
-      const reviseLang = book.language ?? gp.language;
-      const reviseHeading = renderChapterHeading(reviseLang, targetChapter, chapterMeta.title);
-      await writeFile(
-        join(chaptersDir, existingFile),
-        `${reviseHeading}\n\n${normalizedRevision.content}`,
-        "utf-8",
-      );
+        chapterNumber: targetChapter,
+        persist: async () => {
+          await archiveChapterVersion(
+            bookDir,
+            targetChapter,
+            content,
+            "revision",
+            new Date(),
+            { arcProvenance: chapterMeta.arcProvenance },
+          );
+          const reviseLang = book.language ?? gp.language;
+          const reviseHeading = renderChapterHeading(reviseLang, targetChapter, chapterMeta.title);
+          await writeFile(
+            join(chaptersDir, existingFile),
+            `${reviseHeading}\n\n${normalizedRevision.content}`,
+            "utf-8",
+          );
 
       // Only the latest chapter owns current truth. Reworking an older chapter
       // invalidates its descendants, but must not rewind the live story state.
@@ -1905,6 +2270,8 @@ export class PipelineRunner {
         const revisedEntry = updatedIndex.find((chapter) => chapter.number === targetChapter);
         if (revisedEntry) await this.persistStoryRailTruthReceipt(bookId, revisedEntry);
       }
+        },
+      });
 
       await this.emitWebhook("revision-complete", bookId, targetChapter, {
         wordCount: normalizedRevision.wordCount,
@@ -1920,6 +2287,7 @@ export class PipelineRunner {
         lengthWarnings,
         lengthTelemetry,
       };
+      });
     } finally {
       await releaseLock();
     }
@@ -2085,6 +2453,17 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     await this.assertNoPendingStateRepair(bookId);
     const chapterNumber = await this.state.getNextChapterNumber(bookId);
+    const requiredFictionStages = (this.config.chapterReviewMode ?? "auto") === "manual"
+      ? ["writer"]
+      : ["writer", "auditor"];
+    const fictionOperation = await beginFictionContentOperation({
+      projectRoot: this.config.projectRoot,
+      bookId,
+      operationKind: "write-next-chapter",
+      chapterNumber,
+      requiredStages: requiredFictionStages,
+    });
+    return await runWithFictionContentOperation(fictionOperation, async () => {
     const stageLanguage = await this.resolveBookLanguage(book);
     this.logStage(stageLanguage, { zh: "准备章节输入", en: "preparing chapter inputs" });
     const writeInput = await this.prepareWriteInput(
@@ -2113,8 +2492,9 @@ export class PipelineRunner {
       validatePostWrite: postWriteValidate,
     } = await import("../agents/post-write-validator.js");
     const { validateHookLedger } = await import("../utils/hook-ledger-validator.js");
-    const { readBookRules } = await import("../agents/rules-reader.js");
-    const parsedBookRules = (await readBookRules(bookDir))?.rules ?? null;
+    const { readEffectiveBookRules } = await import("../agents/effective-book-rules.js");
+    const effectiveBookRules = await readEffectiveBookRules(bookDir, book.id);
+    const automaticBookRules = effectiveBookRules?.automatic ?? null;
 
     // 1. Write chapter
     const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
@@ -2137,6 +2517,7 @@ export class PipelineRunner {
     let finalWordCount: number;
     let revised: boolean;
     let auditResult: AuditResult;
+    let publicationCompatibility: SensitiveWordResult;
     let postReviseCount: number;
     let normalizeApplied: boolean;
     let preAuditNormalizedWordCount: number | undefined;
@@ -2153,6 +2534,7 @@ export class PipelineRunner {
       postReviseCount = 0;
       normalizeApplied = finalContent !== output.content;
       preAuditNormalizedWordCount = writerCount;
+      publicationCompatibility = analyzeSensitiveWords(finalContent, undefined, pipelineLang);
       auditResult = {
         passed: false,
         issues: [],
@@ -2190,12 +2572,13 @@ export class PipelineRunner {
         analyzeAITells: (content) => analyzeAITells(content, pipelineLang),
         analyzeSensitiveWords: (content) => analyzeSensitiveWords(content, undefined, pipelineLang),
         runPostWriteChecks: (content) => {
-          const baseIssues = postWriteValidate(content, gp, parsedBookRules, pipelineLang)
+          const baseIssues = postWriteValidate(content, gp, automaticBookRules, pipelineLang)
             .map((v) => ({
               severity: v.severity === "error" ? "critical" as const : "warning" as const,
               category: v.rule,
               description: v.description,
               suggestion: v.suggestion,
+              automaticRevisionEligible: v.severity === "error",
             }));
           // Phase 9-3: verify the draft acts on every hook the memo committed to.
           const memoBody = writeInput.chapterMemo?.body ?? "";
@@ -2213,35 +2596,14 @@ export class PipelineRunner {
       finalWordCount = reviewResult.finalWordCount;
       revised = reviewResult.revised;
       auditResult = reviewResult.auditResult;
+      publicationCompatibility = reviewResult.publicationCompatibility;
       postReviseCount = reviewResult.postReviseCount;
       normalizeApplied = reviewResult.normalizeApplied;
       preAuditNormalizedWordCount = reviewResult.preAuditNormalizedWordCount;
     }
 
-    this.throwIfOperationAborted();
-    // 3b. Lightweight per-chapter promotion pass — check if any hooks should
-    // be promoted based on advanced_count derived from chapter_summaries.
-    // Runs BEFORE persistence so the reviewer of the NEXT chapter sees the
-    // updated ledger. No LLM calls — pure ledger parse + threshold check.
-    {
-      const { rerunPromotionPass } = await import("../utils/hook-promotion.js");
-      const { parsePendingHooksMarkdown, renderHookSnapshot } = await import("../utils/story-markdown.js");
-      const promotionStoryDir = join(bookDir, "story");
-      const ledgerPath = join(promotionStoryDir, "pending_hooks.md");
-      const ledgerRaw = await readFile(ledgerPath, "utf-8").catch(() => "");
-      if (ledgerRaw.trim()) {
-        const hooks = parsePendingHooksMarkdown(ledgerRaw);
-        if (hooks.length > 0) {
-          const summariesRaw = await readFile(join(promotionStoryDir, "chapter_summaries.md"), "utf-8").catch(() => "");
-          const promotionResult = rerunPromotionPass(hooks, summariesRaw);
-          if (promotionResult.updated) {
-            const ledgerLang: "zh" | "ko" | "en" = pipelineLang;
-            await writeFile(ledgerPath, renderHookSnapshot([...promotionResult.hooks], ledgerLang), "utf-8");
-            this.config.logger?.info(`[promotion] ${promotionResult.flippedCount} hook(s) promoted after chapter ${chapterNumber}`);
-          }
-        }
-      }
-    }
+    await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+    await verifyFictionContentOperationEvidence(this.config.projectRoot, fictionOperation);
 
     this.throwIfOperationAborted();
     // 4. Save the final chapter and truth files from a single persistence source
@@ -2336,7 +2698,7 @@ export class PipelineRunner {
       readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
       readFile(join(storyDir, "particle_ledger.md"), "utf-8").catch(() => ""),
       readStoryFrame(bookDir).catch(() => ""),
-      readFile(join(storyDir, "book_rules.md"), "utf-8").catch(() => ""),
+      Promise.resolve(effectiveBookRules?.guidance ?? ""),
       readFile(join(storyDir, "chapter_summaries.md"), "utf-8").catch(() => ""),
     ]);
     const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
@@ -2369,6 +2731,46 @@ export class PipelineRunner {
     let degradedIssues: ReadonlyArray<AuditIssue> = truthValidation.degradedIssues;
     persistenceOutput = truthValidation.persistenceOutput;
     auditResult = truthValidation.auditResult;
+
+    // Pure in-memory promotion: never mutate pending_hooks.md before the
+    // operation manifest is sealed. The promoted ledger is folded into the
+    // same atomic persistence output as the Chapter and structured truth.
+    {
+      const { rerunPromotionPass } = await import("../utils/hook-promotion.js");
+      const summariesRaw = persistenceOutput.updatedChapterSummaries
+        ?? authorityChapterSummaries;
+      if (persistenceOutput.runtimeStateSnapshot) {
+        const promotionResult = rerunPromotionPass(
+          persistenceOutput.runtimeStateSnapshot.hooks.hooks,
+          summariesRaw,
+        );
+        if (promotionResult.updated) {
+          const { renderHooksProjection } = await import("../state/state-projections.js");
+          const { HooksStateSchema } = await import("../models/runtime-state.js");
+          const hooksState = HooksStateSchema.parse({ hooks: [...promotionResult.hooks] });
+          persistenceOutput = {
+            ...persistenceOutput,
+            updatedHooks: renderHooksProjection(hooksState, pipelineLang, { currentChapter: chapterNumber }),
+            runtimeStateSnapshot: {
+              ...persistenceOutput.runtimeStateSnapshot,
+              hooks: hooksState,
+            },
+          };
+          this.config.logger?.info(`[promotion] ${promotionResult.flippedCount} hook(s) promoted after chapter ${chapterNumber}`);
+        }
+      } else {
+        const { parsePendingHooksMarkdown, renderHookSnapshot } = await import("../utils/story-markdown.js");
+        const hooks = parsePendingHooksMarkdown(persistenceOutput.updatedHooks || oldHooks);
+        const promotionResult = rerunPromotionPass(hooks, summariesRaw);
+        if (promotionResult.updated) {
+          persistenceOutput = {
+            ...persistenceOutput,
+            updatedHooks: renderHookSnapshot([...promotionResult.hooks], pipelineLang),
+          };
+          this.config.logger?.info(`[promotion] ${promotionResult.flippedCount} hook(s) promoted after chapter ${chapterNumber}`);
+        }
+      }
+    }
 
     // 4.2 Final paragraph shape check on persisted content (post-normalize, post-revise)
     {
@@ -2413,40 +2815,58 @@ export class PipelineRunner {
           arcProvenance: persistenceOutput.arcProvenance,
           auditResult,
         });
-    const persistedArtifacts = await persistChapterArtifacts({
-      chapterNumber,
-      chapterTitle: persistenceOutput.title,
-      status: resolvedStatus,
-      auditResult,
-      finalWordCount,
-      lengthWarnings,
-      lengthTelemetry,
-      degradedIssues,
-      arcProvenance: persistenceOutput.arcProvenance,
-      futureAdvantageExecution,
-      tokenUsage: totalUsage,
-      loadChapterIndex: () => this.state.loadChapterIndex(bookId),
-      saveChapter: () => writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang),
-      saveTruthFiles: async () => {
-        await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
-        await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
-        this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
-        await this.syncNarrativeMemoryIndex(bookId);
-      },
-      saveChapterIndex: (index) => this.state.saveChapterIndex(bookId, index),
-      markBookActiveIfNeeded: () => this.markBookActiveIfNeeded(bookId),
-      persistAuditDriftGuidance: (issues) => this.persistAuditDriftGuidance({
-        bookDir,
-        chapterNumber,
-        issues,
-        language: stageLanguage,
-      }).catch(() => undefined),
-      snapshotState: () => this.state.snapshotState(bookId, chapterNumber),
-      syncCurrentStateFactHistory: () => this.syncCurrentStateFactHistory(bookId, chapterNumber),
-      logSnapshotStage: () =>
-        this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" }),
+    // State settlement may invoke additional Book-bound model agents. Seal the
+    // exact current-operation delta, then read and recompute that immutable
+    // manifest immediately before the first Chapter or truth-file write.
+    const fictionManifest = await sealFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
     });
-    await this.persistStoryRailTruthReceipt(bookId, persistedArtifacts.entry);
+    await verifyFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+      expectedManifest: fictionManifest,
+    });
+    await runChapterPersistenceTransaction({
+      bookDir,
+      chapterNumber,
+      persist: async () => {
+        const artifacts = await persistChapterArtifacts({
+          chapterNumber,
+          chapterTitle: persistenceOutput.title,
+          status: resolvedStatus,
+          auditResult,
+          finalWordCount,
+          lengthWarnings,
+          lengthTelemetry,
+          degradedIssues,
+          arcProvenance: persistenceOutput.arcProvenance,
+          futureAdvantageExecution,
+          tokenUsage: totalUsage,
+          loadChapterIndex: () => this.state.loadChapterIndex(bookId),
+          saveChapter: () => writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang),
+          saveTruthFiles: async () => {
+            await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
+            await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
+            this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
+            await this.syncNarrativeMemoryIndex(bookId);
+          },
+          saveChapterIndex: (index) => this.state.saveChapterIndex(bookId, index),
+          markBookActiveIfNeeded: () => this.markBookActiveIfNeeded(bookId),
+          persistAuditDriftGuidance: (issues) => this.persistAuditDriftGuidance({
+            bookDir,
+            chapterNumber,
+            issues,
+            language: stageLanguage,
+          }).catch(() => undefined),
+          snapshotState: () => this.state.snapshotState(bookId, chapterNumber),
+          syncCurrentStateFactHistory: () => this.syncCurrentStateFactHistory(bookId, chapterNumber),
+          logSnapshotStage: () =>
+            this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" }),
+        });
+        await this.persistStoryRailTruthReceipt(bookId, artifacts.entry);
+      },
+    });
 
     // 6. Send notification
     if (this.config.notifyChannels && this.config.notifyChannels.length > 0) {
@@ -2484,12 +2904,14 @@ export class PipelineRunner {
       title: persistenceOutput.title,
       wordCount: finalWordCount,
       auditResult,
+      publicationCompatibility,
       revised,
       status: resolvedStatus,
       lengthWarnings,
       lengthTelemetry,
       tokenUsage: totalUsage,
     };
+    });
   }
 
   private async _repairChapterStateLocked(bookId: string, chapterNumber?: number): Promise<ChapterPipelineResult> {
@@ -2514,6 +2936,14 @@ export class PipelineRunner {
     if (targetChapter !== latestChapter) {
       throw new Error(`Only the latest state-degraded chapter can be repaired safely (latest is ${latestChapter}).`);
     }
+    const fictionOperation = await beginFictionContentOperation({
+      projectRoot: this.config.projectRoot,
+      bookId,
+      operationKind: "repair-chapter-state",
+      chapterNumber: targetChapter,
+      requiredStages: ["writer", "auditor"],
+    });
+    return await runWithFictionContentOperation(fictionOperation, async () => {
 
     this.logStage(stageLanguage, { zh: "修复章节状态结算", en: "repairing chapter state settlement" });
     const { profile: gp } = await this.loadGenreProfile(book.genre);
@@ -2575,13 +3005,16 @@ export class PipelineRunner {
       throw new Error(`State repair still failed for chapter ${targetChapter}.`);
     }
 
-    await writer.saveChapter(bookDir, repairedOutput, gp.numericalSystem, pipelineLang);
-    await writer.saveNewTruthFiles(bookDir, repairedOutput, pipelineLang);
-    await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter, repairedOutput);
-    await this.syncNarrativeMemoryIndex(bookId);
-    await this.state.snapshotState(bookId, targetChapter);
-    await this.syncCurrentStateFactHistory(bookId, targetChapter);
-
+    await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+    const fictionManifest = await sealFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+    });
+    await verifyFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+      expectedManifest: fictionManifest,
+    });
     const baseStatus = resolveStateDegradedBaseStatus(targetMeta);
     const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
     const injectedIssues = new Set(degradedMetadata?.injectedIssues ?? []);
@@ -2592,8 +3025,20 @@ export class PipelineRunner {
       auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
       reviewNote: undefined,
     };
-    await this.state.saveChapterIndex(bookId, index);
-    await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
+    await runChapterPersistenceTransaction({
+      bookDir,
+      chapterNumber: targetChapter,
+      persist: async () => {
+        await writer.saveChapter(bookDir, repairedOutput, gp.numericalSystem, pipelineLang);
+        await writer.saveNewTruthFiles(bookDir, repairedOutput, pipelineLang);
+        await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter, repairedOutput);
+        await this.syncNarrativeMemoryIndex(bookId);
+        await this.state.snapshotState(bookId, targetChapter);
+        await this.syncCurrentStateFactHistory(bookId, targetChapter);
+        await this.state.saveChapterIndex(bookId, index);
+        await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
+      },
+    });
 
     const repairedPassesAudit = baseStatus !== "audit-failed";
     return {
@@ -2611,6 +3056,7 @@ export class PipelineRunner {
       lengthTelemetry: targetMeta.lengthTelemetry,
       tokenUsage: targetMeta.tokenUsage,
     };
+    });
   }
 
   private async _resyncChapterArtifactsLocked(bookId: string, chapterNumber?: number): Promise<ChapterPipelineResult> {
@@ -2633,6 +3079,14 @@ export class PipelineRunner {
     if (targetChapter !== latestChapter) {
       throw new Error(`Only the latest persisted chapter can be synced safely (latest is ${latestChapter}).`);
     }
+    const fictionOperation = await beginFictionContentOperation({
+      projectRoot: this.config.projectRoot,
+      bookId,
+      operationKind: "resync-chapter-artifacts",
+      chapterNumber: targetChapter,
+      requiredStages: ["writer", "auditor"],
+    });
+    return await runWithFictionContentOperation(fictionOperation, async () => {
 
     this.logStage(stageLanguage, { zh: "根据已编辑正文同步真相文件与索引", en: "syncing truth files and indexes from edited chapter body" });
     const { profile: gp } = await this.loadGenreProfile(book.genre);
@@ -2747,13 +3201,16 @@ export class PipelineRunner {
       throw new Error(`Chapter sync still failed for chapter ${targetChapter}.`);
     }
 
-    await writer.saveChapter(bookDir, syncedOutput, gp.numericalSystem, pipelineLang);
-    await writer.saveNewTruthFiles(bookDir, syncedOutput, pipelineLang);
-    await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter, syncedOutput);
-    await this.syncNarrativeMemoryIndex(bookId);
-    await this.state.snapshotState(bookId, targetChapter);
-    await this.syncCurrentStateFactHistory(bookId, targetChapter);
-
+    await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+    const fictionManifest = await sealFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+    });
+    await verifyFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+      expectedManifest: fictionManifest,
+    });
     // Resync updates truth files from a manually edited body; it is not a
     // continuity audit. Previous audit conclusions belong to the old body, so
     // the chapter returns to drafted and must pass auditDraft explicitly.
@@ -2771,8 +3228,20 @@ export class PipelineRunner {
       arcProvenance: resyncedArcProvenance,
       futureAdvantageExecution: resyncedFutureAdvantageExecution,
     };
-    await this.state.saveChapterIndex(bookId, index);
-    await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
+    await runChapterPersistenceTransaction({
+      bookDir,
+      chapterNumber: targetChapter,
+      persist: async () => {
+        await writer.saveChapter(bookDir, syncedOutput, gp.numericalSystem, pipelineLang);
+        await writer.saveNewTruthFiles(bookDir, syncedOutput, pipelineLang);
+        await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter, syncedOutput);
+        await this.syncNarrativeMemoryIndex(bookId);
+        await this.state.snapshotState(bookId, targetChapter);
+        await this.syncCurrentStateFactHistory(bookId, targetChapter);
+        await this.state.saveChapterIndex(bookId, index);
+        await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
+      },
+    });
     return {
       chapterNumber: targetChapter,
       title: targetMeta.title,
@@ -2789,6 +3258,7 @@ export class PipelineRunner {
       lengthTelemetry: resyncedLengthTelemetry,
       tokenUsage: targetMeta.tokenUsage,
     };
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -2800,23 +3270,57 @@ export class PipelineRunner {
    * Also saves the statistical style_profile.json.
    */
   async generateStyleGuide(bookId: string, referenceText: string, sourceName?: string): Promise<string> {
+    const book = await this.state.loadBookConfig(bookId);
+    return this.generateStyleGuideAt(
+      book,
+      this.state.bookDir(bookId),
+      referenceText,
+      sourceName,
+    );
+  }
+
+  private async loadBookMoralAuthoritySources(
+    bookDir: string,
+    bookId: string,
+  ): Promise<ReadonlyArray<ArchitectMoralAuthoritySource>> {
+    const [creativeBrief, storyFrame, volumeMap, effectiveRules] = await Promise.all([
+      readFile(join(bookDir, "story/brief.md"), "utf8").catch(() => ""),
+      readStoryFrame(bookDir, ""),
+      readVolumeMap(bookDir, ""),
+      readEffectiveBookRules(bookDir, bookId),
+    ]);
+    return [
+      { kind: "owner-direction", text: creativeBrief },
+      { kind: "persisted-book-canon", text: storyFrame },
+      { kind: "persisted-book-canon", text: volumeMap },
+      ...(effectiveRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
+  }
+
+  private async generateStyleGuideAt(
+    book: BookConfig,
+    bookDir: string,
+    referenceText: string,
+    sourceName?: string,
+  ): Promise<string> {
     const sample = referenceText.trim();
     if (!sample) {
       throw new Error("Reference text is required for style extraction.");
     }
 
     const { analyzeStyle } = await import("../agents/style-analyzer.js");
-    const bookDir = this.state.bookDir(bookId);
     const storyDir = join(bookDir, "story");
     await mkdir(storyDir, { recursive: true });
 
-    const book = await this.state.loadBookConfig(bookId);
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const lang = normalizeLengthLanguage(book.language ?? gp.language);
 
     // Statistical fingerprint (language-aware: words for en, characters for zh)
     const profile = analyzeStyle(sample, sourceName, lang);
-    await writeFile(join(storyDir, "style_profile.json"), JSON.stringify(profile, null, 2), "utf-8");
+    const profileJson = JSON.stringify(profile, null, 2);
 
     let qualitativeGuide: string;
     if (sample.length < 500) {
@@ -2896,10 +3400,14 @@ Base the analysis on the text's actual features, not generalities. Support each 
           : lang !== "zh"
           ? `Analyze the writing style of the following reference text:\n\n${sample}`
           : `分析以下参考文本的写作风格：\n\n${sample}`;
-        const response = await chatCompletion(this.config.client, this.config.model, [
+        const styleAgent = new BookBoundCompletionAgent(
+          this.agentCtxFor("style-analyzer", book.id, bookDir),
+          "style-analyzer",
+        );
+        const response = await styleAgent.complete([
           { role: "system", content: styleSystemPrompt },
           { role: "user", content: styleUserPrompt },
-        ], { temperature: 0.3, signal: this.currentAbortSignal() });
+        ], { temperature: 0.3 });
         qualitativeGuide = response.content.trim()
           ? response.content
           : this.buildDeterministicStyleGuide(profile, {
@@ -2910,21 +3418,40 @@ Base the analysis on the text's actual features, not generalities. Support each 
                 ? "The LLM returned empty style analysis; using the statistical fingerprint fallback."
                 : "LLM 未返回有效文风分析，本次使用统计指纹兜底生成文风指南。",
             });
-      } catch (error) {
+      } catch {
         qualitativeGuide = this.buildDeterministicStyleGuide(profile, {
           language: lang,
           reason: lang === "ko"
-            ? `LLM 정성 분석에 실패했습니다: ${error instanceof Error ? error.message : String(error)}. 통계적 문체 지문을 사용합니다.`
+            ? "LLM 정성 분석을 완료하지 못해 통계적 문체 지문을 사용합니다."
             : lang !== "zh"
-            ? `LLM qualitative extraction failed: ${error instanceof Error ? error.message : String(error)}. Using the statistical fingerprint fallback.`
-            : `LLM 定性拆解失败：${error instanceof Error ? error.message : String(error)}。本次使用统计指纹兜底生成文风指南。`,
+            ? "LLM qualitative extraction did not complete; using the statistical fingerprint fallback."
+            : "LLM 定性拆解未完成，本次使用统计指纹兜底生成文风指南。",
         });
       }
     }
 
+    const moralAuthoritySources = await this.loadBookMoralAuthoritySources(bookDir, book.id);
+    assertNarrativeEvidenceMoralAuthority([profileJson], moralAuthoritySources);
+    try {
+      assertNarrativeEvidenceMoralAuthority([qualitativeGuide], moralAuthoritySources);
+    } catch (error) {
+      if (!(error instanceof UnauthorizedProductionContextMoralCorrectionError)) throw error;
+      qualitativeGuide = this.buildDeterministicStyleGuide(profile, {
+        language: lang,
+        reason: lang === "ko"
+          ? "LLM 문체 분석에 검증되지 않은 규범 지시가 섞여 통계적 문체 지문으로 대체했습니다."
+          : lang !== "zh"
+            ? "The LLM style analysis contained an unverified normative directive, so the statistical fingerprint was used instead."
+            : "LLM 文风分析混入未经验证的规范性指令，本次改用统计指纹。",
+      });
+    }
     const craftMethodology = buildWritingMethodologySection(lang);
     const fullStyleGuide = `${qualitativeGuide}\n\n${craftMethodology}`;
-    await writeFile(join(storyDir, "style_guide.md"), fullStyleGuide, "utf-8");
+    assertNarrativeEvidenceMoralAuthority([fullStyleGuide], moralAuthoritySources);
+    await Promise.all([
+      writeFile(join(storyDir, "style_profile.json"), profileJson, "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), fullStyleGuide, "utf-8"),
+    ]);
     return fullStyleGuide;
   }
 
@@ -3018,8 +3545,25 @@ Base the analysis on the text's actual features, not generalities. Support each 
       throw new Error(`Target book "${targetBookId}" not found. Available: ${bookIds.join(", ") || "(none)"}`);
     }
 
+    return this.importCanonAt(
+      await this.state.loadBookConfig(targetBookId),
+      this.state.bookDir(targetBookId),
+      parentBookId,
+    );
+  }
+
+  private async importCanonAt(
+    targetBook: BookConfig,
+    targetDir: string,
+    parentBookId: string,
+  ): Promise<string> {
+    const bookIds = await this.state.listBooks();
+    if (!bookIds.includes(parentBookId)) {
+      throw new Error(`Parent book "${parentBookId}" not found. Available: ${bookIds.join(", ") || "(none)"}`);
+    }
+    const targetBookId = targetBook.id;
+
     const parentDir = this.state.bookDir(parentBookId);
-    const targetDir = this.state.bookDir(targetBookId);
     const storyDir = join(targetDir, "story");
     await mkdir(storyDir, { recursive: true });
 
@@ -3048,7 +3592,11 @@ Base the analysis on the text's actual features, not generalities. Support each 
         readSafe(join(parentDir, "story/character_matrix.md")),
       ]);
 
-    const response = await chatCompletion(this.config.client, this.config.model, [
+    const canonImporter = new BookBoundCompletionAgent(
+      this.agentCtxFor("canon-importer", targetBookId, targetDir),
+      "canon-importer",
+    );
+    const response = await canonImporter.complete([
       {
         role: "system",
         content: `你是一位网络小说架构师。基于正传的全部设定和状态文件，生成一份完整的"正传正典参照"文档，供番外写作和审计使用。
@@ -3127,7 +3675,7 @@ ${emotions}
 ## 正传角色矩阵
 ${matrix}`,
       },
-    ], { temperature: 0.3, signal: this.currentAbortSignal() });
+    ], { temperature: 0.3 });
 
     // Append deterministic meta block (LLM may hallucinate timestamps)
     const metaBlock = [
@@ -3139,6 +3687,21 @@ ${matrix}`,
       `  generatedAt: "${new Date().toISOString()}"`,
     ].join("\n");
     const canon = response.content + metaBlock;
+    const [targetMoralAuthoritySources, parentEffectiveRules] = await Promise.all([
+      this.loadBookMoralAuthoritySources(targetDir, targetBookId),
+      readEffectiveBookRules(parentDir, parentBookId),
+    ]);
+    assertProductionContextMoralAuthority(
+      [canon],
+      [
+        ...targetMoralAuthoritySources,
+        { kind: "persisted-book-canon", text: storyBible },
+        ...(parentEffectiveRules?.hardEntries ?? []).map((entry) => ({
+          kind: "persisted-book-canon" as const,
+          text: entry.text,
+        })),
+      ],
+    );
 
     await writeFile(join(storyDir, "parent_canon.md"), canon, "utf-8");
 
@@ -3146,7 +3709,12 @@ ${matrix}`,
     const parentChaptersDir = join(parentDir, "chapters");
     const parentChapterText = await this.readParentChapterSample(parentChaptersDir);
     if (parentChapterText.length >= 500) {
-      await this.tryGenerateStyleGuide(targetBookId, parentChapterText, parentBook.title);
+      await this.tryGenerateStyleGuideAt(
+        targetBook,
+        targetDir,
+        parentChapterText,
+        parentBook.title,
+      );
     }
 
     return canon;
@@ -3254,7 +3822,6 @@ ${matrix}`,
       const countingMode = resolveLengthCountingMode(book.language ?? gp.language);
       let totalWords = 0;
       let importedCount = 0;
-      let lastImportedChapter = startFrom - 1;
 
       for (let i = startFrom - 1; i < input.chapters.length; i++) {
         this.throwIfOperationAborted();
@@ -3270,6 +3837,14 @@ ${matrix}`,
         }
         const ch = input.chapters[i]!;
         const chapterNumber = i + 1;
+        const fictionOperation = await beginFictionContentOperation({
+          projectRoot: this.config.projectRoot,
+          bookId: input.bookId,
+          operationKind: "import-chapter",
+          chapterNumber,
+          requiredStages: ["auditor"],
+        });
+        await runWithFictionContentOperation(fictionOperation, async () => {
         const governedInput = await this.prepareWriteInput(book, bookDir, chapterNumber);
         const arcProvenance = governedInput.arcProvenance ?? (await loadOptionalActiveArcContext({
           store: new ArcStore(bookDir),
@@ -3308,51 +3883,64 @@ ${matrix}`,
           ...(arcProvenance ? { arcProvenance } : {}),
         };
 
-        // Save chapter file + core truth files (state, ledger, hooks)
-        await writer.saveChapter(bookDir, persistedOutput, gp.numericalSystem, resolvedLanguage);
+        await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+        const fictionManifest = await sealFictionContentOperationManifest({
+          projectRoot: this.config.projectRoot,
+          operation: fictionOperation,
+        });
+        await verifyFictionContentOperationManifest({
+          projectRoot: this.config.projectRoot,
+          operation: fictionOperation,
+          expectedManifest: fictionManifest,
+        });
+        await runChapterPersistenceTransaction({
+          bookDir,
+          chapterNumber,
+          persist: async () => {
+            // Save chapter file + core truth files (state, ledger, hooks)
+            await writer.saveChapter(bookDir, persistedOutput, gp.numericalSystem, resolvedLanguage);
 
-        // Save extended truth files (summaries, subplots, emotional arcs, character matrix)
-        await writer.saveNewTruthFiles(bookDir, {
-          ...output,
-          postWriteErrors: [],
-          postWriteWarnings: [],
-        }, resolvedLanguage);
-        await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, output);
-        await this.syncNarrativeMemoryIndex(input.bookId);
+            // Save extended truth files (summaries, subplots, emotional arcs, character matrix)
+            await writer.saveNewTruthFiles(bookDir, {
+              ...output,
+              postWriteErrors: [],
+              postWriteWarnings: [],
+            }, resolvedLanguage);
+            await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, output);
+            await this.syncNarrativeMemoryIndex(input.bookId);
 
-        // Update chapter index
-        const existingIndex = await this.state.loadChapterIndex(input.bookId);
-        const now = new Date().toISOString();
-        const newEntry: ChapterMeta = {
-          number: chapterNumber,
-          title: output.title,
-          status: "imported",
-          wordCount: chapterWordCount,
-          createdAt: now,
-          updatedAt: now,
-          auditIssues: [],
-          lengthWarnings: [],
-          ...(arcProvenance ? { arcProvenance } : {}),
-        };
-        // Replace if exists (resume case), otherwise append
-        const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
-        const updatedIndex = existingIdx >= 0
-          ? existingIndex.map((e, idx) => idx === existingIdx ? newEntry : e)
-          : [...existingIndex, newEntry];
-        await this.state.saveChapterIndex(input.bookId, updatedIndex);
+            // Update chapter index
+            const existingIndex = await this.state.loadChapterIndex(input.bookId);
+            const now = new Date().toISOString();
+            const newEntry: ChapterMeta = {
+              number: chapterNumber,
+              title: output.title,
+              status: "imported",
+              wordCount: chapterWordCount,
+              createdAt: now,
+              updatedAt: now,
+              auditIssues: [],
+              lengthWarnings: [],
+              ...(arcProvenance ? { arcProvenance } : {}),
+            };
+            // Replace if exists (resume case), otherwise append
+            const existingIdx = existingIndex.findIndex((e) => e.number === chapterNumber);
+            const updatedIndex = existingIdx >= 0
+              ? existingIndex.map((e, idx) => idx === existingIdx ? newEntry : e)
+              : [...existingIndex, newEntry];
+            await this.state.saveChapterIndex(input.bookId, updatedIndex);
 
-        // Snapshot state after each chapter for rollback + resume support
-        await this.state.snapshotState(input.bookId, chapterNumber);
-        await this.persistStoryRailTruthReceipt(input.bookId, newEntry);
+            // Snapshot state after each chapter for rollback + resume support.
+            await this.state.snapshotState(input.bookId, chapterNumber);
+            await this.markBookActiveIfNeeded(input.bookId);
+            await this.syncCurrentStateFactHistory(input.bookId, chapterNumber);
+            await this.persistStoryRailTruthReceipt(input.bookId, newEntry);
+          },
+        });
 
         importedCount++;
-        lastImportedChapter = chapterNumber;
         totalWords += chapterWordCount;
-      }
-
-      if (importedCount > 0) {
-        await this.markBookActiveIfNeeded(input.bookId);
-        await this.syncCurrentStateFactHistory(input.bookId, lastImportedChapter);
+        });
       }
 
       const nextChapter = await this.state.getNextChapterNumber(input.bookId);
@@ -4218,20 +4806,8 @@ ${matrix}`,
   }
 
   private restoreActionableAuditIfLost(
-    previous: {
-      auditResult: AuditResult;
-      aiTellCount: number;
-      blockingCount: number;
-      criticalCount: number;
-      revisionBlockingIssues: ReadonlyArray<AuditIssue>;
-    },
-    next: {
-      auditResult: AuditResult;
-      aiTellCount: number;
-      blockingCount: number;
-      criticalCount: number;
-      revisionBlockingIssues: ReadonlyArray<AuditIssue>;
-    },
+    previous: MergedAuditEvaluation,
+    next: MergedAuditEvaluation,
   ): MergedAuditEvaluation {
     const auditResult = this.restoreLostAuditIssues(previous.auditResult, next.auditResult);
     if (auditResult === next.auditResult) {
@@ -4276,22 +4852,28 @@ ${matrix}`,
       params.auditOptions,
     );
     const aiTells = analyzeAITells(params.chapterContent, params.language);
-    const sensitiveResult = analyzeSensitiveWords(params.chapterContent, undefined, params.language);
+    const publicationCompatibility = analyzeSensitiveWords(
+      params.chapterContent,
+      undefined,
+      params.language,
+    );
     const { profile } = await this.loadGenreProfile(params.book.genre);
-    const { readBookRules } = await import("../agents/rules-reader.js");
+    const { readEffectiveBookRules } = await import("../agents/effective-book-rules.js");
     const { validatePostWrite } = await import("../agents/post-write-validator.js");
     const { validateHookLedger } = await import("../utils/hook-ledger-validator.js");
-    const parsedBookRules = (await readBookRules(params.bookDir))?.rules ?? null;
+    const effectiveBookRules = await readEffectiveBookRules(params.bookDir, params.book.id);
+    const automaticBookRules = effectiveBookRules?.automatic ?? null;
     const postWriteIssues: ReadonlyArray<AuditIssue> = validatePostWrite(
       params.chapterContent,
       profile,
-      parsedBookRules,
+      automaticBookRules,
       params.language,
     ).map((violation) => ({
       severity: violation.severity === "error" ? "critical" as const : "warning" as const,
       category: violation.rule,
       description: violation.description,
       suggestion: violation.suggestion,
+      automaticRevisionEligible: violation.severity === "error",
     }));
     const hookLedgerIssues: ReadonlyArray<AuditIssue> = params.auditOptions?.chapterMemo
       ? validateHookLedger(params.auditOptions.chapterMemo.body, params.chapterContent)
@@ -4302,25 +4884,21 @@ ${matrix}`,
       chapterContent: params.chapterContent,
       language: params.language,
     });
-    const hasBlockedWords = sensitiveResult.found.some((f) => f.severity === "block");
     const issues: ReadonlyArray<AuditIssue> = [
       ...llmAudit.issues,
       ...aiTells.issues,
-      ...sensitiveResult.issues,
       ...postWriteIssues,
       ...hookLedgerIssues,
       ...longSpanFatigue.issues,
     ];
-    // revisionBlockingIssues excludes long-span-fatigue issues by
-    // construction (not by category name) so that an LLM-reported issue
-    // sharing a category label with a long-span issue is still counted.
-    // Manual revise is an explicit editorial action, so warnings remain valid
-    // candidates there even though only critical issues fail creative review
-    // or trigger the automatic write-time repair loop.
+    // Subjective LLM findings remain visible in auditResult for HIL, but they
+    // neither steer nor veto an explicit user revision. Only explicitly
+    // host-trusted findings and deterministic host checks enter the manual
+    // comparison gate. Long-span fatigue remains advisory and is excluded by
+    // construction.
     const revisionBlockingIssues: ReadonlyArray<AuditIssue> = [
-      ...llmAudit.issues,
+      ...llmAudit.issues.filter(isAutomaticRevisionIssue),
       ...aiTells.issues,
-      ...sensitiveResult.issues,
       ...postWriteIssues,
       ...hookLedgerIssues,
     ].filter(isRevisionCandidateIssue);
@@ -4329,7 +4907,6 @@ ${matrix}`,
     // nor can it wave through a contradictory creative critical finding.
     const hasCreativeCritical = issues.some(isAutomaticRevisionIssue);
     const creativePassed = !llmAudit.parseFailed
-      && !hasBlockedWords
       && !hasCreativeCritical;
 
     return {
@@ -4344,9 +4921,10 @@ ${matrix}`,
         overallScore: llmAudit.overallScore,
         tokenUsage: llmAudit.tokenUsage,
       },
+      publicationCompatibility,
       aiTellCount: aiTells.issues.length,
       blockingCount: revisionBlockingIssues.length,
-      criticalCount: revisionBlockingIssues.filter(isAutomaticRevisionIssue).length,
+      criticalCount: revisionBlockingIssues.filter((issue) => issue.severity === "critical").length,
       revisionBlockingIssues,
     };
   }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AutomationModeSchema } from "./modes.js";
+import { BookRuleOwnerDecisionInputSchema } from "../models/book-rule-provenance.js";
 
 export const InteractionIntentTypeSchema = z.enum([
   "develop_book",
@@ -48,6 +49,7 @@ export const InteractionRequestSchema = z.object({
   constraints: z.string().min(1).optional(),
   authorIntent: z.string().min(1).optional(),
   currentFocus: z.string().min(1).optional(),
+  hardRules: z.array(BookRuleOwnerDecisionInputSchema).max(100).optional(),
   fileName: z.string().min(1).optional(),
   format: z.enum(["txt", "md", "epub"]).optional(),
   approvedOnly: z.boolean().optional(),

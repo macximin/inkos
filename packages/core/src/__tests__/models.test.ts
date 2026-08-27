@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { createHash } from "node:crypto";
 import {
   BookConfigSchema,
   PlatformSchema,
@@ -778,6 +779,38 @@ describe("RuleStackSchema", () => {
     });
     expect(result.overrideEdges).toEqual([]);
     expect(result.activeOverrides).toEqual([]);
+    expect(result.ruleRefs).toBeUndefined();
+  });
+
+  it("accepts exact host-verified hard Book rule references", () => {
+    const result = RuleStackSchema.parse({
+      layers: [{ id: "L1", name: "hard_facts", precedence: 100, scope: "global" }],
+      ruleRefs: [{
+        ruleId: "brp:verified-1",
+        strength: "hard",
+        kind: "prohibition",
+        text: "Never betray the verified premise.",
+        textSha256: createHash("sha256")
+          .update("Never betray the verified premise.", "utf8")
+          .digest("hex"),
+      }],
+    });
+
+    expect(result.ruleRefs?.[0]?.ruleId).toBe("brp:verified-1");
+    expect(result.ruleRefs?.[0]?.text).toBe("Never betray the verified premise.");
+  });
+
+  it("rejects a verified Book rule reference whose text hash does not match", () => {
+    expect(() => RuleStackSchema.parse({
+      layers: [{ id: "L1", name: "hard_facts", precedence: 100, scope: "global" }],
+      ruleRefs: [{
+        ruleId: "brp:tampered",
+        strength: "hard",
+        kind: "prohibition",
+        text: "Exact rule text",
+        textSha256: "a".repeat(64),
+      }],
+    })).toThrow("textSha256 must match the exact UTF-8 rule text");
   });
 
   it("rejects empty rule stacks", () => {

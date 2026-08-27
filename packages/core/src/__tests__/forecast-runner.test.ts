@@ -18,8 +18,13 @@ import {
   makeModelBranch,
   makeFutureAdvantageMove,
   snapshotCanonicalFiles,
+  writeCompletedForecastInvocationEvidence,
   writeForecastFixtureBook,
 } from "./helpers/forecast-fixture.js";
+import {
+  prepareFictionContentInvocation,
+  writeFictionContentInvocationOutcome,
+} from "../production/fiction-content-contract.js";
 
 const BOOK_ID = "demo-book";
 const FIXED_NOW = () => new Date("2026-07-15T00:00:00Z");
@@ -71,7 +76,10 @@ describe("narrative forecast runner", () => {
 
   function stubAgent() {
     return vi.spyOn(NarrativeForecastAgent.prototype, "generateBranches")
-      .mockResolvedValue({ branches: stubBranches() });
+      .mockImplementation(async () => {
+        await writeCompletedForecastInvocationEvidence(root, BOOK_ID);
+        return { branches: stubBranches() };
+      });
   }
 
   function createOptions() {
@@ -95,6 +103,11 @@ describe("narrative forecast runner", () => {
     expect(result.forecast.forecastId).toBe(FIXED_ID);
     expect(result.forecast.baseChapter).toBe(2);
     expect(result.forecast.status).toBe("active");
+    expect(result.forecast.generationEvidence).toMatchObject({
+      contractId: "fiction-content-neutral-ko/v1",
+      stage: "forecast",
+      invocationIds: [expect.any(String)],
+    });
     expect(result.forecast.branches.map((branch) => branch.branchId)).toEqual(["branch-1", "branch-2"]);
     expect(result.forecast.createdAt).toBe("2026-07-15T00:00:00.000Z");
 
@@ -103,6 +116,80 @@ describe("narrative forecast runner", () => {
     const comparison = await readFile(result.comparisonPath, "utf-8");
     expect(comparison).toContain("接受提议");
     expect(comparison).toContain("拒绝提议");
+  });
+
+  it("refuses to store a forecast when generation bypasses the Book-bound provider boundary", async () => {
+    vi.spyOn(NarrativeForecastAgent.prototype, "generateBranches")
+      .mockResolvedValue({ branches: stubBranches() });
+
+    await expect(createNarrativeForecast(createOptions()))
+      .rejects.toThrow(/no contract-governed model invocation evidence/);
+    expect(await exists(join(bookDir, "story", "runtime", "narrative-forecasts"))).toBe(false);
+  });
+
+  it("refuses selection when the forecast's recorded model outcome is missing", async () => {
+    stubAgent();
+    const created = await createNarrativeForecast(createOptions());
+    const invocationId = created.forecast.generationEvidence!.invocationIds[0]!;
+    await rm(join(
+      bookDir,
+      "story",
+      "runtime",
+      "fiction-content-neutral",
+      "outcomes",
+      `${invocationId}.json`,
+    ));
+
+    await expect(selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+    })).rejects.toThrow(/evidence is incomplete/);
+    expect(await exists(join(
+      bookDir,
+      "story",
+      "runtime",
+      "narrative-forecasts",
+      FIXED_ID,
+      "selected-branch-plan.md",
+    ))).toBe(false);
+  });
+
+  it("isolates forecast creation and exact-ID selection from historical failed or partial evidence", async () => {
+    const failed = await prepareFictionContentInvocation({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      agentName: "narrative-forecast",
+      stage: "forecast",
+      model: "fake",
+      messages: [{ role: "system", content: "Historical failed forecast." }],
+    });
+    await writeFictionContentInvocationOutcome({
+      projectRoot: root,
+      prepared: failed,
+      error: new Error("historical provider transport failure"),
+    });
+    await prepareFictionContentInvocation({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      agentName: "narrative-forecast",
+      stage: "forecast",
+      model: "fake",
+      messages: [{ role: "system", content: "Historical partial forecast." }],
+    });
+    stubAgent();
+
+    const created = await createNarrativeForecast(createOptions());
+    expect(created.forecast.generationEvidence?.invocationIds).toHaveLength(1);
+    await expect(selectNarrativeBranch({
+      projectRoot: root,
+      bookId: BOOK_ID,
+      forecastId: FIXED_ID,
+      branchId: "branch-1",
+    })).resolves.toMatchObject({
+      branch: { branchId: "branch-1" },
+    });
   });
 
   it("keeps sibling branches isolated in the stored forecast", async () => {
@@ -213,6 +300,7 @@ describe("narrative forecast runner", () => {
     const spy = vi.spyOn(NarrativeForecastAgent.prototype, "generateBranches")
       .mockImplementation(async (input) => {
         expect(input.futureAdvantageEnabled).toBe(true);
+        await writeCompletedForecastInvocationEvidence(root, BOOK_ID);
         return {
           branches: stubBranches().map((branch, index) => ({
             ...branch,

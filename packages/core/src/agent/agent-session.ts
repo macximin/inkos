@@ -6,6 +6,7 @@ import type {
   Model,
   Api,
   AssistantMessage,
+  AssistantMessageEvent,
   AssistantMessageEventStream,
   Context as PiContext,
   ImageContent,
@@ -87,6 +88,15 @@ import {
   opaqueConversationId,
   runWithAgentTrajectory,
 } from "../llm/agent-trajectory.js";
+import {
+  authorizeFictionContentToolCalls,
+  hashCanonicalJson,
+  prepareFictionContentInvocation,
+  verifyFictionContentToolAuthorization,
+  writeFictionContentInvocationOutcome,
+  type FictionContentToolAuthorization,
+  type PreparedFictionContentInvocation,
+} from "../production/fiction-content-contract.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -408,6 +418,305 @@ function localAssistantStopStream(model: Model<Api>): AssistantMessageEventStrea
   return stream;
 }
 
+function isGovernedBookSession(bookId: string | null, sessionKind: SessionKind): bookId is string {
+  return Boolean(bookId) && (sessionKind === "book" || sessionKind === "edit");
+}
+
+function serializablePiModel(model: Model<Api>): unknown {
+  return {
+    id: model.id,
+    name: model.name,
+    api: model.api,
+    provider: model.provider,
+    baseUrl: model.baseUrl,
+    reasoning: model.reasoning,
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    headers: model.headers ?? {},
+    compat: model.compat ?? null,
+  };
+}
+
+function serializablePiContext(context: PiContext, systemPrompt: string): unknown {
+  return {
+    systemPrompt,
+    messages: context.messages,
+    tools: (context.tools ?? []).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    })),
+  };
+}
+
+function serializableStreamOptions(options: SimpleStreamOptions | undefined): unknown {
+  return {
+    temperature: options?.temperature ?? null,
+    maxTokens: options?.maxTokens ?? null,
+    transport: options?.transport ?? null,
+    cacheRetention: options?.cacheRetention ?? null,
+    sessionId: options?.sessionId ?? null,
+    headers: options?.headers ?? {},
+    maxRetryDelayMs: options?.maxRetryDelayMs ?? null,
+    metadata: options?.metadata ?? null,
+    reasoning: options?.reasoning ?? null,
+    thinkingBudgets: options?.thinkingBudgets ?? null,
+    apiKeyConfigured: Boolean(options?.apiKey),
+  };
+}
+
+function assistantStreamError(model: Model<Api>, error: unknown): AssistantMessage {
+  const message = error instanceof Error ? error.message : String(error);
+  const aborted = error instanceof Error && error.name === "AbortError";
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: EMPTY_USAGE,
+    stopReason: aborted ? "aborted" : "error",
+    errorMessage: message || "Book agent model stream failed without an error message.",
+    timestamp: Date.now(),
+  };
+}
+
+function failedAssistantStream(model: Model<Api>, error: unknown): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const message = assistantStreamError(model, error);
+  queueMicrotask(() => {
+    stream.push({
+      type: "error",
+      reason: message.stopReason === "aborted" ? "aborted" : "error",
+      error: message,
+    });
+    stream.end(message);
+  });
+  return stream;
+}
+
+function providerStreamEventError(event: Extract<AssistantMessageEvent, { type: "error" }>): Error {
+  const error = new Error(event.error.errorMessage || `Provider stream ended with ${event.reason}.`);
+  error.name = event.reason === "aborted" ? "AbortError" : "ProviderStreamError";
+  return error;
+}
+
+function terminalAssistantMessageError(message: AssistantMessage): Error | null {
+  const hasToolCall = message.content.some((block) => block.type === "toolCall");
+  if (message.stopReason === "error" || message.stopReason === "aborted") {
+    const error = new Error(
+      message.errorMessage
+        || `Provider stream ended with assistant stop reason ${message.stopReason}.`,
+    );
+    error.name = message.stopReason === "aborted" ? "AbortError" : "ProviderStreamError";
+    return error;
+  }
+  if (message.stopReason === "length") {
+    const error = new Error("Provider stream reached its token limit before completing the assistant turn.");
+    error.name = "ProviderIncompleteError";
+    return error;
+  }
+  if (message.stopReason === "toolUse" && !hasToolCall) {
+    const error = new Error("Provider reported toolUse without a tool call.");
+    error.name = "ProviderProtocolError";
+    return error;
+  }
+  if (message.stopReason === "stop" && hasToolCall) {
+    const error = new Error("Provider returned a tool call without the required toolUse stop reason.");
+    error.name = "ProviderProtocolError";
+    return error;
+  }
+  if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+    const error = new Error(`Provider stream ended with unsupported assistant stop reason ${String(message.stopReason)}.`);
+    error.name = "ProviderProtocolError";
+    return error;
+  }
+  return null;
+}
+
+function proxyGovernedBookStream(input: {
+  readonly projectRoot: string;
+  readonly model: Model<Api>;
+  readonly upstream: AssistantMessageEventStream;
+  readonly prepared: PreparedFictionContentInvocation;
+  readonly onCompletedMessage?: (
+    prepared: PreparedFictionContentInvocation,
+    message: AssistantMessage,
+    assistantOutput: string,
+  ) => Promise<void>;
+}): AssistantMessageEventStream {
+  const downstream = createAssistantMessageEventStream();
+  void (async () => {
+    let outcomeAttempted = false;
+    let terminalSeen = false;
+    try {
+      for await (const event of input.upstream) {
+        if (event.type === "done") {
+          terminalSeen = true;
+          outcomeAttempted = true;
+          const terminalError = terminalAssistantMessageError(event.message);
+          if (terminalError) {
+            await writeFictionContentInvocationOutcome({
+              projectRoot: input.projectRoot,
+              prepared: input.prepared,
+              error: terminalError,
+            });
+            // A provider may encode failure as a terminal `done` message. Do
+            // not forward a truncated/protocol-invalid tool call to pi-agent:
+            // normalize it to an error terminal so the caller sees failure and
+            // no mutation tool can be executed from incomplete arguments.
+            const normalizedErrorMessage = assistantStreamError(input.model, terminalError);
+            downstream.push({
+              type: "error",
+              reason: normalizedErrorMessage.stopReason === "aborted" ? "aborted" : "error",
+              error: normalizedErrorMessage,
+            });
+            downstream.end(normalizedErrorMessage);
+            return;
+          }
+          const assistantOutput = JSON.stringify(event.message);
+          await writeFictionContentInvocationOutcome({
+            projectRoot: input.projectRoot,
+            prepared: input.prepared,
+            output: assistantOutput,
+          });
+          await input.onCompletedMessage?.(
+            input.prepared,
+            event.message,
+            assistantOutput,
+          );
+          downstream.push(event);
+          downstream.end(event.message);
+          return;
+        }
+        if (event.type === "error") {
+          terminalSeen = true;
+          outcomeAttempted = true;
+          await writeFictionContentInvocationOutcome({
+            projectRoot: input.projectRoot,
+            prepared: input.prepared,
+            error: providerStreamEventError(event),
+          });
+          const normalizedErrorMessage: AssistantMessage = {
+            ...event.error,
+            stopReason: event.reason,
+            errorMessage: event.error.errorMessage || `Provider stream ended with ${event.reason}.`,
+          };
+          downstream.push({ ...event, error: normalizedErrorMessage });
+          downstream.end(normalizedErrorMessage);
+          return;
+        }
+        downstream.push(event);
+      }
+      if (!terminalSeen) {
+        throw new Error("Provider stream ended without a terminal done/error event.");
+      }
+    } catch (error) {
+      let surfacedError = error;
+      if (!outcomeAttempted) {
+        outcomeAttempted = true;
+        try {
+          await writeFictionContentInvocationOutcome({
+            projectRoot: input.projectRoot,
+            prepared: input.prepared,
+            error,
+          });
+        } catch (outcomeError) {
+          surfacedError = new Error(
+            `Book agent stream failed and its immutable outcome could not be persisted: ${outcomeError instanceof Error ? outcomeError.message : String(outcomeError)}`,
+            { cause: error },
+          );
+        }
+      }
+      const message = assistantStreamError(input.model, surfacedError);
+      downstream.push({
+        type: "error",
+        reason: message.stopReason === "aborted" ? "aborted" : "error",
+        error: message,
+      });
+      downstream.end(message);
+    }
+  })();
+  return downstream;
+}
+
+async function governedBookAgentStream(input: {
+  readonly projectRoot: string;
+  readonly bookId: string;
+  readonly sessionKind: "book" | "edit";
+  readonly model: Model<Api>;
+  readonly context: PiContext;
+  readonly options?: SimpleStreamOptions;
+  readonly start: (context: PiContext) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
+  readonly onCompletedMessage?: (
+    prepared: PreparedFictionContentInvocation,
+    message: AssistantMessage,
+    assistantOutput: string,
+  ) => Promise<void>;
+}): Promise<AssistantMessageEventStream> {
+  if (input.options?.onPayload) {
+    return failedAssistantStream(
+      input.model,
+      new Error("Book agent sessions cannot use an unverified provider payload transformer."),
+    );
+  }
+
+  let prepared: PreparedFictionContentInvocation | null = null;
+  try {
+    prepared = await prepareFictionContentInvocation({
+      projectRoot: input.projectRoot,
+      bookId: input.bookId,
+      agentName: "book-agent-session",
+      stage: `agent-session:${input.sessionKind}`,
+      model: `${input.model.provider}:${input.model.id}`,
+      reasoningEffort: input.options?.reasoning,
+      messages: [{ role: "system", content: input.context.systemPrompt ?? "" }],
+      options: {
+        temperature: input.options?.temperature,
+        maxTokens: input.options?.maxTokens,
+      },
+      logicalRequestPayload: (governedMessages) => ({
+        transport: "pi-agent-stream",
+        model: serializablePiModel(input.model),
+        context: serializablePiContext(
+          input.context,
+          governedMessages.find((message) => message.role === "system")?.content ?? "",
+        ),
+        options: serializableStreamOptions(input.options),
+      }),
+    });
+    const governedSystemPrompt = prepared.messages
+      .find((message) => message.role === "system")?.content ?? "";
+    const upstream = await input.start({
+      ...input.context,
+      systemPrompt: governedSystemPrompt,
+    });
+    return proxyGovernedBookStream({
+      projectRoot: input.projectRoot,
+      model: input.model,
+      upstream,
+      prepared,
+      onCompletedMessage: input.onCompletedMessage,
+    });
+  } catch (error) {
+    if (prepared) {
+      try {
+        await writeFictionContentInvocationOutcome({
+          projectRoot: input.projectRoot,
+          prepared,
+          error,
+        });
+      } catch {
+        // The missing outcome itself is fail-closed evidence; surface the
+        // original provider/host error to the session.
+      }
+    }
+    return failedAssistantStream(input.model, error);
+  }
+}
+
 export function isTerminalProductionToolName(toolName: unknown): boolean {
   return toolName === "propose_action"
     || toolName === "sub_agent"
@@ -621,11 +930,8 @@ function lastAssistantMessage(messages: AgentMessage[]): AssistantMessage | unde
 }
 
 function assistantErrorMessage(message: AssistantMessage | undefined): string | undefined {
-  return message &&
-    (message.stopReason === "error" || message.stopReason === "aborted") &&
-    message.errorMessage
-      ? message.errorMessage
-      : undefined;
+  if (!message) return undefined;
+  return terminalAssistantMessageError(message)?.message;
 }
 
 function convertAgentMessagesForModel(messages: AgentMessage[], model: Model<Api>): Message[] {
@@ -1173,6 +1479,34 @@ async function runAgentSessionUnlocked(
       requestedSkillIds: () => [...turnSkillIds],
     });
     const codexRequestState = { calls: 0 };
+    const authorizedMutationCalls = new Map<string, {
+      readonly prepared: PreparedFictionContentInvocation;
+      readonly authorization: FictionContentToolAuthorization;
+      readonly assistantOutput: string;
+    }>();
+    const authorizeCompletedMutationCalls = async (
+      prepared: PreparedFictionContentInvocation,
+      message: AssistantMessage,
+      assistantOutput: string,
+    ): Promise<void> => {
+      const toolCalls = message.content.filter((content): content is Extract<
+        AssistantMessage["content"][number],
+        { type: "toolCall" }
+      > => content.type === "toolCall" && PRODUCTION_MUTATION_TOOL_NAMES.has(content.name));
+      const authorizations = await authorizeFictionContentToolCalls({
+        projectRoot,
+        prepared,
+        assistantOutput,
+        toolCalls,
+      });
+      toolCalls.forEach((toolCall, index) => {
+        authorizedMutationCalls.set(toolCall.id, {
+          prepared,
+          authorization: authorizations[index]!,
+          assistantOutput,
+        });
+      });
+    };
     const agent = new Agent({
       initialState: {
         model,
@@ -1194,17 +1528,89 @@ async function runAgentSessionUnlocked(
           terminalToolResultTail = false;
           return localAssistantStopStream(streamModel);
         }
-        if (isLlmStubEnabled()) return stubAgentStream(streamModel, context);
-        if (streamModel.provider === "codex-cli") {
-          codexRequestState.calls += 1;
-          if (codexRequestState.calls > CODEX_MAX_TOOL_ROUNDS) {
-            throw new Error(
-              `Codex stopped after ${CODEX_MAX_TOOL_ROUNDS} model/tool rounds in one InkOS request`,
-            );
-          }
-          return codexCliAgentStream(streamModel, context, options);
+        const governedBookSession = isGovernedBookSession(bookId, sessionKind);
+        if (isLlmStubEnabled()) {
+          if (!governedBookSession) return stubAgentStream(streamModel, context);
+          return governedBookAgentStream({
+            projectRoot,
+            bookId,
+            sessionKind: sessionKind as "book" | "edit",
+            model: streamModel,
+            context,
+            options,
+            start: () => {
+              throw new Error(
+                "INKOS_AGENT_LLM_STUB cannot execute a Book/edit session or satisfy production evidence.",
+              );
+            },
+          });
         }
-        return guardedStreamSimple(streamModel, context, options);
+        const start = (governedContext: PiContext): AssistantMessageEventStream => {
+          if (streamModel.provider === "codex-cli") {
+            codexRequestState.calls += 1;
+            if (codexRequestState.calls > CODEX_MAX_TOOL_ROUNDS) {
+              throw new Error(
+                `Codex stopped after ${CODEX_MAX_TOOL_ROUNDS} model/tool rounds in one InkOS request`,
+              );
+            }
+            return codexCliAgentStream(streamModel, governedContext, options);
+          }
+          return guardedStreamSimple(streamModel, governedContext, options);
+        };
+        if (governedBookSession) {
+          return governedBookAgentStream({
+            projectRoot,
+            bookId,
+            sessionKind: sessionKind as "book" | "edit",
+            model: streamModel,
+            context,
+            options,
+            start,
+            onCompletedMessage: authorizeCompletedMutationCalls,
+          });
+        }
+        return start(context);
+      },
+      beforeToolCall: async ({ assistantMessage, toolCall, args }) => {
+        if (
+          !isGovernedBookSession(bookId, sessionKind)
+          || !PRODUCTION_MUTATION_TOOL_NAMES.has(toolCall.name)
+        ) {
+          return undefined;
+        }
+        const authorized = authorizedMutationCalls.get(toolCall.id);
+        authorizedMutationCalls.delete(toolCall.id);
+        if (!authorized) {
+          return {
+            block: true,
+            reason: "Blocked: Book mutation has no completed host contract receipt.",
+          };
+        }
+        if (hashCanonicalJson(toolCall.arguments) !== hashCanonicalJson(args)) {
+          return {
+            block: true,
+            reason: "Blocked: validated Book mutation arguments differ from the authorized model output.",
+          };
+        }
+        try {
+          await verifyFictionContentToolAuthorization({
+            projectRoot,
+            prepared: authorized.prepared,
+            authorization: authorized.authorization,
+            assistantOutput: JSON.stringify(assistantMessage),
+            toolCall: {
+              id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+            },
+          });
+        } catch (error) {
+          return {
+            block: true,
+            reason: `Blocked: Book mutation authorization failed (${error instanceof Error ? error.message : String(error)}).`,
+          };
+        }
+        return undefined;
       },
       getApiKey: (provider: string) => {
         if (config.apiKey) return config.apiKey;

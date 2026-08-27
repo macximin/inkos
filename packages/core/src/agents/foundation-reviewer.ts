@@ -8,12 +8,15 @@ export interface FoundationReviewResult {
     readonly name: string;
     readonly score: number;
     readonly feedback: string;
+    readonly evidenceQuote?: string;
+    /** Only evidence-bound, content-neutral defects may drive regeneration. */
+    readonly gating: boolean;
+    readonly contentNeutralized?: boolean;
   }>;
   readonly overallFeedback: string;
 }
 
 const PASS_THRESHOLD = 80;
-const DIMENSION_FLOOR = 60;
 
 export class FoundationReviewerAgent extends BaseAgent {
   get name(): string {
@@ -56,7 +59,11 @@ export class FoundationReviewerAgent extends BaseAgent {
       { role: "user", content: userPrompt },
     ], { temperature: 0.3 });
 
-    return this.parseReviewResult(response.content, dimensions, params.language === "ko" ? 70 : DIMENSION_FLOOR);
+    return this.parseReviewResult(
+      response.content,
+      dimensions,
+      userPrompt,
+    );
   }
 
   private originalDimensions(language: "zh" | "ko" | "en", targetChapters?: number): ReadonlyArray<string> {
@@ -143,14 +150,18 @@ ${dimensions.map((dim, i) => `${i + 1}. ${dim}`).join("\n")}
 - 80+ 通过，可以开始写作
 - 60-79 有明显问题，需要修改
 - <60 方向性错误，需要重新设计
+- 没有额外代价、内在成长、惩罚、反省或赎罪本身不是缺陷。只有用户/正典明确要求而遗漏，或既定人物与事件因果因此断裂时才扣分；不得把道德纠正写进修改意见。
+- 分数低于 80 时，依据必须逐字引用下方基础设定；没有精确引文的低分只会作为诊断，不会触发重生成。
 
 ## 输出格式（严格遵守）
 === DIMENSION: 1 ===
 分数：{0-100}
+依据：{低于80分时逐字引用基础设定；否则写无}
 意见：{具体反馈}
 
 === DIMENSION: 2 ===
 分数：{0-100}
+依据：{低于80分时逐字引用基础设定；否则写无}
 意见：{具体反馈}
 
 ...（每个维度一个 block）
@@ -179,14 +190,18 @@ ${dimensions.map((dim, i) => `${i + 1}. ${dim}`).join("\n")}
 - 80+ Pass — ready to write
 - 60-79 Needs revision
 - <60 Fundamental direction problem
+- The absence of extra cost, internal growth, punishment, remorse, or redemption is not a defect. Score it down only when the user/canon explicitly requires the beat or established character/event causality breaks without it; never prescribe moral correction as revision feedback.
+- For any score below 80, Evidence must quote the supplied foundation verbatim. An unsupported low score remains diagnostic and cannot trigger regeneration.
 
 ## Output format (strict)
 === DIMENSION: 1 ===
 Score: {0-100}
+Evidence: {exact foundation quote when below 80; otherwise NONE}
 Feedback: {specific feedback}
 
 === DIMENSION: 2 ===
 Score: {0-100}
+Evidence: {exact foundation quote when below 80; otherwise NONE}
 Feedback: {specific feedback}
 
 ...
@@ -218,15 +233,19 @@ ${dimensions.map((dim, i) => `${i + 1}. ${dim}`).join("\n")}
 - 70점 미만: 한국어 창작 경로의 품질 문턱 미달
 - 설정의 앞뒤가 맞는 것만으로 점수를 주지 마세요. 독자가 다음 화를 누를 사건과 보상이 없으면 낮게 평가하세요.
 - '구조가 전진한다', '관계가 이동한다' 같은 추상 표현을 구체적인 인물 행동으로 바꿀 수 없다면 문체 항목을 통과시키지 마세요.
+- 추가 대가·내적 성장·처벌·반성·속죄가 없다는 이유만으로 감점하거나 수정 요구를 만들지 마세요. 사용자/정본이 명시했는데 빠졌거나 확정된 인물·사건 인과가 끊길 때만 문제이며, 도덕적 교정을 기획에 덧붙이지 않습니다.
+- 80점 미만은 아래 기획 원문을 근거에 정확히 인용해야 합니다. 정확한 인용이 없는 저점은 진단으로만 남고 재생성을 일으키지 않습니다.
 
 ## 출력 형식
 
 === DIMENSION: 1 ===
 점수: {0-100}
+근거: {80점 미만이면 기획 원문을 그대로 인용; 아니면 없음}
 의견: {구체적인 근거와 수정 방향}
 
 === DIMENSION: 2 ===
 점수: {0-100}
+근거: {80점 미만이면 기획 원문을 그대로 인용; 아니면 없음}
 의견: {구체적인 근거와 수정 방향}
 
 각 항목을 같은 형식으로 빠짐없이 출력하세요.
@@ -251,33 +270,98 @@ ${canonBlock}${styleBlock}
   private parseReviewResult(
     content: string,
     dimensions: ReadonlyArray<string>,
-    dimensionFloor = DIMENSION_FLOOR,
+    foundationSource = "",
   ): FoundationReviewResult {
-    const parsedDimensions: Array<{ readonly name: string; readonly score: number; readonly feedback: string }> = [];
+    const parsedDimensions: Array<FoundationReviewResult["dimensions"][number]> = [];
 
     for (let i = 0; i < dimensions.length; i++) {
-      const regex = new RegExp(
-        `=== DIMENSION: ${i + 1} ===\\s*[\\s\\S]*?(?:점수|分数|Score)[：:]\\s*(\\d+)[\\s\\S]*?(?:의견|意见|Feedback)[：:]\\s*([\\s\\S]*?)(?==== |$)`,
-      );
-      const match = content.match(regex);
+      const block = content.match(new RegExp(
+        `=== DIMENSION: ${i + 1} ===([\\s\\S]*?)(?==== |$)`,
+      ))?.[1];
+      if (!block) {
+        throw new Error(`Foundation review is missing dimension ${i + 1}.`);
+      }
+      const scoreMatch = block.match(/(?:점수|分数|Score)[：:]\s*(\d+)/i);
+      const rawScore = scoreMatch ? Number.parseInt(scoreMatch[1]!, 10) : Number.NaN;
+      if (!Number.isInteger(rawScore) || rawScore < 0 || rawScore > 100) {
+        throw new Error(`Foundation review dimension ${i + 1} has no valid 0-100 score.`);
+      }
+      const evidenceMatch = block.match(/(?:근거|依据|Evidence)[：:]\s*([^\n]*)/i);
+      if (rawScore < PASS_THRESHOLD && !evidenceMatch) {
+        throw new Error(`Foundation review dimension ${i + 1} is missing low-score evidence.`);
+      }
+      const rawEvidence = evidenceMatch?.[1]?.trim() ?? "";
+      const evidenceQuote = normalizeFoundationEvidenceQuote(rawEvidence);
+      const feedback = block.match(/(?:의견|意见|Feedback)[：:]\s*([\s\S]*?)$/i)?.[1]?.trim();
+      if (!feedback) {
+        throw new Error(`Foundation review dimension ${i + 1} is missing feedback.`);
+      }
+      const contentNeutralized = isFoundationContentAcceptabilityFeedback(feedback);
+      const evidenceBound = rawScore >= PASS_THRESHOLD
+        || Boolean(evidenceQuote && evidenceQuote.length >= 8 && foundationSource.includes(evidenceQuote));
+      // Exact quotation proves only that the source bytes exist. It does not
+      // prove the reviewer's asserted defect or justify automatic regeneration.
+      // All subjective LLM scores remain diagnostic/HIL-only.
+      const gating = false;
       parsedDimensions.push({
         name: dimensions[i]!,
-        score: match ? parseInt(match[1]!, 10) : 50,
-        feedback: match ? match[2]!.trim() : "(parse failed)",
+        score: contentNeutralized || !evidenceBound
+          ? Math.max(rawScore, PASS_THRESHOLD)
+          : rawScore,
+        feedback: contentNeutralized
+          ? "Content-neutralized by host; excluded from regeneration."
+          : feedback,
+        ...(evidenceQuote ? { evidenceQuote } : {}),
+        gating,
+        ...(contentNeutralized ? { contentNeutralized: true } : {}),
       });
     }
 
     const totalScore = parsedDimensions.length > 0
       ? Math.round(parsedDimensions.reduce((sum, d) => sum + d.score, 0) / parsedDimensions.length)
       : 0;
-    const anyBelowFloor = parsedDimensions.some((d) => d.score < dimensionFloor);
-    const passed = totalScore >= PASS_THRESHOLD && !anyBelowFloor;
+    // A structurally parsed review is safe to continue. LLM score/feedback is
+    // still surfaced, but only deterministic host checks may block or mutate.
+    const passed = true;
 
     const overallMatch = content.match(
       /=== OVERALL ===[\s\S]*?(?:총평|总评|Summary)[：:]\s*([\s\S]*?)$/,
     );
-    const overallFeedback = overallMatch ? overallMatch[1]!.trim() : "(parse failed)";
+    if (!overallMatch?.[1]?.trim()) {
+      throw new Error("Foundation review is missing the overall summary.");
+    }
+    const overallFeedback = sanitizeFoundationOverallFeedback(overallMatch[1]);
 
     return { passed, totalScore, dimensions: parsedDimensions, overallFeedback };
   }
+}
+
+const FOUNDATION_TRANSGRESSION = /(?:crime|criminal|fraud|murder|violence|abuse|exploitation|betrayal|immoral|unethical|offensive|범죄|범죄자|사기|살인|폭력|학대|착취|배신|비도덕|비윤리|불쾌|犯罪|罪犯|欺诈|谋杀|暴力|虐待|剥削|背叛|不道德|不伦理|冒犯)/i;
+const FOUNDATION_NORMATIVE_RESPONSE = /(?:condemn|punish|remorse|repent|apologi[sz]e|redempt|rehabilitat|atonement|accountab|moral (?:lesson|growth|cost)|narrative closure|reader trust|audience trust|harmful depiction|problematic|glorif|normaliz|규탄|비난|처벌|반성|회개|사과|속죄|갱생|응보|도덕적 (?:교훈|성장|대가)|서사적 종결|독자 신뢰|유해한 묘사|문제적|미화|정당화|谴责|批判|惩罚|反省|悔过|道歉|赎罪|改造|报应|道德(?:教训|成长|代价)|叙事闭合|读者信任|有害描写|有问题|美化|合理化)/i;
+const FOUNDATION_REPRESENTATION_OBJECTION = /(?:representation|diversity|demographic balance|independent female role|marriage reward|romantic reward|대표성|다양성|인구학적 균형|여성 독립 역할|결혼 보상|연애 보상|代表性|多样性|人口平衡|女性独立角色|婚姻奖励|恋爱奖励)/i;
+
+function isFoundationContentAcceptabilityFeedback(feedback: string): boolean {
+  const normalized = feedback.normalize("NFKC");
+  return FOUNDATION_REPRESENTATION_OBJECTION.test(normalized)
+    || (FOUNDATION_TRANSGRESSION.test(normalized) && FOUNDATION_NORMATIVE_RESPONSE.test(normalized))
+    || /(?:must|should|needs? to|반드시|해야|필요|必须|应该)[^.!?。！？\n]{0,64}(?:punish|repent|apologi[sz]e|redeem|atone|처벌|반성|사과|속죄|갱생|惩罚|反省|道歉|赎罪|改造)/i.test(normalized);
+}
+
+function normalizeFoundationEvidenceQuote(value: string): string | undefined {
+  const normalized = value.trim().replace(/^(["'`“”‘’「」『』]+)|(["'`“”‘’「」『』]+)$/g, "").trim();
+  if (!normalized || /^(?:none|null|없음|无|无依据|해당 없음)$/i.test(normalized)) return undefined;
+  return normalized;
+}
+
+function sanitizeFoundationOverallFeedback(feedback: string): string {
+  const normalized = feedback.normalize("NFKC");
+  const segments = normalized.match(/[^.!?。！？\n]+[.!?。！？]?|\n/g) ?? [normalized];
+  const kept = segments
+    .filter((segment) => segment === "\n" || !isFoundationContentAcceptabilityFeedback(segment))
+    .join("")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return kept || "Content-neutralized by host; no regeneration instruction retained.";
 }

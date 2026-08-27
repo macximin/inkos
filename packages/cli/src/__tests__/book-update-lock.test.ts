@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,18 @@ describe("inkos book update locking", () => {
       createdAt: "2026-08-09T00:00:00.000Z",
       updatedAt: "2026-08-09T00:00:00.000Z",
     });
+    const bookDir = join(projectRoot, "books", "demo-book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(join(bookDir, "chapters"), { recursive: true });
+    await mkdir(storyDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8"),
+      writeFile(join(storyDir, "book_rules.md"), "# Book Rules\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(bookDir, "chapters", "index.json"), "[]", "utf-8"),
+    ]);
   });
 
   afterEach(async () => {

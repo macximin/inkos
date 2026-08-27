@@ -1,11 +1,10 @@
 /**
- * Sensitive word detection — rule-based analysis (no LLM).
+ * Publication-compatibility detection — rule-based analysis (no LLM).
  *
- * Detects politically sensitive, sexually explicit, and extremely violent terms
- * in Chinese web novel content. Used in audit pipeline to flag or block content.
+ * Detects terms that a downstream publishing platform may flag or block. This
+ * report is advisory metadata. It is not a creative verdict and must not be
+ * used to rewrite private fiction automatically.
  */
-
-import type { AuditIssue } from "./continuity.js";
 
 export interface SensitiveWordMatch {
   readonly word: string;
@@ -13,8 +12,22 @@ export interface SensitiveWordMatch {
   readonly severity: "block" | "warn";
 }
 
+/**
+ * Deliberately not assignable to AuditIssue. Publication screening is an
+ * export-time compatibility report, not a creative-review issue, so its
+ * severity vocabulary cannot accidentally enter audit/revision gates.
+ */
+export interface PublicationCompatibilityIssue {
+  readonly track: "publication-compatibility";
+  readonly severity: "block" | "warn";
+  readonly category: string;
+  readonly description: string;
+  readonly suggestion: string;
+}
+
 export interface SensitiveWordResult {
-  readonly issues: ReadonlyArray<AuditIssue>;
+  readonly track: "publication-compatibility";
+  readonly issues: ReadonlyArray<PublicationCompatibilityIssue>;
   readonly found: ReadonlyArray<SensitiveWordMatch>;
 }
 
@@ -64,8 +77,11 @@ const WORD_LISTS: ReadonlyArray<WordListEntry> = [
 ];
 
 /**
- * Analyze text content for sensitive words.
- * Returns issues that can be merged into audit results.
+ * Analyze text content for publication-compatibility terms.
+ *
+ * `issues` intentionally uses a publication-only shape and `block`/`warn`
+ * severities. Callers must keep this result outside creative pass/fail,
+ * scoring, canon, and revision.
  */
 export function analyzeSensitiveWords(
   content: string,
@@ -73,7 +89,7 @@ export function analyzeSensitiveWords(
   language: SensitiveWordLanguage = "zh",
 ): SensitiveWordResult {
   const found: SensitiveWordMatch[] = [];
-  const issues: AuditIssue[] = [];
+  const issues: PublicationCompatibilityIssue[] = [];
   const isEnglish = language !== "zh";
   const isKorean = language === "ko";
   const joiner = isEnglish ? ", " : "、";
@@ -85,8 +101,9 @@ export function analyzeSensitiveWords(
       found.push(...matches);
       const wordSummary = matches.map((m) => `"${m.word}"×${m.count}`).join(joiner);
       issues.push({
-        severity: list.severity === "block" ? "critical" : "warning",
-        category: isKorean ? "민감 표현" : isEnglish ? "Sensitive terms" : "敏感词",
+        track: "publication-compatibility",
+        severity: list.severity,
+        category: isKorean ? "공개 호환성" : isEnglish ? "Publication compatibility" : "发布兼容性",
         description: isKorean
           ? `${list.koreanLabel} 감지: ${wordSummary}`
           : isEnglish
@@ -94,15 +111,15 @@ export function analyzeSensitiveWords(
           : `检测到${list.label}：${wordSummary}`,
         suggestion: isKorean
           ? (list.severity === "block"
-              ? "공개 전에 차단 대상 표현을 삭제하거나 바꾸세요."
-              : "플랫폼 검수 위험을 줄이려면 해당 표현을 완화하거나 바꾸세요.")
+              ? "일부 공개 플랫폼에서 차단될 수 있습니다. 원고는 자동 변경되지 않습니다."
+              : "일부 공개 플랫폼의 검수 대상이 될 수 있습니다. 원고는 자동 변경되지 않습니다.")
           : isEnglish
           ? (list.severity === "block"
-              ? "You must remove or replace these blocked terms before publication"
-              : `Replace or soften these ${list.englishLabel} to reduce moderation risk`)
+              ? "A publishing platform may block these terms. The manuscript is not changed automatically."
+              : `A publishing platform may review these ${list.englishLabel}. The manuscript is not changed automatically.`)
           : (list.severity === "block"
-              ? "必须删除或替换政治敏感词，否则无法发布"
-              : `建议替换或弱化${list.label}，避免平台审核问题`),
+              ? "发布平台可能拦截这些词；正文不会被自动修改。"
+              : `发布平台可能审核这些${list.label}；正文不会被自动修改。`),
       });
     }
   }
@@ -114,23 +131,24 @@ export function analyzeSensitiveWords(
       found.push(...customMatches);
       const wordSummary = customMatches.map((m) => `"${m.word}"×${m.count}`).join(joiner);
       issues.push({
-        severity: "warning",
-        category: isKorean ? "민감 표현" : isEnglish ? "Sensitive terms" : "敏感词",
+        track: "publication-compatibility",
+        severity: "warn",
+        category: isKorean ? "공개 호환성" : isEnglish ? "Publication compatibility" : "发布兼容性",
         description: isKorean
           ? `사용자 지정 민감 표현 감지: ${wordSummary}`
           : isEnglish
           ? `Detected custom sensitive term(s): ${wordSummary}`
           : `检测到自定义敏感词：${wordSummary}`,
         suggestion: isKorean
-          ? "프로젝트 규칙에 따라 해당 표현을 바꾸거나 삭제하세요."
+          ? "프로젝트의 공개 호환성 규칙과 대조하세요. 원고는 자동 변경되지 않습니다."
           : isEnglish
-          ? "Replace or remove these terms according to project rules"
-          : "根据项目规则替换或删除这些词语",
+          ? "Compare these terms with the project's publication rules. The manuscript is not changed automatically."
+          : "请对照项目的发布规则检查这些词；正文不会被自动修改。",
       });
     }
   }
 
-  return { issues, found };
+  return { track: "publication-compatibility", issues, found };
 }
 
 function scanWords(

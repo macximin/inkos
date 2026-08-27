@@ -232,20 +232,24 @@ describe("Phase 5 hotfix 1 — Studio truth file endpoints", () => {
     expect(body.content).toContain("核心标签");
   });
 
-  it("tags legacy shim files (story_bible.md, book_rules.md) with legacy: true on GET for new-layout book", async () => {
-    // New-layout book: outline/story_frame.md must exist for shims to be tagged
+  it("tags story_bible as a shim while exposing BookRules as provenance-managed authority", async () => {
+    // New-layout book: outline/story_frame.md makes story_bible a shim.
     await writeFile(join(storyDir, "outline/story_frame.md"), "# Frame", "utf-8");
     await writeFile(join(storyDir, "story_bible.md"), "# Legacy bible shim", "utf-8");
     await writeFile(join(storyDir, "book_rules.md"), "# Legacy rules shim", "utf-8");
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
-    for (const file of ["story_bible.md", "book_rules.md"]) {
-      const res = await app.request(`http://localhost/api/v1/books/hotfix-book/truth/${file}`);
-      expect(res.status).toBe(200);
-      const body = await res.json() as { legacy?: boolean };
-      expect(body.legacy).toBe(true);
-    }
+    const bibleRes = await app.request("http://localhost/api/v1/books/hotfix-book/truth/story_bible.md");
+    expect(bibleRes.status).toBe(200);
+    await expect(bibleRes.json()).resolves.toMatchObject({ legacy: true });
+
+    const rulesRes = await app.request("http://localhost/api/v1/books/hotfix-book/truth/book_rules.md");
+    expect(rulesRes.status).toBe(200);
+    await expect(rulesRes.json()).resolves.toMatchObject({
+      readonly: true,
+      readonlyReason: "book-rule-provenance",
+    });
   });
 
   it("rejects path traversal attempts (..)", async () => {
@@ -284,8 +288,7 @@ describe("Phase 5 hotfix 1 — Studio truth file endpoints", () => {
     expect(response3.status).toBe(400);
   });
 
-  it("refuses to PUT legacy shim files (story_bible.md / book_rules.md) for new-layout book", async () => {
-    // New-layout book: outline/story_frame.md must exist for PUT rejection
+  it("refuses raw PUT for provenance-managed book_rules.md", async () => {
     await writeFile(join(storyDir, "outline/story_frame.md"), "# Frame", "utf-8");
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
@@ -300,7 +303,7 @@ describe("Phase 5 hotfix 1 — Studio truth file endpoints", () => {
     );
     expect(response.status).toBe(400);
     const body = await response.json() as { error: string };
-    expect(body.error).toMatch(/Legacy compat shim/);
+    expect(body.error).toMatch(/provenance-aware foundation revision/);
   });
 
   it("writes outline/story_frame.md via PUT", async () => {
@@ -388,13 +391,23 @@ describe("Phase 5 hotfix 1 — Studio truth file endpoints", () => {
 
     const response = await app.request("http://localhost/api/v1/books/hotfix-book/truth");
     expect(response.status).toBe(200);
-    const body = await response.json() as { files: ReadonlyArray<{ name: string; legacy?: true }> };
+    const body = await response.json() as {
+      files: ReadonlyArray<{
+        name: string;
+        legacy?: true;
+        readonly?: true;
+        readonlyReason?: string;
+      }>;
+    };
     const names = body.files.map((f) => f.name).sort();
     expect(names).toContain("outline/story_frame.md");
     expect(names).toContain("outline/volume_map.md");
     expect(names).toContain("roles/主要角色/主角甲.md");
     expect(names).toContain("roles/次要角色/朋友乙.md");
     const shimEntry = body.files.find((f) => f.name === "book_rules.md");
-    expect(shimEntry?.legacy).toBe(true);
+    expect(shimEntry).toMatchObject({
+      readonly: true,
+      readonlyReason: "book-rule-provenance",
+    });
   });
 });

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ArchitectAgent,
+  findUnauthorizedMandatoryMoralCorrections,
+  findUnauthorizedMandatoryMoralCorrectionsInText,
+  isExactTextAuthorizedBySources,
   resolveFutureAdvantageFoundationMode,
 } from "../agents/architect.js";
 import type { BookConfig } from "../models/book.js";
@@ -119,9 +122,529 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).not.toContain("얻은 것 때문에 생긴 새 문제");
     expect(messages[0]?.content).not.toContain("첫 30화의 보상 간격은 숫자로 적습니다");
     expect(messages[0]?.content).toContain("추상어가 스스로 움직이게 쓰지 않습니다");
+    expect(messages[0]?.content).toContain("변화 없음과 대가 없음도 합법");
+    expect(messages[0]?.content).toContain("범죄·비도덕적 선택을 했다는 이유만으로 반성·개심·속죄를 만들지 않습니다");
+    expect(messages[0]?.content).toContain("사용자 지시나 기존 Book 정본에서 확인되는 금지만");
+    expect(messages[0]?.content).not.toContain("어떤 대가를 치렀는지 적습니다");
+    expect(messages[0]?.content).not.toContain("작품이 편해져도 시키지 않을 행동");
     expect(messages[0]?.content).not.toContain("전경_배경_이야기");
     expect(messages[0]?.content).not.toContain("You are the architect of this book");
     expect(messages[1]?.content).toBe("제목이 \"IMF를 독식한 재벌 3세\"인 urban 장편소설의 전체 작품 기반을 한국어로 생성하세요.");
+  });
+
+  it("flags unrequested mandatory moral correction across every production-steering foundation surface", () => {
+    const output = {
+      storyBible: "The crime cannot go unpunished.",
+      volumeOutline: "The victory must not end without a moral consequence.",
+      bookRules: "## 금지 사항\n- 죄의 값을 치르다.",
+      currentState: "",
+      pendingHooks: "| H009 | 결말 | 대가 없는 승리로 끝나서는 안 된다. |",
+      storyFrame: "그의 범죄는 성공한다. 그러나 결말에서는 반드시 반성하고 속죄해야 한다.",
+      volumeMap: "罪行不能不受惩罚。",
+      rhythmPrinciples: "不能以毫无代价的胜利收场。",
+      roles: [{
+        tier: "major" as const,
+        name: "한도경",
+        content: "He must pay for his crimes.",
+      }],
+    };
+
+    const findings = findUnauthorizedMandatoryMoralCorrections(output);
+    expect(findings).toEqual(expect.arrayContaining([
+      "그러나 결말에서는 반드시 반성하고 속죄해야 한다.",
+      "The crime cannot go unpunished.",
+      "The victory must not end without a moral consequence.",
+      "He must pay for his crimes.",
+      "- 죄의 값을 치르다.",
+      "| H009 | 결말 | 대가 없는 승리로 끝나서는 안 된다.",
+      "罪行不能不受惩罚。",
+      "不能以毫无代价的胜利收场。",
+    ]));
+  });
+
+  it("preserves concrete causal consequences and exact owner/canon-authorized moral events", () => {
+    const output = {
+      storyBible: "법원이 증거를 채택해 징역 3년을 선고하고, 그는 수감된다.",
+      volumeOutline: "The witness testimony leads to arrest and a prison sentence.",
+      bookRules: "## 세계 법칙\n- 계약 위반 시 담보권이 실행된다.",
+      currentState: "",
+      pendingHooks: "",
+      storyFrame: "결말에서는 반드시 반성하고 속죄해야 한다.",
+      roles: [],
+    };
+    expect(findUnauthorizedMandatoryMoralCorrections(
+      output,
+      "결말에서는 반드시 반성하고 속죄해야 한다.",
+    )).toEqual([]);
+  });
+
+  it("blocks whitespace and accountability aliases without treating causal consequences as moral quotas", () => {
+    const base = {
+      storyBible: "",
+      volumeOutline: "",
+      bookRules: "",
+      currentState: "",
+      pendingHooks: "",
+      roles: [],
+    };
+    for (const storyFrame of [
+      "He must\nbe punished for his crimes.",
+      "He must ultimately face accountability for his crimes.",
+      "The story ensures that his crimes receive a reckoning.",
+      "He must be _punished_ for his crimes.",
+      "He must be<br>punished for his crimes.",
+    ]) {
+      expect(findUnauthorizedMandatoryMoralCorrections({ ...base, storyFrame }))
+        .not.toEqual([]);
+    }
+
+    expect(findUnauthorizedMandatoryMoralCorrections({
+      ...base,
+      storyFrame: "The forged transfer leaves a paper trail; investigators arrest him under the statute, and the board removes him under the bylaws.",
+    })).toEqual([]);
+    expect(findUnauthorizedMandatoryMoralCorrections({
+      ...base,
+      storyFrame: "결말에서 그는 범죄 책임을 밝히기 위해 장부를 법원에 제출한다.",
+    })).toEqual([]);
+    expect(findUnauthorizedMandatoryMoralCorrections({
+      ...base,
+      storyFrame: "The story requires investigators to establish accountability for the fraud through bank records and sworn testimony.",
+    })).toEqual([]);
+  });
+
+  it("blocks justice and ruin aliases in EN, KO, and ZH while preserving concrete causality", () => {
+    const base = {
+      storyBible: "",
+      volumeOutline: "",
+      bookRules: "",
+      currentState: "",
+      pendingHooks: "",
+      roles: [],
+    };
+    const mandates = [
+      "The story must ensure that the fraudster faces justice for his crimes.",
+      "The protagonist must answer for his crimes before the ending.",
+      "The story must explicitly condemn the protagonist for his crimes.",
+      "The narrative should make clear that his criminal conduct is wrong.",
+      "The protagonist must not be rewarded for his crimes.",
+      "The ending must provide moral balance after the protagonist commits fraud.",
+      "The chapter must show a safer alternative to the protagonist’s violent solution.",
+      "The story should avoid normalizing or glorifying the protagonist’s abuse.",
+      "The chapter must include diverse representation.",
+      "Female characters must have agency and a positive portrayal.",
+      "Queer characters must have agency and must not be portrayed negatively.",
+      "Minority characters must be portrayed positively.",
+      "Avoid stereotypes and offensive language.",
+      "The villain must not belong to a protected group.",
+      "The story must balance every male viewpoint with a female viewpoint.",
+      "Ensure the cast is diverse.",
+      "Include at least one woman, one queer character, and one racial minority in every arc.",
+      "Every chapter requires inclusive representation.",
+      "All female leads should be empowered and sympathetic.",
+      "No protected-group character may be portrayed as evil.",
+      "The antagonist cannot be gay.",
+      "The narrative may not use offensive language or perpetuate harmful stereotypes.",
+      "사기꾼 주인공은 결말에서 반드시 파멸해야 한다.",
+      "범죄를 저지른 주인공이 무사히 승리하게 두지 않는다.",
+      "범죄를 저지른 주인공을 서사가 반드시 비판해야 한다.",
+      "주인공의 폭력을 미화하거나 정상화해서는 안 된다.",
+      "결말은 반드시 도덕적 균형을 회복해야 한다.",
+      "이번 화에는 반드시 다양한 대표성을 포함한다.",
+      "모든 회차에 여성 인물을 최소 한 명씩 포함해야 한다.",
+      "각 화마다 여성 인물을 하나 이상 배치한다.",
+      "소수자 캐릭터는 악역으로 설정하지 않는다.",
+      "여성 캐릭터는 항상 주체적으로 묘사할 것.",
+      "모든 남성 시점에는 여성 시점을 균형 있게 붙인다.",
+      "여성 인물에게는 반드시 주도성과 긍정적 묘사를 부여한다.",
+      "퀴어 인물은 부정적으로 묘사해서는 안 된다.",
+      "고정관념과 불쾌감을 줄 수 있는 표현을 피한다.",
+      "악역은 소수자 집단에 속하면 안 된다.",
+      "각 회차마다 여성, 퀴어, 소수자 인물을 최소 한 명씩 넣는다.",
+      "등장인물 구성을 다양하게 유지해야 한다.",
+      "여성 주연은 모두 주체적이고 호감 가게 묘사한다.",
+      "소수자 인물을 악인으로 묘사하지 않는다.",
+      "악역을 성소수자로 설정하면 안 된다.",
+      "매 회차 포용적 대표성을 확보한다.",
+      "故事必须让作恶的主角最终接受正义审判。",
+      "故事必须明确谴责主角的犯罪行为。",
+      "叙事不得美化或正常化主角的暴力。",
+      "结局必须恢复道德平衡。",
+      "本章必须包含多元代表性。",
+      "女性角色必须有能动性并得到正面描写。",
+      "酷儿角色不得被负面描写。",
+      "避免刻板印象和冒犯性语言。",
+      "反派不得属于受保护群体。",
+      "每章至少加入一名女性、一名酷儿和一名少数族裔角色。",
+      "确保角色阵容多元化。",
+      "所有女性主角都应当坚强、讨喜。",
+      "不得把少数群体角色描写成恶人。",
+      "反派不能是同性恋。",
+    ];
+    for (const storyFrame of mandates) {
+      expect(findUnauthorizedMandatoryMoralCorrections({ ...base, storyFrame }))
+        .not.toEqual([]);
+    }
+
+    for (const storyFrame of [
+      "Bank records prove the fraud, so the court convicts him under the statute.",
+      "분식회계가 드러나 거래처가 계약을 해지했고, 회사는 파산해 주인공도 몰락한다.",
+      "证据确凿后，法院依法判决，主角因合同违约失去公司控制权。",
+    ]) {
+      expect(findUnauthorizedMandatoryMoralCorrections({ ...base, storyFrame }))
+        .toEqual([]);
+    }
+
+    for (const storyFrame of mandates) {
+      expect(findUnauthorizedMandatoryMoralCorrections(
+        { ...base, storyFrame },
+        [{ kind: "persisted-book-canon", text: storyFrame }],
+      )).toEqual([]);
+    }
+  });
+
+  it("does not treat dismissed or vetoed authority mentions as positive adoption", () => {
+    const base = {
+      storyBible: "",
+      volumeOutline: "",
+      bookRules: "",
+      currentState: "",
+      pendingHooks: "",
+      roles: [],
+    };
+    const en = "The story must ensure that the fraudster faces justice for his crimes.";
+    const ko = "사기꾼 주인공은 결말에서 반드시 파멸해야 한다.";
+    const zh = "故事必须让作恶的主角最终接受正义审判。";
+    const cases = [
+      { storyFrame: en, authority: `Reviewer dismissed this requirement: ${en}` },
+      { storyFrame: en, authority: `The owner vetoed this rule: ${en}` },
+      { storyFrame: en, authority: `${en} was vetoed.` },
+      { storyFrame: en, authority: `The owner never approved this rule: ${en}` },
+      { storyFrame: en, authority: `The owner said this was not canon: ${en}` },
+      { storyFrame: ko, authority: `검토자가 다음 요구를 기각했다: ${ko}` },
+      { storyFrame: ko, authority: `${ko}라는 규칙은 폐기했다.` },
+      { storyFrame: zh, authority: `评审否决了这条要求：${zh}` },
+      { storyFrame: zh, authority: `${zh}这条规则被驳回。` },
+    ];
+    for (const { storyFrame, authority } of cases) {
+      expect(findUnauthorizedMandatoryMoralCorrections(
+        { ...base, storyFrame },
+        [{ kind: "owner-direction", text: authority }],
+      )).not.toEqual([]);
+    }
+  });
+
+  it("generalizes mandatory representation and moral-duty corrections without blocking cast facts", () => {
+    const mandates = [
+      "At least half the cast must be women.",
+      "Reserve 50 percent of speaking roles for underrepresented groups.",
+      "All villains must be cisgender heterosexual men.",
+      "Marginalized characters must never be portrayed as perpetrators.",
+      "Use inclusive language throughout.",
+      "Avoid ableist, sexist, racist, or homophobic tropes.",
+      "The story should celebrate diversity and inclusion.",
+      "No marginalized identity may be associated with vice.",
+      "등장인물 절반 이상을 여성으로 구성해야 한다.",
+      "발화 역할의 50퍼센트를 소수자에게 배정한다.",
+      "악역은 비장애인 이성애자 남성으로만 설정한다.",
+      "소수자 인물을 가해자로 묘사해서는 안 된다.",
+      "전반적으로 포용적 언어를 사용한다.",
+      "성차별적·인종차별적·동성애 혐오 표현을 피한다.",
+      "至少一半角色必须是女性。",
+      "把百分之五十的有台词角色分配给少数群体。",
+      "所有反派必须是顺性别异性恋男性。",
+      "少数群体角色不得被描写为施害者。",
+      "全文使用包容性语言。",
+      "避免性别歧视、种族歧视或恐同表达。",
+      "The narrative has a duty to model responsible behavior.",
+      "Ensure readers understand that violence is unacceptable.",
+      "Frame the fraud as morally reprehensible.",
+      "Never glamorize unethical conduct.",
+      "The book should uphold prosocial values.",
+      "Treat the abusive protagonist as a cautionary example.",
+      "서사는 책임 있는 행동의 본보기가 되어야 한다.",
+      "폭력이 용납될 수 없다는 점을 독자가 이해하게 한다.",
+      "사기를 도덕적으로 비난받아 마땅한 행위로 묘사한다.",
+      "비윤리적 행동을 매력적으로 그리지 않는다.",
+      "작품은 건전한 가치를 지켜야 한다.",
+      "학대하는 주인공을 반면교사로 다룬다.",
+      "叙事有责任示范负责任的行为。",
+      "确保读者明白暴力不可接受。",
+      "把欺诈描写成应受道德谴责的行为。",
+      "绝不美化不道德行为。",
+      "作品应当维护正向价值观。",
+      "把施虐的主角当作反面教材。",
+      "Ensure gender parity among all speaking characters.",
+      "Give every woman an independent arc.",
+      "Include positive LGBTQ+ role models.",
+      "Do not use marginalized identities for villains.",
+      "Maintain cultural sensitivity.",
+      "Use respectful terminology for marginalized groups.",
+      "The narrative must signal disapproval of exploitation.",
+      "Never depict abuse without critique.",
+      "Do not reward toxic behavior.",
+      "Make clear that coercion is wrong.",
+      "모든 발화 인물의 성비를 동등하게 맞춘다.",
+      "모든 여성 인물에게 독립적인 아크를 부여한다.",
+      "소수자 정체성을 악역 설정에 이용하지 않는다.",
+      "학대를 비판 없이 묘사해서는 안 된다.",
+      "서사는 착취에 대한 비판적 태도를 분명히 해야 한다.",
+      "确保所有有台词角色实现性别平衡。",
+      "给每位女性角色独立的人物弧。",
+      "不得把少数身份用于塑造反派。",
+      "不得在缺乏批判的情况下描写虐待。",
+      "叙事必须明确反对剥削。",
+      "Each chapter is obligated to feature at least one queer character.",
+      "It is compulsory for every chapter to include a minority character.",
+      "Every chapter shall include diverse representation.",
+      "각 화마다 여성 인물을 한 명 이상 넣도록 한다.",
+      "매 화 여성 인물을 최소 한 명 배치하도록 한다.",
+      "퀴어 캐릭터를 악역으로 쓰지 말 것.",
+      "所有章节均应包含多元代表性。",
+      "The chapter must include diverse&nbsp;representation.",
+      "The chapter must include diverse&#32;representation.",
+      "The chapter must include diverse [representation](https://example.test).",
+      "The protagonist must re\u00ADpent for his crimes.",
+      "The protagonist must rep\uFE0Fent for his crimes.",
+      "이번 화에는 반드시 다양한&nbsp;대표성을 포함한다.",
+      "本章必须包含多元&nbsp;代表性。",
+    ];
+    for (const mandate of mandates) {
+      expect(findUnauthorizedMandatoryMoralCorrectionsInText(mandate, []))
+        .not.toEqual([]);
+    }
+
+    for (const fact of [
+      "Half the cast are women after the evacuation.",
+      "The antagonist is a gay banker whose fraud is exposed by records.",
+      "A diplomat uses inclusive language to placate the donors.",
+      "The board linked [the representation report](https://example.test) before the meeting.",
+      "The invoice contains A&nbsp;B spacing inherited from the vendor export.",
+      "반군 지도자는 여성이고 악역은 그의 동생이다.",
+      "여성 CFO가 이사회에서 인수안을 승인했다.",
+      "The editor sneered, Every chapter shall include diverse representation, before burning the memo.",
+      "편집자가 각 화마다 여성 인물을 한 명 이상 넣도록 한다고 비웃었다.",
+      "编辑嘲笑道：“所有章节均应包含多元代表性。”",
+      "The CFO promoted two women after they won the proxy fight.",
+      "여성 CFO가 적대적 공개매수에 성공했다.",
+      "法院依据账本证据判处他有罪。",
+    ]) {
+      expect(findUnauthorizedMandatoryMoralCorrectionsInText(fact, []))
+        .toEqual([]);
+    }
+  });
+
+  it("requires standalone or explicit owner adoption instead of reported exact text", () => {
+    const rule = "The story must ensure that the fraudster faces justice for his crimes.";
+    const reported = [
+      `The reviewer suggested this rule: ${rule}`,
+      `The model proposed this rule: ${rule}`,
+      `An unapproved suggestion is: ${rule}`,
+      `We are discussing whether to adopt this rule: ${rule}`,
+      `The current draft says: ${rule}`,
+      `The audit report contains this requirement: ${rule}`,
+      `For comparison, another book uses: ${rule}`,
+      `Remove this rule: ${rule}`,
+      `Delete this requirement: ${rule}`,
+      `Example of what not to do: ${rule}`,
+      `A bad rule would be: ${rule}`,
+      `If we chose moral correction, the rule would be: ${rule}`,
+      `Should we adopt this rule? ${rule}`,
+      `Did the reviewer propose this rule? ${rule}`,
+      `The following is only a hypothetical: ${rule}`,
+      `Hypothetically, the owner explicitly adopts this rule: ${rule}`,
+      `If the owner explicitly adopted this rule, it would be: ${rule}`,
+      `The owner might adopt this rule: ${rule}`,
+      `The owner may approve this rule later: ${rule}`,
+      `The reviewer falsely claimed that the owner explicitly adopts this rule: ${rule}`,
+      `Someone wrote that the owner requires this rule: ${rule}`,
+      `We asked whether the owner approves this rule: ${rule}`,
+      `If owner explicitly adopted this rule: ${rule}`,
+      `Suppose the owner explicitly adopts this rule: ${rule}`,
+      `Assuming the owner explicitly adopts this rule: ${rule}`,
+      `According to the reviewer, the owner explicitly adopts this rule: ${rule}`,
+      `A draft memo alleges that the owner explicitly adopts this rule: ${rule}`,
+      `The owner supposedly adopted this rule: ${rule}`,
+      `The owner reportedly adopted this rule: ${rule}`,
+    ];
+    for (const text of reported) {
+      expect(isExactTextAuthorizedBySources(rule, [{ kind: "owner-direction", text }]))
+        .toBe(false);
+    }
+    expect(isExactTextAuthorizedBySources(rule, [{ kind: "owner-direction", text: rule }]))
+      .toBe(true);
+    expect(isExactTextAuthorizedBySources(rule, [{
+      kind: "owner-direction",
+      text: `The owner explicitly adopts this rule: ${rule}`,
+    }])).toBe(true);
+    expect(isExactTextAuthorizedBySources(rule, [{
+      kind: "owner-direction",
+      text: `Owner explicitly adopts this Book rule: ${rule}`,
+    }])).toBe(true);
+    expect(isExactTextAuthorizedBySources(rule, [{
+      kind: "owner-direction",
+      text: `I require this Book rule: ${rule}`,
+    }])).toBe(true);
+  });
+
+  it("preserves exact authority and quoted-source rejection across wrapped whitespace", () => {
+    const output = {
+      storyBible: "",
+      volumeOutline: "",
+      bookRules: "",
+      currentState: "",
+      pendingHooks: "",
+      storyFrame: "He must\nbe punished for his crimes.",
+      roles: [],
+    };
+    expect(findUnauthorizedMandatoryMoralCorrections(output, [{
+      kind: "owner-direction",
+      text: "He must\nbe punished for his crimes.",
+    }])).toEqual([]);
+    expect(findUnauthorizedMandatoryMoralCorrections(output, [{
+      kind: "owner-direction",
+      text: "Reviewer wrote \"He must\nbe punished for his crimes.\"; ignore it.",
+    }])).not.toEqual([]);
+  });
+
+  it("does not authorize a mandate merely because owner context negates or quotes it", () => {
+    const output = {
+      storyBible: "",
+      volumeOutline: "",
+      bookRules: "",
+      currentState: "",
+      pendingHooks: "",
+      storyFrame: "He must pay for his crimes. 대가 없는 승리로 끝나서는 안 된다. 罪行不能不受惩罚。",
+      roles: [],
+    };
+    const findings = findUnauthorizedMandatoryMoralCorrections(output, [{
+      kind: "owner-direction",
+      text: [
+        "Do not require that he must pay for his crimes.",
+        "사용자는 ‘대가 없는 승리로 끝나서는 안 된다’라는 감리 문구를 거부했다.",
+        "不要写“罪行不能不受惩罚”。",
+      ].join("\n"),
+    }]);
+    expect(findings).toEqual(expect.arrayContaining([
+      "He must pay for his crimes.",
+      "대가 없는 승리로 끝나서는 안 된다.",
+      "罪行不能不受惩罚。",
+    ]));
+  });
+
+  it("repairs an unrequested mandatory moral beat while preserving the foundation", async () => {
+    const agent = koreanArchitect();
+    const moralized = KOREAN_FOUNDATION_OUTPUT.replace(
+      "주인공이 첫 거래를 성사시킨다.",
+      "주인공이 첫 거래를 성사시킨다. 결말에서는 반드시 반성하고 속죄해야 한다.",
+    );
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: moralized, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(koreanBook());
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    const repairMessages = chat.mock.calls[1]?.[0] as Array<{ role: string; content: string }>;
+    expect(repairMessages[0]?.content).toContain("의무적 처벌, 반성, 사과, 개심");
+    expect(result.storyFrame).not.toContain("속죄해야");
+  });
+
+  it("does not treat reviewer/model feedback as authority for a moral mandate", async () => {
+    const agent = koreanArchitect();
+    const moralized = KOREAN_FOUNDATION_OUTPUT.replace(
+      "제1권 (1-20화)에서 첫 회사를 인수한다.",
+      "제1권 (1-20화)에서 첫 회사를 인수한다. 대가 없는 승리로 끝나서는 안 된다.",
+    );
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: moralized, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(
+      koreanBook(),
+      undefined,
+      "대가 없는 승리로 끝나서는 안 된다.",
+    );
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.volumeMap).not.toContain("대가 없는 승리");
+  });
+
+  it("does not treat a free-form positive owner direction as structured moral authority", async () => {
+    const agent = koreanArchitect();
+    const ownerBeat = "결말에서는 반드시 반성하고 속죄해야 한다.";
+    const directed = KOREAN_FOUNDATION_OUTPUT.replace(
+      "주인공이 첫 거래를 성사시킨다.",
+      `주인공이 첫 거래를 성사시킨다. ${ownerBeat}`,
+    );
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: directed, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(koreanBook(), ownerBeat);
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.storyFrame).not.toContain(ownerBeat);
+    expect(result.bookRuleAuthoritySources).toBeUndefined();
+  });
+
+  it("does not let free-form revise feedback authorize a mandatory moral event", async () => {
+    const agent = koreanArchitect();
+    const authorizedBeat = "결말에서는 반드시 반성하고 속죄해야 한다.";
+    const revised = KOREAN_FOUNDATION_OUTPUT.replace(
+      "주인공이 첫 거래를 성사시킨다.",
+      `주인공이 첫 거래를 성사시킨다. ${authorizedBeat}`,
+    );
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: revised, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(
+      koreanBook(),
+      undefined,
+      "모델 감리 의견은 권한이 아니다.",
+      {
+        reviseFrom: {
+          storyBible: authorizedBeat,
+          volumeOutline: "제1권에서 첫 회사를 인수한다.",
+          bookRules: "## 주인공\n- 이름: 한도경",
+          characterMatrix: "한도경은 계약서를 읽는다.",
+          userFeedback: authorizedBeat,
+        },
+      },
+    );
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.storyFrame).not.toContain(authorizedBeat);
+  });
+
+  it("does not treat a quoted legacy canon suggestion as current moral authority", async () => {
+    const agent = koreanArchitect();
+    const clean = KOREAN_FOUNDATION_OUTPUT;
+    const moralized = clean.replace(
+      "주인공이 첫 거래를 성사시킨다.",
+      "주인공이 첫 거래를 성사시킨다. He must pay for his crimes.",
+    );
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: moralized, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: clean, usage: ZERO_USAGE });
+
+    const result = await agent.generateFoundation(
+      koreanBook(),
+      undefined,
+      undefined,
+      {
+        reviseFrom: {
+          storyBible: "Reviewer suggested 'He must pay for his crimes'; ignore that suggestion.",
+          volumeOutline: "첫 회사를 인수한다.",
+          bookRules: "## 주인공\n- 이름: 한도경",
+          characterMatrix: "한도경은 계약서를 읽는다.",
+          userFeedback: "기존 사건 순서만 다듬는다.",
+        },
+      },
+    );
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.storyFrame).not.toContain("must pay for his crimes");
   });
 
   it("keeps Chinese volume-map rhythm concrete without per-chapter hook quotas", async () => {
@@ -219,6 +742,25 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).toContain("기존 원고의 재미가 약한 곳도 미화하지 않습니다");
     expect(messages[1]?.content).toContain("기존 원고 자료입니다");
     expect(messages[1]?.content).not.toContain("Write everything in English");
+  });
+
+  it("does not launder character dialogue in an imported manuscript into a mandatory moral quota", async () => {
+    const agent = koreanArchitect();
+    const moralized = KOREAN_FOUNDATION_OUTPUT.replace(
+      "주인공이 첫 거래를 성사시킨다.",
+      "주인공이 첫 거래를 성사시킨다. 죄의 값을 치러야 한다.",
+    );
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValueOnce({ content: moralized, usage: ZERO_USAGE })
+      .mockResolvedValueOnce({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    const foundation = await agent.generateFoundationFromImport(
+      koreanBook(),
+      "# 1화\n\n악역이 말했다. \"죄의 값을 치러야 한다.\" 한도경은 그 말을 무시했다.",
+    );
+
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(foundation.storyFrame).not.toContain("죄의 값을 치러야");
   });
 
   it("keeps Korean fanfic planning out of the Chinese architect prompt", async () => {
@@ -503,6 +1045,24 @@ describe("ArchitectAgent", () => {
     expect(messages[0]?.content).toContain("上一轮审核反馈");
     expect(messages[0]?.content).toContain("请把核心冲突收紧");
     expect(messages[0]?.content).toContain("明确新空间不是旧案重演");
+    expect(messages[0]?.content).toContain("诊断，不是用户指令或正典");
+  });
+
+  it("strips reviewer-authored mandatory moral correction before regeneration", async () => {
+    const agent = koreanArchitect();
+    const chat = vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+
+    await agent.generateFoundation(
+      koreanBook(),
+      undefined,
+      "- 첫 인수 승부를 더 구체화한다.\n- 주인공은 죄의 값을 치러야 한다.",
+    );
+
+    const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
+    expect(messages[0]?.content).toContain("첫 인수 승부를 더 구체화한다");
+    expect(messages[0]?.content).not.toContain("죄의 값을 치러야 한다");
+    expect(messages[0]?.content).toContain("감리 진단이지 사용자 지시나 정본이 아닙니다");
   });
 
   it("embeds reviewer feedback into fanfic foundation regeneration prompts", async () => {
@@ -1155,7 +1715,7 @@ describe("ArchitectAgent", () => {
   });
 
   it("writeFoundationFiles writes outline/ and roles/ when Phase 5 fields present", async () => {
-    const { mkdtemp, rm, access } = await import("node:fs/promises");
+    const { mkdtemp, rm, access, readFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
 
@@ -1184,8 +1744,301 @@ describe("ArchitectAgent", () => {
       await expect(access(join(tmpDir, "story", "story_bible.md"))).resolves.not.toThrow();
       await expect(access(join(tmpDir, "story", "character_matrix.md"))).resolves.not.toThrow();
       await expect(access(join(tmpDir, "story", "book_rules.md"))).resolves.not.toThrow();
+      const provenance = JSON.parse(await readFile(
+        join(tmpDir, "story", "book_rules.provenance.json"),
+        "utf8",
+      )) as { compiler?: string; hardRuleCount?: number; diagnosticRuleCount?: number };
+      expect(provenance).toMatchObject({
+        compiler: "host",
+        hardRuleCount: 0,
+      });
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists exact owner-authored BookRules with source authority while leaving paraphrases diagnostic", async () => {
+    const { mkdtemp, rm, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { readEffectiveBookRules } = await import("../agents/effective-book-rules.js");
+    const agent = koreanArchitect();
+    const exactRule = "증거를 조작하지 않는다.";
+    const outputWithRule = KOREAN_FOUNDATION_OUTPUT.replace(
+      "## 주인공\n- 이름: 한도경",
+      `## 주인공\n- 이름: 한도경\n\n## 금지 사항\n- ${exactRule}\n- 증거를 숨기지 않는다.`,
+    );
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: outputWithRule, usage: ZERO_USAGE });
+    const foundation = await agent.generateFoundation(
+      koreanBook(),
+      `작품의 확정 규칙: ${exactRule}`,
+      undefined,
+      {
+        bookRuleAuthoritySources: [{
+          source: "user-explicit",
+          authorityOrigin: "authenticated-owner-instruction",
+          intent: "authorize-rule",
+          decisionId: "owner-rule-test-1",
+          authorizedByActorId: "owner-test",
+          artifactContent: `작품의 확정 규칙: ${exactRule}`,
+        }],
+      },
+    );
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-owner-rule-authority-"));
+    try {
+      await writeFile(join(bookDir, "book.json"), JSON.stringify(koreanBook()), "utf8");
+      await agent.writeFoundationFiles(bookDir, foundation, false, "ko");
+      const provenance = JSON.parse(await readFile(
+        join(bookDir, "story", "book_rules.provenance.json"),
+        "utf8",
+      )) as { hardRuleCount: number; diagnosticRuleCount: number; rules: Array<Record<string, unknown>> };
+      expect(provenance.hardRuleCount).toBe(1);
+      expect(provenance.diagnosticRuleCount).toBe(1);
+      expect(provenance.rules.find((rule) => rule.text === exactRule)).toMatchObject({
+        source: "user-explicit",
+        strength: "hard",
+      });
+      expect(provenance.rules.find((rule) => rule.text === "증거를 숨기지 않는다.")).toMatchObject({
+        source: "model-suggested",
+        strength: "diagnostic",
+      });
+      const effective = await readEffectiveBookRules(bookDir, koreanBook().id);
+      expect(effective?.automatic.prohibitions).toEqual([exactRule]);
+      expect(effective?.ruleRefs).toHaveLength(1);
+    } finally {
+      await rm(bookDir, { recursive: true, force: true });
+    }
+  });
+
+  it("injects separately adopted Studio hard rules and persists owner-adoption receipts", async () => {
+    const { mkdtemp, rm, writeFile, readFile, readdir } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { readEffectiveBookRules } = await import("../agents/effective-book-rules.js");
+    const agent = koreanArchitect();
+    const exactRule = "주인공은 차명 지분을 포기하지 않는다.";
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: KOREAN_FOUNDATION_OUTPUT, usage: ZERO_USAGE });
+    const foundation = await agent.generateFoundation(
+      koreanBook(),
+      "비자금 장부를 추적하는 기업 스릴러.",
+      undefined,
+      {
+        bookRuleOwnerDecisions: [{
+          collection: "prohibitions",
+          text: exactRule,
+          decision: "adopt",
+          decisionId: "studio-hil:test-owner-rule-1",
+          adoptedByActorId: "studio-local-owner",
+        }],
+      },
+    );
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-owner-adoption-rule-"));
+    try {
+      await writeFile(join(bookDir, "book.json"), JSON.stringify(koreanBook()), "utf8");
+      await agent.writeFoundationFiles(bookDir, foundation, false, "ko");
+      const rulesFile = await readFile(join(bookDir, "story", "book_rules.md"), "utf8");
+      expect(rulesFile).toContain(exactRule);
+      const provenance = JSON.parse(await readFile(
+        join(bookDir, "story", "book_rules.provenance.json"),
+        "utf8",
+      )) as { hardRuleCount: number; rules: Array<Record<string, unknown>> };
+      expect(provenance.hardRuleCount).toBe(1);
+      expect(provenance.rules.find((rule) => rule.text === exactRule)).toMatchObject({
+        source: "user-explicit",
+        strength: "hard",
+        ownerAdoption: {
+          decision: "adopt",
+          decisionId: "studio-hil:test-owner-rule-1",
+          adoptedByActorId: "studio-local-owner",
+        },
+      });
+      const receiptFiles = await readdir(join(bookDir, "story", "authority", "book-rules", "receipts"));
+      expect(receiptFiles).toHaveLength(1);
+      const receipt = JSON.parse(await readFile(
+        join(bookDir, "story", "authority", "book-rules", "receipts", receiptFiles[0]!),
+        "utf8",
+      )) as Record<string, unknown>;
+      expect(receipt).toMatchObject({
+        receiptType: "book-rule-owner-adoption",
+        decision: "adopt",
+        decisionId: "studio-hil:test-owner-rule-1",
+        adoptedByActorId: "studio-local-owner",
+      });
+      const effective = await readEffectiveBookRules(bookDir, koreanBook().id);
+      expect(effective?.automatic.prohibitions).toContain(exactRule);
+      expect(effective?.ruleRefs).toHaveLength(1);
+    } finally {
+      await rm(bookDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not grant BookRule authority from quoted, removal, dismissed, or vetoed mentions", async () => {
+    const { mkdtemp, rm, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const agent = koreanArchitect();
+    const rule = "증거를 조작하지 않는다.";
+    const outputWithRule = KOREAN_FOUNDATION_OUTPUT.replace(
+      "## 주인공\n- 이름: 한도경",
+      `## 주인공\n- 이름: 한도경\n\n## 금지 사항\n- ${rule}`,
+    );
+    const reportedContexts = [
+      `The reviewer suggested this rule: ${rule}`,
+      `The model proposed this rule: ${rule}`,
+      `An unapproved suggestion is: ${rule}`,
+      `We are discussing whether to adopt this rule: ${rule}`,
+      `The current draft says: ${rule}`,
+      `The audit report contains this requirement: ${rule}`,
+      `For comparison, another book uses: ${rule}`,
+      `Remove this rule: ${rule}`,
+      `Delete this requirement: ${rule}`,
+      `Example of what not to do: ${rule}`,
+      `A bad rule would be: ${rule}`,
+      `If we chose moral correction, the rule would be: ${rule}`,
+      `Should we adopt this rule? ${rule}`,
+      `Did the reviewer propose this rule? ${rule}`,
+      `The following is only a hypothetical: ${rule}`,
+    ];
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: outputWithRule, usage: ZERO_USAGE });
+    const foundation = await agent.generateFoundation(
+      koreanBook(),
+      `감리 문구 ‘${rule}’는 삭제한다.`,
+      undefined,
+      {
+        bookRuleAuthoritySources: [{
+          source: "user-explicit",
+          authorityOrigin: "authenticated-owner-instruction",
+          intent: "authorize-rule",
+          decisionId: "owner-rule-negative-test-1",
+          authorizedByActorId: "owner-test",
+          artifactContent: `감리 문구 ‘${rule}’는 삭제한다.`,
+        }, {
+          source: "user-explicit",
+          authorityOrigin: "authenticated-owner-instruction",
+          intent: "authorize-rule",
+          decisionId: "owner-rule-negative-test-2",
+          authorizedByActorId: "owner-test",
+          artifactContent: `Reviewer dismissed this requirement: ${rule}`,
+        }, {
+          source: "user-explicit",
+          authorityOrigin: "authenticated-owner-instruction",
+          intent: "authorize-rule",
+          decisionId: "owner-rule-negative-test-3",
+          authorizedByActorId: "owner-test",
+          artifactContent: `The owner vetoed this rule: ${rule}`,
+        }, ...reportedContexts.map((artifactContent, index) => ({
+          source: "user-explicit" as const,
+          authorityOrigin: "authenticated-owner-instruction" as const,
+          intent: "authorize-rule" as const,
+          decisionId: `owner-rule-reported-test-${index + 1}`,
+          authorizedByActorId: "owner-test",
+          artifactContent,
+        }))],
+      },
+    );
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-owner-rule-negative-"));
+    try {
+      await writeFile(join(bookDir, "book.json"), JSON.stringify(koreanBook()), "utf8");
+      await agent.writeFoundationFiles(bookDir, foundation, false, "ko");
+      const provenance = JSON.parse(await readFile(
+        join(bookDir, "story", "book_rules.provenance.json"),
+        "utf8",
+      )) as { hardRuleCount: number; diagnosticRuleCount: number };
+      expect(provenance).toMatchObject({ hardRuleCount: 0, diagnosticRuleCount: 1 });
+    } finally {
+      await rm(bookDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not self-authenticate a generic external context as a hard-rule source", async () => {
+    const agent = koreanArchitect();
+    const rule = "증거를 조작하지 않는다.";
+    const outputWithRule = KOREAN_FOUNDATION_OUTPUT.replace(
+      "## 주인공\n- 이름: 한도경",
+      `## 주인공\n- 이름: 한도경\n\n## 금지 사항\n- ${rule}`,
+    );
+    vi.spyOn(agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> }, "chat")
+      .mockResolvedValue({ content: outputWithRule, usage: ZERO_USAGE });
+
+    const foundation = await agent.generateFoundation(
+      koreanBook(),
+      `외부 참고 패킷: ${rule}`,
+    );
+
+    expect(foundation.bookRuleAuthoritySources).toBeUndefined();
+  });
+
+  it("rejects malformed BookRules before revise replaces any foundation or role file", async () => {
+    const { mkdtemp, rm, mkdir, writeFile, readFile, access } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const agent = buildPhase5Agent();
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-arch-preflight-"));
+    const existingRole = join(bookDir, "story", "roles", "主要角色", "Existing.md");
+    const existingFrame = join(bookDir, "story", "outline", "story_frame.md");
+    try {
+      await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
+      await mkdir(join(bookDir, "story", "roles", "次要角色"), { recursive: true });
+      await mkdir(join(bookDir, "story", "outline"), { recursive: true });
+      await writeFile(existingRole, "existing role", "utf8");
+      await writeFile(existingFrame, "existing frame", "utf8");
+
+      await expect(agent.writeFoundationFiles(bookDir, {
+        storyBible: "legacy",
+        volumeOutline: "legacy",
+        bookRules: "# Book Rules (compat pointer — deprecated)\n\n> This file is kept for external readers only.",
+        currentState: "",
+        pendingHooks: "| hook_id |",
+        storyFrame: "replacement frame",
+        volumeMap: "replacement map",
+        roles: [{ tier: "major", name: "Replacement", content: "replacement role" }],
+      }, false, "zh", "revise")).rejects.toThrow(/BookRules output is not parseable/);
+
+      expect(await readFile(existingRole, "utf8")).toBe("existing role");
+      expect(await readFile(existingFrame, "utf8")).toBe("existing frame");
+      await expect(access(join(bookDir, "story", "roles", "主要角色", "Replacement.md"))).rejects.toThrow();
+    } finally {
+      await rm(bookDir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates owner authority receipts before revise replaces existing role files", async () => {
+    const { mkdtemp, rm, mkdir, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const agent = buildPhase5Agent();
+    const bookDir = await mkdtemp(join(tmpdir(), "inkos-arch-authority-preflight-"));
+    const existingRole = join(bookDir, "story", "roles", "主要角色", "Existing.md");
+    const rule = "Do not fabricate evidence.";
+    try {
+      await mkdir(join(bookDir, "story", "roles", "主要角色"), { recursive: true });
+      await writeFile(existingRole, "existing role", "utf8");
+
+      await expect(agent.writeFoundationFiles(bookDir, {
+        storyBible: "legacy",
+        volumeOutline: "legacy",
+        bookRules: `## Prohibitions\n- ${rule}`,
+        currentState: "",
+        pendingHooks: "| hook_id |",
+        storyFrame: "replacement frame",
+        volumeMap: "replacement map",
+        roles: [{ tier: "major", name: "Replacement", content: "replacement role" }],
+        bookRuleAuthoritySources: [{
+          source: "user-explicit",
+          authorityOrigin: "authenticated-owner-instruction",
+          intent: "authorize-rule",
+          decisionId: "invalid-actor-preflight-test-1",
+          authorizedByActorId: "invalid actor id with spaces",
+          artifactContent: `Owner rule: ${rule}`,
+        }],
+      }, false, "zh", "revise")).rejects.toThrow();
+
+      expect(await readFile(existingRole, "utf8")).toBe("existing role");
+    } finally {
+      await rm(bookDir, { recursive: true, force: true });
     }
   });
 

@@ -61,6 +61,9 @@ async function setupBook(params: {
 
   const storyDir = join(bookDir, "story");
   await mkdir(storyDir, { recursive: true });
+  await writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8");
+  await writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8");
+  await writeFile(join(storyDir, "book_rules.md"), "# Book Rules\n", "utf-8");
   await writeFile(join(storyDir, "current_state.md"), "state after latest", "utf-8");
   await writeFile(join(storyDir, "pending_hooks.md"), "hooks after latest", "utf-8");
   for (const snapshotChapter of params.snapshotChapters ?? []) {

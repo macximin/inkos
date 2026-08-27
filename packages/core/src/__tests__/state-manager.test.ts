@@ -527,6 +527,23 @@ describe("StateManager", () => {
   // -------------------------------------------------------------------------
 
   describe("listBooks", () => {
+    async function saveCompleteBook(bookId: string, config: BookConfig): Promise<void> {
+      const bookDir = manager.bookDir(bookId);
+      await manager.saveBookConfig(bookId, config);
+      await Promise.all([
+        mkdir(join(bookDir, "story", "outline"), { recursive: true }),
+        mkdir(join(bookDir, "chapters"), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(bookDir, "story", "book_rules.md"), "# Rules\n", "utf-8"),
+        writeFile(join(bookDir, "story", "current_state.md"), "# State\n", "utf-8"),
+        writeFile(join(bookDir, "story", "pending_hooks.md"), "# Hooks\n", "utf-8"),
+        writeFile(join(bookDir, "story", "outline", "story_frame.md"), "# Story\n", "utf-8"),
+        writeFile(join(bookDir, "story", "outline", "volume_map.md"), "# Volume\n", "utf-8"),
+        writeFile(join(bookDir, "chapters", "index.json"), "[]\n", "utf-8"),
+      ]);
+    }
+
     it("returns empty array when no books directory exists", async () => {
       const books = await manager.listBooks();
       expect(books).toEqual([]);
@@ -544,16 +561,26 @@ describe("StateManager", () => {
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
       };
-      await manager.saveBookConfig("alpha", bookConfig);
-      await manager.saveBookConfig("beta", { ...bookConfig, id: "beta", title: "Beta" });
+      await saveCompleteBook("alpha", bookConfig);
+      await saveCompleteBook("beta", { ...bookConfig, id: "beta", title: "Beta" });
 
       // Create a decoy directory without book.json
       await mkdir(join(manager.booksDir, "not-a-book"), { recursive: true });
+      await manager.saveBookConfig("incomplete", { ...bookConfig, id: "incomplete", title: "Incomplete" });
+      await saveCompleteBook("mismatched", { ...bookConfig, id: "different-id", title: "Mismatch" });
+      await saveCompleteBook(".tmp-book-create-alpha-123", {
+        ...bookConfig,
+        id: ".tmp-book-create-alpha-123",
+        title: "Staging",
+      });
 
       const books = await manager.listBooks();
       expect(books).toContain("alpha");
       expect(books).toContain("beta");
       expect(books).not.toContain("not-a-book");
+      expect(books).not.toContain("incomplete");
+      expect(books).not.toContain("mismatched");
+      expect(books).not.toContain(".tmp-book-create-alpha-123");
       expect(books).toHaveLength(2);
     });
   });

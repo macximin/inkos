@@ -6,6 +6,7 @@ import {
   createProjectSession,
   loadProjectSession,
   persistProjectSession,
+  resolveSessionActiveBook,
 } from "../interaction/project-session-store.js";
 import { processProjectInteractionRequest } from "../interaction/project-control.js";
 
@@ -54,6 +55,13 @@ describe("project interaction control", () => {
         platform: "tomato",
         chapterWordCount: 2800,
         targetChapters: 120,
+        hardRules: [{
+          collection: "prohibitions",
+          text: "Never resolve the central debt off-page.",
+          decision: "adopt",
+          decisionId: "studio-hil:decision-1",
+          adoptedByActorId: "studio-local-owner",
+        }],
       },
       tools,
     });
@@ -64,6 +72,13 @@ describe("project interaction control", () => {
       platform: "tomato",
       chapterWordCount: 2800,
       targetChapters: 120,
+      hardRules: [{
+        collection: "prohibitions",
+        text: "Never resolve the central debt off-page.",
+        decision: "adopt",
+        decisionId: "studio-hil:decision-1",
+        adoptedByActorId: "studio-local-owner",
+      }],
     });
     expect(result.session.activeBookId).toBe("night-harbor");
 
@@ -95,4 +110,45 @@ describe("project interaction control", () => {
     expect(result.responseText).toBe("작품 목록: harbor");
   });
 
+});
+
+describe("project session canonical Book discovery", () => {
+  async function createCompleteBook(root: string, bookId: string): Promise<void> {
+    const bookDir = join(root, "books", bookId);
+    await Promise.all([
+      mkdir(join(bookDir, "story", "outline"), { recursive: true }),
+      mkdir(join(bookDir, "chapters"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(bookDir, "book.json"), JSON.stringify({ id: bookId }), "utf-8"),
+      writeFile(join(bookDir, "story", "book_rules.md"), "# Rules\n", "utf-8"),
+      writeFile(join(bookDir, "story", "current_state.md"), "# State\n", "utf-8"),
+      writeFile(join(bookDir, "story", "pending_hooks.md"), "# Hooks\n", "utf-8"),
+      writeFile(join(bookDir, "story", "outline", "story_frame.md"), "# Story\n", "utf-8"),
+      writeFile(join(bookDir, "story", "outline", "volume_map.md"), "# Volume\n", "utf-8"),
+      writeFile(join(bookDir, "chapters", "index.json"), "[]\n", "utf-8"),
+    ]);
+  }
+
+  it("never auto-selects staging or quarantine directories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-session-internal-books-"));
+    await createCompleteBook(root, ".tmp-book-create-draft-123");
+    await mkdir(join(root, "books", ".failed-book-creations", "failed-draft"), { recursive: true });
+    await writeFile(
+      join(root, "books", ".failed-book-creations", "failed-draft", "book.json"),
+      JSON.stringify({ id: "failed-draft" }),
+      "utf-8",
+    );
+
+    await expect(resolveSessionActiveBook(root, createProjectSession(root))).resolves.toBeUndefined();
+  });
+
+  it("auto-selects the sole complete canonical Book while internal dirs exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-session-canonical-book-"));
+    await createCompleteBook(root, "real-book");
+    await createCompleteBook(root, ".tmp-book-create-draft-456");
+    await mkdir(join(root, "books", ".failed-book-creations"), { recursive: true });
+
+    await expect(resolveSessionActiveBook(root, createProjectSession(root))).resolves.toBe("real-book");
+  });
 });

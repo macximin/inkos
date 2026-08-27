@@ -15,7 +15,7 @@ const ZERO_USAGE = {
 } as const;
 
 describe("FoundationReviewerAgent", () => {
-  it("uses a Korean-native fun and prose gate with a 70-point dimension floor", async () => {
+  it("keeps Korean-native fun and prose scores diagnostic without granting regeneration authority", async () => {
     const agent = new FoundationReviewerAgent({
       client: TEST_CLIENT,
       model: "test-model",
@@ -31,6 +31,7 @@ describe("FoundationReviewerAgent", () => {
         ...scores.flatMap((score, index) => [
           `=== DIMENSION: ${index + 1} ===`,
           `점수: ${score}`,
+          `근거: ${score < 80 ? "IMF 전후의 인수전" : "없음"}`,
           "의견: 실제 사건을 근거로 판단함",
         ]),
         "=== OVERALL ===",
@@ -60,12 +61,20 @@ describe("FoundationReviewerAgent", () => {
     expect(messages[0]?.content).toContain("한국어 기획 문체");
     expect(messages[0]?.content).toContain("눈에 보이는 보상을 먼저 지급하고");
     expect(messages[0]?.content).toContain("자연스럽게 생기는 선택·후과·압력 또는 완결된 결산");
+    expect(messages[0]?.content).toContain("추가 대가·내적 성장·처벌·반성·속죄가 없다는 이유만으로 감점");
+    expect(messages[0]?.content).toContain("도덕적 교정을 기획에 덧붙이지 않습니다");
+    expect(messages[0]?.content).toContain("정확한 인용이 없는 저점은 진단으로만 남고 재생성을 일으키지 않습니다");
     expect(messages[0]?.content).not.toContain("다음 문제는 그 결과에서 자연스럽게 생길 때만");
     expect(messages[0]?.content).not.toContain("You are a senior fiction editor");
     expect(messages[1]?.content).toContain("## 이야기 기반");
     expect(result.totalScore).toBe(83);
-    expect(result.passed).toBe(false);
+    expect(result.passed).toBe(true);
     expect(result.overallFeedback).toBe("문체를 먼저 고쳐야 한다.");
+    expect(result.dimensions[5]).toMatchObject({
+      score: 69,
+      evidenceQuote: "IMF 전후의 인수전",
+      gating: false,
+    });
 
     await agent.review({
       language: "ko",
@@ -84,6 +93,122 @@ describe("FoundationReviewerAgent", () => {
     expect(derivativeMessages[0]?.content).toContain("눈에 보이는 보상을 먼저 지급하고");
     expect(derivativeMessages[0]?.content).toContain("자연스럽게 생기는 선택·후과·압력 또는 완결된 결산");
     expect(derivativeMessages[0]?.content).not.toContain("행동, 대응, 보상, 다음 문제가 장면으로 이어지는가");
+  });
+
+  it("neutralizes moral-review scores and unsupported low scores before they can regenerate a foundation", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    ).mockResolvedValue({
+      content: [
+        "=== DIMENSION: 1 ===",
+        "Score: 20",
+        "Evidence: The heir wins the takeover.",
+        "Feedback: The fraud lacks narrative closure because he is never condemned or punished, damaging reader trust.",
+        "=== DIMENSION: 2 ===",
+        "Score: 40",
+        "Evidence: NONE",
+        "Feedback: The opening momentum may be weak.",
+        "=== DIMENSION: 3 ===",
+        "Score: 85",
+        "Evidence: NONE",
+        "Feedback: Coherent.",
+        "=== DIMENSION: 4 ===",
+        "Score: 85",
+        "Evidence: NONE",
+        "Feedback: Distinct.",
+        "=== DIMENSION: 5 ===",
+        "Score: 85",
+        "Evidence: NONE",
+        "Feedback: Feasible.",
+        "=== OVERALL ===",
+        "Total: 63",
+        "Passed: no",
+        "Summary: The criminal victory needs punishment and redemption. Commercial structure is otherwise usable.",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    const result = await agent.review({
+      language: "en",
+      mode: "original",
+      targetChapters: 200,
+      foundation: {
+        storyBible: "The heir wins the takeover.",
+        volumeOutline: "He compounds the victory across the group.",
+        bookRules: "No moral correction is required.",
+        currentState: "He controls the board.",
+        pendingHooks: "A rival prepares a tender offer.",
+      },
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.totalScore).toBe(83);
+    expect(result.dimensions[0]).toMatchObject({
+      score: 80,
+      gating: false,
+      contentNeutralized: true,
+    });
+    expect(result.dimensions[1]).toMatchObject({ score: 80, gating: false });
+    expect(result.overallFeedback).toBe("Commercial structure is otherwise usable.");
+  });
+
+  it("fails closed on truncated dimension fields or a missing overall summary", async () => {
+    const agent = new FoundationReviewerAgent({
+      client: TEST_CLIENT,
+      model: "test-model",
+      projectRoot: process.cwd(),
+    });
+    const valid = [1, 2, 3, 4, 5].flatMap((index) => [
+      `=== DIMENSION: ${index} ===`,
+      "Score: 80",
+      "Evidence: NONE",
+      "Feedback: Usable.",
+    ]).concat([
+      "=== OVERALL ===",
+      "Total: 80",
+      "Passed: yes",
+      "Summary: Ready for diagnostic review.",
+    ]).join("\n");
+    const chat = vi.spyOn(
+      agent as unknown as { chat: (...args: unknown[]) => Promise<unknown> },
+      "chat",
+    );
+    const input = {
+      language: "en" as const,
+      mode: "original" as const,
+      targetChapters: 100,
+      foundation: {
+        storyBible: "Story",
+        volumeOutline: "Outline",
+        bookRules: "Rules",
+        currentState: "State",
+        pendingHooks: "Hooks",
+      },
+    };
+
+    chat.mockResolvedValueOnce({
+      content: valid.replace("Score: 80", "Score: missing"),
+      usage: ZERO_USAGE,
+    });
+    await expect(agent.review(input)).rejects.toThrow("no valid 0-100 score");
+
+    chat.mockResolvedValueOnce({
+      content: valid.replace("Feedback: Usable.", "Feedback:"),
+      usage: ZERO_USAGE,
+    });
+    await expect(agent.review(input)).rejects.toThrow("missing feedback");
+
+    chat.mockResolvedValueOnce({
+      content: valid.replace("Summary: Ready for diagnostic review.", ""),
+      usage: ZERO_USAGE,
+    });
+    await expect(agent.review(input)).rejects.toThrow("overall summary");
   });
 
   it("reviews original foundations against the requested chapter count", async () => {
@@ -138,6 +263,8 @@ describe("FoundationReviewerAgent", () => {
     expect(messages[0]?.content).toContain("用户要求的8章");
     expect(messages[0]?.content).toContain("前5章");
     expect(messages[0]?.content).toContain("连续8章");
+    expect(messages[0]?.content).toContain("没有额外代价、内在成长、惩罚、反省或赎罪本身不是缺陷");
+    expect(messages[0]?.content).toContain("不得把道德纠正写进修改意见");
     expect(messages[0]?.content).not.toContain("支撑40章");
     expect(messages[0]?.content).not.toContain("连续10章");
   });

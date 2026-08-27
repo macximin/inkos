@@ -14,7 +14,11 @@ import { ArcStore } from "../arc/store.js";
 import type { ArcPacket } from "../arc/schema.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import type { StoryRailPlanInput } from "../arc/rail-schema.js";
-import { makeModelBranch, writeForecastFixtureBook } from "./helpers/forecast-fixture.js";
+import {
+  makeModelBranch,
+  writeCompletedForecastInvocationEvidence,
+  writeForecastFixtureBook,
+} from "./helpers/forecast-fixture.js";
 
 const BOOK_ID = "demo-book";
 
@@ -41,8 +45,11 @@ describe("narrative forecast agent tools", () => {
   });
 
   function stubAgent() {
-    return vi.spyOn(NarrativeForecastAgent.prototype, "generateBranches").mockResolvedValue({
-      branches: [makeModelBranch({ title: "接受提议" }), makeModelBranch({ title: "拒绝提议" })],
+    return vi.spyOn(NarrativeForecastAgent.prototype, "generateBranches").mockImplementation(async () => {
+      await writeCompletedForecastInvocationEvidence(root, BOOK_ID);
+      return {
+        branches: [makeModelBranch({ title: "接受提议" }), makeModelBranch({ title: "拒绝提议" })],
+      };
     });
   }
 

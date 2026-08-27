@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -10,6 +10,22 @@ import {
 } from "../tui/session-store.js";
 
 let projectRoot: string;
+
+async function createCompleteBook(root: string, bookId: string): Promise<void> {
+  const bookDir = join(root, "books", bookId);
+  const storyDir = join(bookDir, "story");
+  await mkdir(join(bookDir, "chapters"), { recursive: true });
+  await mkdir(storyDir, { recursive: true });
+  await Promise.all([
+    writeFile(join(bookDir, "book.json"), JSON.stringify({ id: bookId }), "utf-8"),
+    writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+    writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8"),
+    writeFile(join(storyDir, "book_rules.md"), "# Book Rules\n", "utf-8"),
+    writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+    writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    writeFile(join(bookDir, "chapters", "index.json"), "[]", "utf-8"),
+  ]);
+}
 
 describe("tui session store", () => {
   beforeAll(async () => {
@@ -43,10 +59,7 @@ describe("tui session store", () => {
   });
 
   it("resolves active book from session when it still exists", async () => {
-    await writeFile(join(projectRoot, "books", "night-harbor", "book.json"), "{}", "utf-8").catch(async () => {
-      await mkdir(join(projectRoot, "books", "night-harbor"), { recursive: true });
-      await writeFile(join(projectRoot, "books", "night-harbor", "book.json"), "{}", "utf-8");
-    });
+    await createCompleteBook(projectRoot, "night-harbor");
 
     const session = {
       ...createProjectSession(projectRoot),
@@ -57,12 +70,8 @@ describe("tui session store", () => {
   });
 
   it("falls back to the only book in the project", async () => {
-    await mkdir(join(projectRoot, "books", "single-book"), { recursive: true });
-    await writeFile(join(projectRoot, "books", "single-book", "book.json"), "{}", "utf-8");
-
     const singleRoot = await mkdtemp(join(tmpdir(), "inkos-tui-single-"));
-    await mkdir(join(singleRoot, "books", "single-book"), { recursive: true });
-    await writeFile(join(singleRoot, "books", "single-book", "book.json"), "{}", "utf-8");
+    await createCompleteBook(singleRoot, "single-book");
 
     const session = createProjectSession(singleRoot);
     expect(await resolveSessionActiveBook(singleRoot, session)).toBe("single-book");
@@ -70,10 +79,8 @@ describe("tui session store", () => {
 
   it("returns undefined when multiple books exist and no valid active binding is stored", async () => {
     const multiRoot = await mkdtemp(join(tmpdir(), "inkos-tui-multi-"));
-    await mkdir(join(multiRoot, "books", "book-a"), { recursive: true });
-    await mkdir(join(multiRoot, "books", "book-b"), { recursive: true });
-    await writeFile(join(multiRoot, "books", "book-a", "book.json"), "{}", "utf-8");
-    await writeFile(join(multiRoot, "books", "book-b", "book.json"), "{}", "utf-8");
+    await createCompleteBook(multiRoot, "book-a");
+    await createCompleteBook(multiRoot, "book-b");
 
     const session = createProjectSession(multiRoot);
     expect(await resolveSessionActiveBook(multiRoot, session)).toBeUndefined();

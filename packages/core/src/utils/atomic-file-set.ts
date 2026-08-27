@@ -367,7 +367,7 @@ async function cleanupTransaction(rootDir: string, transactionDir: string): Prom
   await syncDirectory(rootDir);
 }
 
-async function syncDirectory(path: string): Promise<void> {
+export async function syncDirectory(path: string): Promise<void> {
   let handle;
   try {
     handle = await open(path, "r");

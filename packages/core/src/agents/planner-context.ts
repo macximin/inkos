@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { parseMarkdownTableRows } from "../utils/story-markdown.js";
 import { readCharacterContext, readRoleCards } from "../utils/outline-paths.js";
 import { readBookRules as readStructuredBookRules } from "./rules-reader.js";
+import { readEffectiveBookRules } from "./effective-book-rules.js";
 import type { StoredHook } from "../state/memory-db.js";
 
 type PlannerContextLanguage = "zh" | "ko" | "en";
@@ -85,27 +86,27 @@ export async function readBrief(storyDir: string): Promise<string> {
 }
 
 /**
- * Render the structured book rules (protagonist / prohibitions / genreLock /
- * behavioral constraints) as a compact markdown block for the planner prompt.
- *
- * Phase 5 cleanup #3: reads the YAML frontmatter via readStructuredBookRules
- * (which prefers story_frame.md and falls back to legacy book_rules.md).
- * Returns "" when no structured rules are defined — the planner template
- * provides its own placeholder for that case.
+ * Render non-restriction canon facts plus provenance-labelled guidance for the
+ * planner prompt. Raw Markdown stays display-only; enforcement-sensitive lists
+ * appear here only when the host-owned sidecar authorizes them.
  */
 export async function readBookRules(storyDir: string): Promise<string> {
   const bookDir = dirname(storyDir);
-  const parsed = await readStructuredBookRules(bookDir);
-  if (!parsed) return "";
+  const effective = await readEffectiveBookRules(bookDir);
+  if (!effective) return "";
 
-  const { rules, body } = parsed;
+  const rules = effective.automatic;
   const lines: string[] = [];
 
   if (rules.protagonist) {
     const proto = rules.protagonist;
-    const personality = proto.personalityLock.join("、");
     const constraints = proto.behavioralConstraints.join("、");
-    lines.push(`- 主角 ${proto.name}${personality ? ` / 人设锁：${personality}` : ""}${constraints ? ` / 行为约束：${constraints}` : ""}`);
+    // personalityLock is intentionally absent here. Even an advisory label can
+    // be laundered by the planner into a chapter goal or prohibition, which the
+    // downstream auditor may then mistake for an executable mandate. The writer
+    // still receives it as characterization advice; only provenance-verified
+    // behavioral constraints are allowed onto the chapter-control surface.
+    lines.push(`- 主角 ${proto.name}${constraints ? ` / 已验证行为约束：${constraints}` : ""}`);
   }
 
   if (rules.prohibitions.length > 0) {
@@ -124,11 +125,8 @@ export async function readBookRules(storyDir: string): Promise<string> {
     lines.push(`- 同人模式：${rules.fanficMode}`);
   }
 
-  const trimmedBody = body.trim();
-  // The body holds narrative guidance prose (e.g. 叙事视角). Include it verbatim
-  // so the planner sees the same text as before the cleanup.
-  if (trimmedBody) {
-    lines.push("", trimmedBody);
+  if (effective.guidance) {
+    lines.push("", "- Provenance-labelled rule guidance:", effective.guidance);
   }
 
   return lines.join("\n").trim();

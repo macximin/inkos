@@ -1,6 +1,7 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InteractionSessionSchema, type InteractionSession, GlobalSessionSchema, type GlobalSession } from "./session.js";
+import { StateManager } from "../state/manager.js";
 
 const SESSION_DIR = ".inkos";
 const SESSION_FILE = "session.json";
@@ -62,12 +63,7 @@ export async function resolveSessionActiveBook(
   projectRoot: string,
   session: InteractionSession,
 ): Promise<string | undefined> {
-  const booksDir = join(projectRoot, "books");
-  const entries = await readdir(booksDir, { withFileTypes: true }).catch(() => []);
-  const bookIds = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .sort();
+  const bookIds = await new StateManager(projectRoot).listBooks();
 
   if (session.activeBookId && bookIds.includes(session.activeBookId)) {
     return session.activeBookId;

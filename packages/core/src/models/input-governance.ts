@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 export const ChapterMemoSchema = z.object({
   chapter: z.number().int().min(1),
@@ -78,6 +79,25 @@ export const RuleStackSectionsSchema = z.object({
 
 export type RuleStackSections = z.infer<typeof RuleStackSectionsSchema>;
 
+export const VerifiedBookRuleRefSchema = z.object({
+  ruleId: z.string().min(1),
+  strength: z.literal("hard"),
+  kind: z.enum(["fact", "prohibition", "content-intensity", "craft-diagnostic"]),
+  text: z.string().min(1),
+  textSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).superRefine((value, ctx) => {
+  const actual = createHash("sha256").update(value.text, "utf8").digest("hex");
+  if (actual !== value.textSha256) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["textSha256"],
+      message: "textSha256 must match the exact UTF-8 rule text",
+    });
+  }
+});
+
+export type VerifiedBookRuleRef = z.infer<typeof VerifiedBookRuleRefSchema>;
+
 export const RuleStackSchema = z.object({
   layers: z.array(RuleLayerSchema).min(1),
   sections: RuleStackSectionsSchema.default({
@@ -87,6 +107,8 @@ export const RuleStackSchema = z.object({
   }),
   overrideEdges: z.array(OverrideEdgeSchema).default([]),
   activeOverrides: z.array(ActiveOverrideSchema).default([]),
+  /** Exact host-verified Book rules. A filename alone never grants hard authority. */
+  ruleRefs: z.array(VerifiedBookRuleRefSchema).optional(),
 });
 
 export type RuleStack = z.infer<typeof RuleStackSchema>;

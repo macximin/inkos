@@ -3,6 +3,7 @@ import type {
   ChapterTrace,
   ContextPackage,
   RuleStack,
+  VerifiedBookRuleRef,
 } from "../models/input-governance.js";
 import { estimateTextTokens } from "../llm/provider.js";
 import {
@@ -34,7 +35,11 @@ function truncateForOverrideReason(value: string): string {
  * the model prompt. Removing the function would require a much larger
  * prompt refactor; making it real fixes the lie at the source.
  */
-export function buildGovernedRuleStack(plan: PlanChapterOutput, chapterNumber: number): RuleStack {
+export function buildGovernedRuleStack(
+  plan: PlanChapterOutput,
+  chapterNumber: number,
+  verifiedBookRuleRefs: ReadonlyArray<VerifiedBookRuleRef> = [],
+): RuleStack {
   const activeOverrides: ActiveOverride[] = [];
   const hasFutureAdvantageRouting = plan.intent.futureAdvantageMoveIds !== undefined;
 
@@ -83,8 +88,10 @@ export function buildGovernedRuleStack(plan: PlanChapterOutput, chapterNumber: n
     ],
     sections: {
       // Phase 5 authoritative source names (was: story_bible, volume_outline).
-      hard: ["story_frame", "current_state", "book_rules", "roles"],
-      soft: ["author_intent", "current_focus", "volume_map"],
+      // A BookRules filename is not itself proof that each contained rule is
+      // hard. Exact hard entries are carried separately in ruleRefs.
+      hard: ["story_frame", "current_state", "roles"],
+      soft: ["author_intent", "current_focus", "volume_map", "book_rules"],
       diagnostic: [
         "anti_ai_checks",
         "continuity_audit",
@@ -101,6 +108,7 @@ export function buildGovernedRuleStack(plan: PlanChapterOutput, chapterNumber: n
         : []),
     ],
     activeOverrides,
+    ruleRefs: verifiedBookRuleRefs,
   });
 }
 

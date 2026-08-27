@@ -275,7 +275,13 @@ export class Scheduler {
       if (!detResult.passed && this.config.detection.autoRewrite) {
         await detectAndRewrite(
           this.config.detection,
-          { client: this.config.client, model: this.config.model, projectRoot: this.config.projectRoot },
+          {
+            client: this.config.client,
+            model: this.config.model,
+            projectRoot: this.config.projectRoot,
+            bookId,
+            fictionContentStage: "anti-detect-reviser",
+          },
           bookDir,
           chapterContent,
           chapterNumber,

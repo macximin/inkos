@@ -9,7 +9,16 @@ import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prom
 import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-prompts.js";
 import { parseSettlerDeltaOutput } from "./settler-delta-parser.js";
 import { parseSettlementOutput } from "./settler-parser.js";
-import { readGenreProfile, readBookRules } from "./rules-reader.js";
+import { readGenreProfile } from "./rules-reader.js";
+import {
+  projectRuleStackToVerifiedBookRules,
+  readEffectiveBookRules,
+} from "./effective-book-rules.js";
+import {
+  findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence,
+  findUnauthorizedMandatoryMoralCorrectionsInText,
+  type ArchitectMoralAuthoritySource,
+} from "./architect.js";
 import {
   detectCrossChapterRepetition,
   detectParagraphLengthDrift,
@@ -45,6 +54,7 @@ import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
 import { sanitizeLegacyFunFirstMethodology } from "../utils/writing-methodology.js";
+import { findUnauthorizedMemoProhibitions } from "../utils/chapter-memo-authority.js";
 import {
   buildNarrativeIntentBrief,
   renderMemoAsNarrativeBlock,
@@ -74,6 +84,7 @@ const LEGACY_WRITER_CONTEXT_BUDGET = {
   parentCanon: 12_000,
   volumeOutline: 12_000,
 } as const;
+
 import {
   readStoryFrame,
   readVolumeMap,
@@ -150,6 +161,131 @@ export interface WriteChapterOutput {
   readonly tokenUsage?: TokenUsage;
 }
 
+export class UnauthorizedChapterMemoMoralCorrectionError extends Error {
+  readonly findings: ReadonlyArray<string>;
+
+  constructor(findings: ReadonlyArray<string>) {
+    super("Chapter memo contains an unauthorized mandatory moral-correction constraint");
+    this.name = "UnauthorizedChapterMemoMoralCorrectionError";
+    this.findings = findings;
+  }
+}
+
+export function assertChapterMemoMoralAuthority(
+  memo: ChapterMemo,
+  moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): void {
+  const unauthorizedProhibitions = findUnauthorizedMemoProhibitions(
+    memo,
+    moralAuthoritySources,
+  );
+  if (unauthorizedProhibitions.length > 0) {
+    throw new UnauthorizedChapterMemoMoralCorrectionError(unauthorizedProhibitions);
+  }
+  const findings = findUnauthorizedMandatoryMoralCorrectionsInText(
+    `${memo.goal}\n${memo.body}`,
+    moralAuthoritySources,
+  );
+  if (findings.length > 0) {
+    throw new UnauthorizedChapterMemoMoralCorrectionError(findings);
+  }
+}
+
+export class UnauthorizedRuntimeStateMoralCorrectionError extends Error {
+  readonly findings: ReadonlyArray<string>;
+
+  constructor(findings: ReadonlyArray<string>) {
+    super("Runtime state delta contains an unauthorized mandatory moral-correction constraint");
+    this.name = "UnauthorizedRuntimeStateMoralCorrectionError";
+    this.findings = findings;
+  }
+}
+
+export class UnauthorizedProductionContextMoralCorrectionError extends Error {
+  readonly findings: ReadonlyArray<string>;
+
+  constructor(findings: ReadonlyArray<string>) {
+    super("Production context contains an unauthorized mandatory moral-correction constraint; repair the persisted source before writing");
+    this.name = "UnauthorizedProductionContextMoralCorrectionError";
+    this.findings = findings;
+  }
+}
+
+export function assertProductionContextMoralAuthority(
+  surfaces: ReadonlyArray<string | undefined>,
+  moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): void {
+  const findings = new Set<string>();
+  for (const surface of surfaces) {
+    if (!surface) continue;
+    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInText(
+      surface,
+      moralAuthoritySources,
+    )) findings.add(finding);
+  }
+  if (findings.size > 0) {
+    throw new UnauthorizedProductionContextMoralCorrectionError([...findings]);
+  }
+}
+
+export function assertNarrativeEvidenceMoralAuthority(
+  surfaces: ReadonlyArray<string | undefined>,
+  moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): void {
+  const findings = new Set<string>();
+  for (const surface of surfaces) {
+    if (!surface) continue;
+    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence(
+      surface,
+      moralAuthoritySources,
+    )) findings.add(finding);
+  }
+  if (findings.size > 0) {
+    throw new UnauthorizedProductionContextMoralCorrectionError([...findings]);
+  }
+}
+
+export function assertRuntimeStateDeltaMoralAuthority(
+  delta: RuntimeStateDelta,
+  moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): void {
+  const findings = new Set<string>();
+  for (const surface of collectStringLeaves(delta)) {
+    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInText(
+      surface,
+      moralAuthoritySources,
+    )) findings.add(finding);
+  }
+  if (findings.size > 0) {
+    throw new UnauthorizedRuntimeStateMoralCorrectionError([...findings]);
+  }
+}
+
+export function assertTruthProjectionMoralAuthority(
+  surfaces: ReadonlyArray<string | undefined>,
+  moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): void {
+  const findings = new Set<string>();
+  for (const surface of surfaces) {
+    if (!surface) continue;
+    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInText(
+      surface,
+      moralAuthoritySources,
+    )) findings.add(finding);
+  }
+  if (findings.size > 0) {
+    throw new UnauthorizedRuntimeStateMoralCorrectionError([...findings]);
+  }
+}
+
+function collectStringLeaves(value: unknown): ReadonlyArray<string> {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectStringLeaves(entry));
+  if (!value || typeof value !== "object") return [];
+  return Object.values(value as Record<string, unknown>)
+    .flatMap((entry) => collectStringLeaves(entry));
+}
+
 export class WriterAgent extends BaseAgent {
   get name(): string {
     return "writer";
@@ -174,7 +310,7 @@ export class WriterAgent extends BaseAgent {
     const [
       storyBible, volumeOutline, styleGuide, currentState, ledger, hooks,
       chapterSummaries, subplotBoard, emotionalArcs, characterMatrix, styleProfileRaw,
-      parentCanon, fanficCanonRaw,
+      parentCanon, fanficCanonRaw, creativeBrief,
     ] = await Promise.all([
         readStoryFrame(bookDir, placeholder),
         readVolumeMap(bookDir, placeholder),
@@ -193,6 +329,7 @@ export class WriterAgent extends BaseAgent {
         this.readFileOrDefault(join(bookDir, "story/style_profile.json")),
         this.readFileOrDefault(join(bookDir, "story/parent_canon.md")),
         this.readFileOrDefault(join(bookDir, "story/fanfic_canon.md")),
+        this.readFileOrDefault(join(bookDir, "story/brief.md")),
       ]);
 
     const recentChapters = await this.loadRecentChapters(bookDir, chapterNumber);
@@ -202,9 +339,53 @@ export class WriterAgent extends BaseAgent {
     // Load genre profile + book rules
     const { profile: genreProfile, body: genreBody } =
       await readGenreProfile(this.ctx.projectRoot, book.genre);
-    const parsedBookRules = await readBookRules(bookDir);
-    const bookRules = parsedBookRules?.rules ?? null;
-    const bookRulesBody = parsedBookRules?.body ?? "";
+    const effectiveBookRules = await readEffectiveBookRules(bookDir, book.id);
+    const bookRules = effectiveBookRules?.automatic ?? null;
+    const bookRulesGuidance = effectiveBookRules?.guidance ?? "";
+    const verifiedRuleStack = projectRuleStackToVerifiedBookRules(
+      input.ruleStack,
+      effectiveBookRules,
+    );
+    const moralAuthoritySources: ArchitectMoralAuthoritySource[] = [
+      { kind: "owner-direction", text: input.externalContext ?? "" },
+      { kind: "owner-direction", text: creativeBrief },
+      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        (entry.source === "story/author_intent.md" || entry.source === "story/current_focus.md")
+          && entry.excerpt
+          ? [{ kind: "owner-direction" as const, text: entry.excerpt }]
+          : []
+      )),
+      { kind: "persisted-book-canon", text: storyBible },
+      { kind: "persisted-book-canon", text: volumeOutline },
+      ...(effectiveBookRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
+
+    const ownerDirectionSources = new Set(["story/author_intent.md", "story/current_focus.md"]);
+    assertProductionContextMoralAuthority([
+      currentState,
+      ledger,
+      hooks,
+      chapterSummaries,
+      subplotBoard,
+      emotionalArcs,
+      characterMatrix,
+      styleGuide,
+      styleProfileRaw,
+      parentCanon,
+      fanficCanonRaw,
+      ...collectStringLeaves(verifiedRuleStack),
+      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        !ownerDirectionSources.has(entry.source) ? [entry.excerpt] : []
+      )),
+    ], moralAuthoritySources);
+    assertNarrativeEvidenceMoralAuthority([recentChapters], moralAuthoritySources);
+
+    if (input.chapterMemo) {
+      assertChapterMemoMoralAuthority(input.chapterMemo, moralAuthoritySources);
+    }
 
     const styleFingerprint = this.buildStyleFingerprint(styleProfileRaw);
 
@@ -249,6 +430,11 @@ export class WriterAgent extends BaseAgent {
           targetChapters: book.targetChapters,
           onWarning: (message) => this.ctx.logger?.warn(message),
         });
+    assertProductionContextMoralAuthority([
+      input.chapterIntent,
+      ...collectStringLeaves(input.chapterIntentData),
+      arcChapterContext?.markdown,
+    ], moralAuthoritySources);
     const referenceContext = await new ReferencePackStore(
       this.ctx.projectRoot,
       bookDir,
@@ -279,7 +465,7 @@ export class WriterAgent extends BaseAgent {
 
     // ── Phase 1: Creative writing (temperature 0.7) ──
     const baseCreativeSystemPrompt = await this.withPromptPackGuidance(buildWriterSystemPrompt(
-      book, promptGenreProfile, bookRules, bookRulesBody, promptGenreBody, promptStyleGuide, styleFingerprint,
+      book, promptGenreProfile, bookRules, bookRulesGuidance, promptGenreBody, promptStyleGuide, styleFingerprint,
       chapterNumber, "creative", fanficContext, resolvedLanguage,
       input.chapterMemo ? "governed" : "legacy",
       resolvedLengthSpec,
@@ -288,13 +474,13 @@ export class WriterAgent extends BaseAgent {
       ? `${baseCreativeSystemPrompt}\n\n${referenceContext.rendered}`
       : baseCreativeSystemPrompt;
 
-    const creativeUserPrompt = input.chapterMemo && input.contextPackage && input.ruleStack
+    const creativeUserPrompt = input.chapterMemo && input.contextPackage && verifiedRuleStack
       ? this.buildGovernedUserPrompt({
           chapterNumber,
           chapterMemo: input.chapterMemo,
           chapterIntentData: input.chapterIntentData,
           contextPackage: input.contextPackage,
-          ruleStack: input.ruleStack,
+          ruleStack: verifiedRuleStack,
           externalContext,
           arcContext: arcChapterContext?.markdown,
           futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
@@ -374,7 +560,7 @@ export class WriterAgent extends BaseAgent {
       ko: `2단계: ${chapterNumber}화 상태 정산 (${creative.wordCount}자)`,
       en: `Phase 2: state settlement for chapter ${chapterNumber} (${creative.wordCount} words)`,
     });
-    const isGovernedSettlement = Boolean(input.chapterIntent && input.contextPackage && input.ruleStack);
+    const isGovernedSettlement = Boolean(input.chapterIntent && input.contextPackage && verifiedRuleStack);
     const filteredHooksForSettlement = isGovernedSettlement && input.contextPackage
       ? buildGovernedHookWorkingSet({
           hooksMarkdown: hooks,
@@ -419,7 +605,7 @@ export class WriterAgent extends BaseAgent {
         : undefined,
       chapterIntent: input.chapterIntent,
       contextPackage: input.contextPackage,
-      ruleStack: input.ruleStack,
+      ruleStack: verifiedRuleStack,
       validationFeedback: undefined,
       originalHooks: hooks,
       originalSubplots: subplotBoard,
@@ -428,11 +614,25 @@ export class WriterAgent extends BaseAgent {
     });
     const settlement = settleResult.settlement;
     const settleUsage = settleResult.usage;
+    const settlementMoralAuthoritySources: ArchitectMoralAuthoritySource[] = [
+      ...moralAuthoritySources,
+    ];
+    assertTruthProjectionMoralAuthority([
+      settlement.updatedState,
+      settlement.updatedLedger,
+      settlement.updatedHooks,
+      settlement.chapterSummary,
+      settlement.updatedSubplots,
+      settlement.updatedEmotionalArcs,
+      settlement.updatedCharacterMatrix,
+    ], settlementMoralAuthoritySources);
     const runtimeStateArtifacts = await this.buildRuntimeStateArtifactsIfPresent(
       bookDir,
       settlement.runtimeStateDelta,
       resolvedLanguage,
       chapterNumber,
+      undefined,
+      settlementMoralAuthoritySources,
     );
     const resolvedRuntimeStateDelta = runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta;
     const priorHookIds = new Set(parsePendingHooksMarkdown(hooks).map((hook) => hook.hookId));
@@ -536,6 +736,8 @@ export class WriterAgent extends BaseAgent {
       emotionalArcs,
       characterMatrix,
       volumeOutline,
+      storyBible,
+      creativeBrief,
     ] = await Promise.all([
       // Phase 5 consolidation fallback: derive initial state when only seed on disk.
       readCurrentStateWithFallback(input.bookDir, "(文件尚未创建)"),
@@ -546,15 +748,52 @@ export class WriterAgent extends BaseAgent {
       this.readFileOrDefault(join(input.bookDir, "story/emotional_arcs.md")),
       readCharacterContext(input.bookDir, "(文件尚未创建)"),
       readVolumeMap(input.bookDir, "(文件尚未创建)"),
+      readStoryFrame(input.bookDir, "(文件尚未创建)"),
+      this.readFileOrDefault(join(input.bookDir, "story/brief.md")),
     ]);
 
     const { profile: genreProfile } = await readGenreProfile(this.ctx.projectRoot, input.book.genre);
-    const parsedBookRules = await readBookRules(input.bookDir);
-    const bookRules = parsedBookRules?.rules ?? null;
+    const effectiveBookRules = await readEffectiveBookRules(input.bookDir, input.book.id);
+    const bookRules = effectiveBookRules?.automatic ?? null;
+    const verifiedRuleStack = projectRuleStackToVerifiedBookRules(
+      input.ruleStack,
+      effectiveBookRules,
+    );
     const resolvedLanguage = input.book.language ?? genreProfile.language;
     const governedMemoryBlocks = input.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
       : undefined;
+
+    const ownerDirectionSources = new Set(["story/author_intent.md", "story/current_focus.md"]);
+    const settlementMoralAuthoritySources: ArchitectMoralAuthoritySource[] = [
+      { kind: "owner-direction", text: creativeBrief },
+      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        ownerDirectionSources.has(entry.source) && entry.excerpt
+          ? [{ kind: "owner-direction" as const, text: entry.excerpt }]
+          : []
+      )),
+      { kind: "persisted-book-canon", text: storyBible },
+      { kind: "persisted-book-canon", text: volumeOutline },
+      ...(effectiveBookRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
+    assertProductionContextMoralAuthority([
+      currentState,
+      ledger,
+      hooks,
+      chapterSummaries,
+      subplotBoard,
+      emotionalArcs,
+      characterMatrix,
+      input.chapterIntent,
+      input.validationFeedback,
+      ...collectStringLeaves(verifiedRuleStack),
+      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        !ownerDirectionSources.has(entry.source) ? [entry.excerpt] : []
+      )),
+    ], settlementMoralAuthoritySources);
 
     const settleResult = await this.settle({
       book: input.book,
@@ -576,7 +815,7 @@ export class WriterAgent extends BaseAgent {
         : undefined,
       chapterIntent: input.chapterIntent,
       contextPackage: input.contextPackage,
-      ruleStack: input.ruleStack,
+      ruleStack: verifiedRuleStack,
       validationFeedback: input.validationFeedback,
       originalHooks: hooks,
       originalSubplots: subplotBoard,
@@ -584,12 +823,22 @@ export class WriterAgent extends BaseAgent {
       originalCharacterMatrix: characterMatrix,
     });
     const settlement = settleResult.settlement;
+    assertTruthProjectionMoralAuthority([
+      settlement.updatedState,
+      settlement.updatedLedger,
+      settlement.updatedHooks,
+      settlement.chapterSummary,
+      settlement.updatedSubplots,
+      settlement.updatedEmotionalArcs,
+      settlement.updatedCharacterMatrix,
+    ], settlementMoralAuthoritySources);
     const runtimeStateArtifacts = await this.buildRuntimeStateArtifactsIfPresent(
       input.bookDir,
       settlement.runtimeStateDelta,
       resolvedLanguage,
       input.chapterNumber,
       input.allowReapply,
+      settlementMoralAuthoritySources,
     );
 
     return {
@@ -771,6 +1020,17 @@ export class WriterAgent extends BaseAgent {
     numericalSystem: boolean = true,
     language: "zh" | "ko" | "en" = "zh",
   ): Promise<void> {
+    const persistenceMoralAuthoritySources = await this.loadPersistenceMoralAuthoritySources(bookDir);
+    assertTruthProjectionMoralAuthority([
+      output.updatedState,
+      output.updatedLedger,
+      output.updatedHooks,
+      output.chapterSummary,
+      output.updatedChapterSummaries,
+      output.updatedSubplots,
+      output.updatedEmotionalArcs,
+      output.updatedCharacterMatrix,
+    ], persistenceMoralAuthoritySources);
     const chaptersDir = join(bookDir, "chapters");
     await mkdir(chaptersDir, { recursive: true });
 
@@ -1325,6 +1585,17 @@ ${overrides}\n`;
     output: WriteChapterOutput,
     language: "zh" | "ko" | "en" = "zh",
   ): Promise<void> {
+    const persistenceMoralAuthoritySources = await this.loadPersistenceMoralAuthoritySources(bookDir);
+    assertTruthProjectionMoralAuthority([
+      output.updatedState,
+      output.updatedLedger,
+      output.updatedHooks,
+      output.chapterSummary,
+      output.updatedChapterSummaries,
+      output.updatedSubplots,
+      output.updatedEmotionalArcs,
+      output.updatedCharacterMatrix,
+    ], persistenceMoralAuthoritySources);
     const storyDir = join(bookDir, "story");
     const writes: Array<Promise<void>> = [];
 
@@ -1354,7 +1625,15 @@ ${overrides}\n`;
       writes.push(writeFile(join(storyDir, "character_matrix.md"), output.updatedCharacterMatrix, "utf-8"));
     }
 
-    await Promise.all(writes);
+    // Do not let one rejected write race the outer Chapter rollback while
+    // sibling writes are still in flight. The enclosing persistence
+    // transaction restores the pre-operation bytes after every write settles.
+    const results = await Promise.allSettled(writes);
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Multiple Chapter truth projections failed to persist");
+    }
   }
 
   private renderDeltaSummaryRow(delta: RuntimeStateDelta): string {
@@ -1430,11 +1709,13 @@ ${overrides}\n`;
     language: "zh" | "ko" | "en",
     authoritativeChapterNumber?: number,
     allowReapply?: boolean,
+    moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource> = [],
   ): Promise<RuntimeStateArtifacts | null> {
     if (!delta) return null;
     const safeDelta = authoritativeChapterNumber === undefined
       ? delta
       : this.normalizeRuntimeStateDeltaChapter(delta, authoritativeChapterNumber);
+    assertRuntimeStateDeltaMoralAuthority(safeDelta, moralAuthoritySources);
     return buildRuntimeStateArtifacts({
       bookDir,
       delta: safeDelta,
@@ -1452,6 +1733,10 @@ ${overrides}\n`;
     const safeDelta = this.normalizeRuntimeStateDeltaChapter(
       output.runtimeStateDelta,
       output.chapterNumber,
+    );
+    assertRuntimeStateDeltaMoralAuthority(
+      safeDelta,
+      await this.loadPersistenceMoralAuthoritySources(bookDir),
     );
     if (
       safeDelta === output.runtimeStateDelta
@@ -1474,6 +1759,26 @@ ${overrides}\n`;
       delta: safeDelta,
       language,
     });
+  }
+
+  private async loadPersistenceMoralAuthoritySources(
+    bookDir: string,
+  ): Promise<ReadonlyArray<ArchitectMoralAuthoritySource>> {
+    const [storyBible, volumeOutline, creativeBrief, effectiveRules] = await Promise.all([
+      readStoryFrame(bookDir, "(文件尚未创建)"),
+      readVolumeMap(bookDir, "(文件尚未创建)"),
+      this.readFileOrDefault(join(bookDir, "story/brief.md")),
+      readEffectiveBookRules(bookDir),
+    ]);
+    return [
+      { kind: "owner-direction", text: creativeBrief },
+      { kind: "persisted-book-canon", text: storyBible },
+      { kind: "persisted-book-canon", text: volumeOutline },
+      ...(effectiveRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
   }
 
   private async appendChapterSummary(

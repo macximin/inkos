@@ -401,6 +401,7 @@ export {
   type OverrideEdge,
   type ActiveOverride,
   type RuleStackSections,
+  type VerifiedBookRuleRef,
   type RuleStack,
   type ChapterTrace,
   ChapterMemoSchema,
@@ -412,6 +413,7 @@ export {
   OverrideEdgeSchema,
   ActiveOverrideSchema,
   RuleStackSectionsSchema,
+  VerifiedBookRuleRefSchema,
   RuleStackSchema,
   ChapterTraceSchema,
 } from "./models/input-governance.js";
@@ -732,9 +734,11 @@ export {
   FORECAST_MAX_HORIZON,
   FORECAST_DEFAULT_HORIZON,
   NarrativeForecastSchema,
+  ForecastGenerationEvidenceSchema,
   ForecastBranchSchema,
   parseForecastModelOutput,
   type NarrativeForecast,
+  type ForecastGenerationEvidence,
   type ForecastBranch,
   type ForecastBeat,
   type ForecastRisk,
@@ -823,9 +827,35 @@ export { PolisherAgent, type PolishChapterInput, type PolishChapterOutput } from
 export { RadarAgent, type RadarResult, type RadarRecommendation } from "./agents/radar.js";
 export { FanqieRadarSource, QidianRadarSource, TextRadarSource, type RadarSource, type PlatformRankings, type RankingEntry } from "./agents/radar-source.js";
 export { readGenreProfile, readBookRules, listAvailableGenres, getBuiltinGenresDir } from "./agents/rules-reader.js";
+export {
+  FICTION_CONTENT_CONTRACT_ID,
+  FICTION_CONTENT_CONTRACT,
+  FICTION_CONTENT_CONTRACT_SHA256,
+  ContentIntensityAuthoritySchema,
+  ContentIntensityDirectiveSchema,
+  defaultContentIntensityDirective,
+  loadContentIntensityDirective,
+  appendFictionContentContract,
+  prepareFictionContentInvocation,
+  writeFictionContentInvocationOutcome,
+  verifyFictionContentInvocationReceipts,
+} from "./production/fiction-content-contract.js";
+export type {
+  ContentIntensityDirective,
+  FictionContentInvocationTrace,
+  FictionContentInvocationReceipt,
+  FictionContentInvocationOutcome,
+  PreparedFictionContentInvocation,
+  FictionContentReceiptAudit,
+} from "./production/fiction-content-contract.js";
 export { buildWriterSystemPrompt, buildGoldenOpeningDiscipline } from "./agents/writer-prompts.js";
 export { analyzeAITells, type AITellResult, type AITellIssue } from "./agents/ai-tells.js";
-export { analyzeSensitiveWords, type SensitiveWordResult, type SensitiveWordMatch } from "./agents/sensitive-words.js";
+export {
+  analyzeSensitiveWords,
+  type PublicationCompatibilityIssue,
+  type SensitiveWordResult,
+  type SensitiveWordMatch,
+} from "./agents/sensitive-words.js";
 export { detectAIContent, type DetectionResult } from "./agents/detector.js";
 export { analyzeStyle } from "./agents/style-analyzer.js";
 export { analyzeDetectionInsights } from "./agents/detection-insights.js";
@@ -1057,3 +1087,11 @@ export {
 export { exportInk } from "./interactive-film/export-ink.js";
 export { buildPlayableHtml } from "./interactive-film/export-html.js";
 export { ingestMaterial, type IngestMaterialInput, type MaterialAsset } from "./materials/ingest.js";
+export {
+  BOOK_RULE_PROVENANCE_COLLECTIONS,
+  BookRuleOwnerDecisionDraftSchema,
+  BookRuleOwnerDecisionInputSchema,
+  type BookRuleOwnerDecisionDraft,
+  type BookRuleOwnerDecisionInput,
+  type BookRuleProvenanceCollection,
+} from "./models/book-rule-provenance.js";

@@ -1,14 +1,16 @@
 import { readFile, writeFile, mkdir, readdir, rm, stat, unlink, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import type { BookConfig } from "../models/book.js";
+import { BookConfigSchema, type BookConfig } from "../models/book.js";
 import {
   ChapterArcProvenanceSchema,
   type ChapterArcProvenance,
   type ChapterMeta,
 } from "../models/chapter.js";
 import { commitAtomicFileSet, recoverAtomicFileSets } from "../utils/atomic-file-set.js";
+import { recoverChapterPersistenceTransactions } from "./chapter-persistence-journal.js";
 import { bootstrapStructuredStateFromMarkdown, resolveDurableStoryProgress } from "./state-bootstrap.js";
+import { isSafeBookId } from "../utils/book-id.js";
 
 const BOOK_LOCK_HEARTBEAT_MS = 30_000;
 const BOOK_LOCK_LEASE_MS = 3 * 60_000;
@@ -202,6 +204,7 @@ export class StateManager {
       // Book lock is ours and before any caller can observe or mutate files.
       try {
         await recoverAtomicFileSets(this.bookDir(bookId));
+        await recoverChapterPersistenceTransactions(this.bookDir(bookId));
       } catch (recoveryError) {
         try {
           const snapshot = await this.readLockSnapshot(lockPath);
@@ -452,18 +455,30 @@ export class StateManager {
 
   async listBooks(): Promise<ReadonlyArray<string>> {
     try {
-      const entries = await readdir(this.booksDir);
+      const entries = await readdir(this.booksDir, { withFileTypes: true });
       const bookIds: string[] = [];
       for (const entry of entries) {
-        const bookJsonPath = join(this.booksDir, entry, "book.json");
+        if (
+          !entry.isDirectory()
+          || entry.name.startsWith(".")
+          || !isSafeBookId(entry.name)
+        ) {
+          continue;
+        }
+        const bookDir = join(this.booksDir, entry.name);
+        const bookJsonPath = join(bookDir, "book.json");
         try {
-          await stat(bookJsonPath);
-          bookIds.push(entry);
+          const raw = JSON.parse(await readFile(bookJsonPath, "utf-8"));
+          const config = BookConfigSchema.pick({ id: true }).parse(raw);
+          if (config.id !== entry.name) continue;
+          if (!(await this.isCompleteBookDirectory(bookDir))) continue;
+          bookIds.push(entry.name);
         } catch {
-          // not a book directory
+          // Invalid, incomplete, staging, and quarantine directories are not
+          // discoverable canonical Books.
         }
       }
-      return bookIds;
+      return bookIds.sort();
     } catch {
       return [];
     }

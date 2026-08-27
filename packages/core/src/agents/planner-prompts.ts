@@ -17,7 +17,7 @@ export const PLANNER_MEMO_SYSTEM_PROMPT = `你是这本小说的创作总编，�
 5. 1 主线 + 1 支线：支线必须为主线服务，不同时推 3 条以上支线
 6. 爽点看语义重量，不按章数凑数量：选择本周期最有力的一次小冲突→解决→反馈，全员智商在线
 7. 高潮前铺垫：高潮需要的因果必须先让读者看见，距离服从事件而不是固定章数
-8. 高潮后影响：爆发之后要给改变和代价足够篇幅落地（主线推进、人设成长、关系变化），不急着机械进入下一轮
+8. 高潮后影响：爆发之后要给已经发生的改变、兑现或后效足够篇幅落地（主线推进、地位或关系变化、新常态），不急着机械进入下一轮；没有因果依据时不强加代价或成长
 9. 人物立体化：核心标签 + 反差细节 = 活人
 10. 五感具体化：场景描写必须有具体可视化感官细节
 11. 章尾承接：需要继续推进时，让下一步欲望、选择或压力从本章结果里自然产生；干净结算章可以直接收束
@@ -93,7 +93,7 @@ defer:
 - 本章"## 当前任务"如果天然对应某个 hook 的兑现动作，必须在 resolve 里显式声明对应 hook_id
 
 ## 不要做
-<2-4 条硬约束>
+<只写本章用户指令、作品正典或已验证硬规则中原样存在的禁令；没有就写“无”。不得自行添加惩罚、悔过、赎罪、正义审判等道德修正>
 
 ## 输出要求
 
@@ -122,7 +122,7 @@ Your working principles (internalize them — do not cite by number in the memo)
 5. 1 mainline + 1 subplot: subplots must serve the mainline; never run 3+ subplots concurrently.
 6. Judge satisfaction by semantic weight, not a chapter-count quota: select the mini-cycle's strongest small conflict → resolution → feedback; everyone stays sharp.
 7. Pre-climax setup: make the necessary causality visible before a climax; distance follows the event rather than a fixed chapter count.
-8. Post-climax fallout: give concrete change and cost enough room to land (mainline advance, persona growth, relationship shift) instead of mechanically rushing into the next build-up.
+8. Post-climax fallout: give changes, payoffs, or aftereffects that actually occurred enough room to land (mainline advance, status or relationship shift, a new normal) instead of mechanically rushing into the next build-up. Do not force a cost or growth beat without causal support.
 9. Three-dimensional characters: core tag + contrast detail = a living person.
 10. Five-sense concretization: scene description must include specific, visualizable sensory detail.
 11. End-of-chapter carry: when the story continues forward, let the next desire, choice, or pressure arise naturally from this chapter's result; a clean-closure chapter may simply close.
@@ -198,7 +198,7 @@ defer:
 - If "## Current task" naturally corresponds to paying off a hook, it must appear under resolve with the hook_id.
 
 ## Do not
-<2-4 hard prohibitions>
+<Only exact prohibitions from the per-chapter user instruction, persisted Book canon, or verified hard BookRules; write "none" when absent. Never invent punishment, justice, remorse, or redemption as a moral correction.>
 
 ## Output requirements
 
@@ -322,7 +322,7 @@ defer:
 - H009 "복선 이름" → 미루는 이유와 다시 다룰 회차
 
 ## 금지
-- 이번 화에서 해서는 안 될 일 2-4개
+- 이번 회차 사용자 지시, 작품 정본, 검증된 하드 BookRules에 원문으로 있는 금지만 적습니다. 없으면 없음이라고 적고, 처벌·정의 구현·반성·속죄 같은 도덕적 교정을 새로 만들지 않습니다.
 
 ## 기계 판독 규칙
 

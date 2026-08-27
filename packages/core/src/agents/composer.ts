@@ -26,6 +26,11 @@ import type {
   BookReferenceSelectionTask,
   ReferenceSectionSelectionRequest,
 } from "../references/reference-context.js";
+import { readEffectiveBookRules } from "./effective-book-rules.js";
+import {
+  findUnauthorizedMandatoryMoralCorrectionsInText,
+  type ArchitectMoralAuthoritySource,
+} from "./architect.js";
 
 export interface ComposeChapterInput {
   readonly book: BookConfig;
@@ -86,6 +91,16 @@ export interface ComposeChapterOutput {
   readonly tracePath: string;
 }
 
+export class UnauthorizedComposedContextMoralCorrectionError extends Error {
+  readonly findings: ReadonlyArray<string>;
+
+  constructor(findings: ReadonlyArray<string>) {
+    super("Selected production context contains an unauthorized mandatory moral-correction constraint; repair the persisted source before composing");
+    this.name = "UnauthorizedComposedContextMoralCorrectionError";
+    this.findings = findings;
+  }
+}
+
 export async function composeGovernedChapter(input: ComposeChapterInput): Promise<ComposeChapterOutput> {
   const storyDir = join(input.bookDir, "story");
   const runtimeDir = join(storyDir, "runtime");
@@ -105,6 +120,12 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     ...(activeFutureAdvantageContext ? [activeFutureAdvantageContext] : []),
     ...referenceContext.entries,
   ];
+  const effectiveRules = await readEffectiveBookRules(input.bookDir, input.book.id);
+  await assertSelectedContextMoralAuthority({
+    storyDir,
+    selectedContext,
+    hardRuleTexts: (effectiveRules?.hardEntries ?? []).map((entry) => entry.text),
+  });
   const initialContextPackage = ContextPackageSchema.parse({
     chapter: input.chapterNumber,
     selectedContext,
@@ -120,7 +141,11 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
   });
   const contextPackage = budgeted.contextPackage;
 
-  const ruleStack = buildGovernedRuleStack(input.plan, input.chapterNumber);
+  const ruleStack = buildGovernedRuleStack(
+    input.plan,
+    input.chapterNumber,
+    effectiveRules?.ruleRefs ?? [],
+  );
   const trace = buildGovernedTrace({
     chapterNumber: input.chapterNumber,
     plan: input.plan,
@@ -149,6 +174,50 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     ruleStackPath,
     tracePath,
   };
+}
+
+async function assertSelectedContextMoralAuthority(input: {
+  readonly storyDir: string;
+  readonly selectedContext: ContextPackage["selectedContext"];
+  readonly hardRuleTexts: ReadonlyArray<string>;
+}): Promise<void> {
+  const readOptional = (path: string): Promise<string> => readFile(path, "utf8").catch(() => "");
+  const [brief, storyFrame, legacyStoryBible, volumeMap, legacyVolumeOutline] = await Promise.all([
+    readOptional(join(input.storyDir, "brief.md")),
+    readOptional(join(input.storyDir, "outline/story_frame.md")),
+    readOptional(join(input.storyDir, "story_bible.md")),
+    readOptional(join(input.storyDir, "outline/volume_map.md")),
+    readOptional(join(input.storyDir, "volume_outline.md")),
+  ]);
+  const ownerSources = new Set(["story/author_intent.md", "story/current_focus.md"]);
+  const foundationSources = ["story/outline/story_frame.md", "story/story_bible.md", "story/outline/volume_map.md", "story/volume_outline.md"];
+  const authoritySources: ArchitectMoralAuthoritySource[] = [
+    { kind: "owner-direction", text: brief },
+    ...input.selectedContext.flatMap((entry) => (
+      ownerSources.has(entry.source) && entry.excerpt
+        ? [{ kind: "owner-direction" as const, text: entry.excerpt }]
+        : []
+    )),
+    { kind: "persisted-book-canon", text: storyFrame || legacyStoryBible },
+    { kind: "persisted-book-canon", text: volumeMap || legacyVolumeOutline },
+    ...input.hardRuleTexts.map((text) => ({
+      kind: "persisted-book-canon" as const,
+      text,
+    })),
+  ];
+  const findings = new Set<string>();
+  for (const entry of input.selectedContext) {
+    if (!entry.excerpt
+      || ownerSources.has(entry.source)
+      || foundationSources.some((source) => entry.source.startsWith(source))) continue;
+    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInText(
+      entry.excerpt,
+      authoritySources,
+    )) findings.add(finding);
+  }
+  if (findings.size > 0) {
+    throw new UnauthorizedComposedContextMoralCorrectionError([...findings]);
+  }
 }
 
 function buildActiveFutureAdvantageContext(

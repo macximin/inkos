@@ -174,6 +174,34 @@ describe("persisted-governed-plan round trip", () => {
     expect(loaded!.arcProvenance).toEqual(plan.arcProvenance);
   });
 
+  it("invalidates persisted intent, memo, intent markdown, or Arc moral steering", async () => {
+    const poison = "The chapter must include diverse representation.";
+    for (const surface of ["intent", "memo", "intent-markdown", "arc"] as const) {
+      const dir = await mkdtemp(join(tmpdir(), `inkos-plan-poison-${surface}-`));
+      await mkdir(join(dir, "story", "runtime"), { recursive: true });
+      const base = buildPlan(1);
+      const plan: PlanChapterOutput = {
+        ...base,
+        ...(surface === "intent"
+          ? { intent: { ...base.intent, arcContext: poison } }
+          : {}),
+        ...(surface === "memo"
+          ? { memo: { ...base.memo, body: base.memo.body.replace("- 不要出现母亲真实姓名", `- ${poison}`) } }
+          : {}),
+        ...(surface === "arc"
+          ? { arcProvenance: { ...buildArcProvenance(1), promise: poison } }
+          : {}),
+      };
+      await savePersistedPlan(dir, plan);
+      await writeFile(
+        join(dir, "story", "runtime", "chapter-0001.intent.md"),
+        surface === "intent-markdown" ? `# Chapter Intent\n\n${poison}\n` : base.intentMarkdown,
+        "utf-8",
+      );
+      await expect(loadPersistedPlan(dir, 1)).resolves.toBeNull();
+    }
+  });
+
   it("returns null when plan file does not exist", async () => {
     const dir = await mkdtemp(join(tmpdir(), "inkos-plan-"));
     await mkdir(join(dir, "story", "runtime"), { recursive: true });

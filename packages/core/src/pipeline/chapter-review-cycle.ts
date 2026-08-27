@@ -1,5 +1,6 @@
 import { isAutomaticRevisionIssue, type AuditIssue, type AuditResult } from "../agents/continuity.js";
 import type { ReviseMode, ReviseOutput } from "../agents/reviser.js";
+import type { SensitiveWordResult } from "../agents/sensitive-words.js";
 import type { WriteChapterOutput } from "../agents/writer.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { LengthSpec } from "../models/length-governance.js";
@@ -25,6 +26,8 @@ export interface ChapterReviewCycleResult {
   readonly preAuditNormalizedWordCount: number;
   readonly revised: boolean;
   readonly auditResult: AuditResult;
+  /** Advisory publishing-platform preflight; never part of creative review. */
+  readonly publicationCompatibility: SensitiveWordResult;
   readonly totalUsage: ChapterReviewCycleUsage;
   readonly postReviseCount: number;
   readonly normalizeApplied: boolean;
@@ -39,6 +42,7 @@ interface ReviewSnapshot {
   readonly auditResult: AuditResult;
   readonly score: number;
   readonly lengthInRange: boolean;
+  readonly publicationCompatibility: SensitiveWordResult;
 }
 
 export async function runChapterReviewCycle(params: {
@@ -98,10 +102,7 @@ export async function runChapterReviewCycle(params: {
     right?: ChapterReviewCycleUsage,
   ) => ChapterReviewCycleUsage;
   readonly analyzeAITells: (content: string) => { issues: ReadonlyArray<AuditIssue> };
-  readonly analyzeSensitiveWords: (content: string) => {
-    found: ReadonlyArray<{ severity: string }>;
-    issues: ReadonlyArray<AuditIssue>;
-  };
+  readonly analyzeSensitiveWords: (content: string) => SensitiveWordResult;
   /** Re-run deterministic post-write checks (chapter-ref, paragraph shape, etc.) on any content. */
   readonly runPostWriteChecks?: (content: string) => ReadonlyArray<AuditIssue>;
   readonly maxReviewIterations?: number;
@@ -119,6 +120,7 @@ export async function runChapterReviewCycle(params: {
     category: violation.rule,
     description: violation.description,
     suggestion: violation.suggestion,
+    automaticRevisionEligible: true,
   }));
 
   // ---------------------------------------------------------------------------
@@ -152,7 +154,12 @@ export async function runChapterReviewCycle(params: {
   const assess = async (
     content: string,
     options?: { temperature?: number },
-  ): Promise<{ auditResult: AuditResult; score: number; lengthInRange: boolean }> => {
+  ): Promise<{
+    auditResult: AuditResult;
+    score: number;
+    lengthInRange: boolean;
+    publicationCompatibility: SensitiveWordResult;
+  }> => {
     const auditOptions = {
       ...(params.reducedControlInput ?? {}),
       ...(params.arcProvenanceContext ? { arcContext: params.arcProvenanceContext } : {}),
@@ -167,8 +174,7 @@ export async function runChapterReviewCycle(params: {
     );
     totalUsage = params.addUsage(totalUsage, llmAudit.tokenUsage);
     const aiTellsResult = params.analyzeAITells(content);
-    const sensitiveResult = params.analyzeSensitiveWords(content);
-    const hasBlockedWords = sensitiveResult.found.some((item) => item.severity === "block");
+    const publicationCompatibility = params.analyzeSensitiveWords(content);
     const wordCount = countChapterLength(content, params.lengthSpec.countingMode);
     const lengthInRange = !isOutsideHardRange(wordCount, params.lengthSpec);
 
@@ -187,7 +193,6 @@ export async function runChapterReviewCycle(params: {
     const allIssues: AuditIssue[] = [
       ...llmAudit.issues,
       ...aiTellsResult.issues,
-      ...sensitiveResult.issues,
       ...postWriteIssues,
     ];
 
@@ -200,7 +205,6 @@ export async function runChapterReviewCycle(params: {
     // `passed: true` whenever a creative critical issue is present.
     const hasCreativeCritical = allIssues.some(isAutomaticRevisionIssue);
     const creativePassed = !llmAudit.parseFailed
-      && !hasBlockedWords
       && !hasCreativeCritical;
     const auditResult: AuditResult = {
       passed: creativePassed,
@@ -214,7 +218,7 @@ export async function runChapterReviewCycle(params: {
 
     const score = llmAudit.overallScore ?? 0;
 
-    return { auditResult, score, lengthInRange };
+    return { auditResult, score, lengthInRange, publicationCompatibility };
   };
 
   const isPassed = (assessment: { auditResult: AuditResult; lengthInRange: boolean }): boolean =>
@@ -235,6 +239,7 @@ export async function runChapterReviewCycle(params: {
     auditResult: initial.auditResult,
     score: initial.score,
     lengthInRange: initial.lengthInRange,
+    publicationCompatibility: initial.publicationCompatibility,
   }];
 
   let currentAudit = initial;
@@ -251,6 +256,7 @@ export async function runChapterReviewCycle(params: {
       preAuditNormalizedWordCount,
       revised: false,
       auditResult: initial.auditResult,
+      publicationCompatibility: initial.publicationCompatibility,
       totalUsage,
       postReviseCount,
       normalizeApplied,
@@ -321,6 +327,7 @@ export async function runChapterReviewCycle(params: {
         auditResult: nextAssessment.auditResult,
         score: nextAssessment.score,
         lengthInRange: nextAssessment.lengthInRange,
+        publicationCompatibility: nextAssessment.publicationCompatibility,
       });
 
       // Check if passed
@@ -390,6 +397,7 @@ export async function runChapterReviewCycle(params: {
       auditResult: bestSnapshot.auditResult,
       score: bestSnapshot.score,
       lengthInRange: bestSnapshot.lengthInRange,
+      publicationCompatibility: bestSnapshot.publicationCompatibility,
     };
   }
 
@@ -399,6 +407,7 @@ export async function runChapterReviewCycle(params: {
     preAuditNormalizedWordCount,
     revised: snapshots.length > 1 && finalContent !== params.initialOutput.content,
     auditResult: currentAudit.auditResult,
+    publicationCompatibility: currentAudit.publicationCompatibility,
     totalUsage,
     postReviseCount,
     normalizeApplied,

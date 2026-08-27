@@ -63,6 +63,21 @@ export type ForecastBranch = z.infer<typeof ForecastBranchSchema>;
 export const ForecastStatusSchema = z.enum(["active", "stale"]);
 export type ForecastStatus = z.infer<typeof ForecastStatusSchema>;
 
+export const ForecastGenerationEvidenceSchema = z.object({
+  contractId: z.literal("fiction-content-neutral-ko/v1"),
+  stage: z.literal("forecast"),
+  invocationIds: z.array(z.string().uuid()).min(1),
+}).strict().superRefine((evidence, ctx) => {
+  if (new Set(evidence.invocationIds).size !== evidence.invocationIds.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["invocationIds"],
+      message: "forecast generation evidence contains duplicate invocation IDs",
+    });
+  }
+});
+export type ForecastGenerationEvidence = z.infer<typeof ForecastGenerationEvidenceSchema>;
+
 export const NarrativeForecastSchema = z.object({
   version: z.literal(1),
   forecastId: z.string().min(1),
@@ -74,6 +89,11 @@ export const NarrativeForecastSchema = z.object({
   baseChapter: z.number().int().min(0),
   contextFingerprint: z.string().min(1),
   status: ForecastStatusSchema,
+  /**
+   * Present on every newly generated forecast. Optional only so older stored
+   * v1 artifacts remain readable; selection fails closed when it is absent.
+   */
+  generationEvidence: ForecastGenerationEvidenceSchema.optional(),
   branches: z.array(ForecastBranchSchema).min(FORECAST_MIN_BRANCHES).max(FORECAST_MAX_BRANCHES),
 }).superRefine((forecast, ctx) => {
   const seen = new Set<string>();

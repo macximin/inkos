@@ -5,7 +5,10 @@ import { formatRecentSummaries, readSubplotBoard } from "../agents/planner-conte
 import { readCharacterContext, readStoryFrame, readVolumeMap } from "../utils/outline-paths.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import { renderStoryRailPlan } from "../arc/rail-context.js";
-import { parseBookRules } from "../models/book-rules.js";
+import {
+  readEffectiveBookRules,
+  type EffectiveBookRules,
+} from "../agents/effective-book-rules.js";
 
 // Read-only view of the canonical book used as forecast input. Everything in
 // here MUST stay side-effect free: building a forecast context never creates
@@ -51,12 +54,12 @@ export async function buildForecastContext(params: {
     collectFingerprintFiles(bookDir),
   ]);
 
-  const [authorIntent, currentFocus, currentState, pendingHooks, bookRules] = await Promise.all([
+  const [authorIntent, currentFocus, currentState, pendingHooks, effectiveBookRules] = await Promise.all([
     readOrEmpty(join(storyDir, "author_intent.md")),
     readOrEmpty(join(storyDir, "current_focus.md")),
     readOrEmpty(join(storyDir, "current_state.md")),
     readOrEmpty(join(storyDir, "pending_hooks.md")),
-    readOrEmpty(join(storyDir, "book_rules.md")),
+    readEffectiveBookRules(bookDir, bookId),
   ]);
 
   const [storyFrame, volumeMap, characterContext, subplotBoard, chapterSummariesRaw, storyRailPlan] = await Promise.all([
@@ -68,9 +71,19 @@ export async function buildForecastContext(params: {
     new StoryRailStore(bookDir).loadOptional(bookId),
   ]);
 
+  const bookRulesGuidance = renderForecastBookRuleGuidance(effectiveBookRules, bookConfig.language);
   const contextFingerprint = computeContextFingerprint({
     baseChapter,
-    files: fingerprintFiles,
+    files: [
+      ...fingerprintFiles,
+      [
+        "derived/effective-book-rules.json",
+        JSON.stringify({
+          guidance: bookRulesGuidance,
+          futureAdvantage: effectiveBookRules?.automatic.futureAdvantage ?? null,
+        }),
+      ],
+    ],
   });
 
   return {
@@ -79,13 +92,13 @@ export async function buildForecastContext(params: {
     language: bookConfig.language,
     baseChapter,
     contextFingerprint,
-    futureAdvantageEnabled: parseBookRules(bookRules)?.rules.futureAdvantage?.enabled === true,
+    futureAdvantageEnabled: effectiveBookRules?.automatic.futureAdvantage?.enabled === true,
     sections: {
       authorIntent,
       currentFocus,
       currentState,
       pendingHooks,
-      bookRules,
+      bookRules: bookRulesGuidance,
       storyFrame,
       volumeMap,
       recentChapterSummaries: chapterSummariesRaw.trim()
@@ -96,6 +109,31 @@ export async function buildForecastContext(params: {
       storyRails: storyRailPlan ? renderStoryRailPlan(storyRailPlan) : "",
     },
   };
+}
+
+function renderForecastBookRuleGuidance(
+  effective: EffectiveBookRules | null,
+  language: "zh" | "ko" | "en",
+): string {
+  if (!effective) return "";
+  const blocks: string[] = [];
+  if (effective.guidance) blocks.push(effective.guidance);
+
+  // Future Advantage configuration is a typed story premise, not an
+  // enforcement-sensitive prohibition. Keep that routing signal while never
+  // copying the raw BookRules Markdown into the model context.
+  const future = effective.automatic.futureAdvantage;
+  if (future) {
+    const heading = language === "ko" ? "## 미래 선점" : language === "zh" ? "## 未来先机" : "## Future Advantage";
+    const enabled = language === "ko" ? "사용" : language === "zh" ? "启用" : "Enabled";
+    const promise = language === "ko" ? "핵심 약속" : language === "zh" ? "核心承诺" : "Core promise";
+    blocks.push([
+      heading,
+      `- ${enabled}: ${future.enabled}`,
+      ...(future.corePromise ? [`- ${promise}: ${future.corePromise}`] : []),
+    ].join("\n"));
+  }
+  return blocks.join("\n\n");
 }
 
 /**
@@ -123,7 +161,6 @@ export function computeContextFingerprint(input: {
 const FINGERPRINT_FIXED_INPUTS: ReadonlyArray<string> = [
   "book.json",
   "story/author_intent.md",
-  "story/book_rules.md",
   "story/chapter_summaries.md",
   "story/character_matrix.md",
   "story/current_focus.md",

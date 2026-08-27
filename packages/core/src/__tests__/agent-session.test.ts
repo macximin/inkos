@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -147,6 +147,36 @@ vi.mock("@mariozechner/pi-ai", async () => {
             errorMessage: "400 status code (no body)",
             timestamp,
           }
+        : prompt === "model error no message"
+        ? {
+            role: "assistant",
+            content: [],
+            api: "anthropic-messages",
+            provider: "anthropic",
+            model: "fake",
+            usage: EMPTY_USAGE,
+            stopReason: "error",
+            timestamp,
+          }
+        : prompt === "length mutation"
+        ? {
+            role: "assistant",
+            content: [{
+              type: "toolCall",
+              id: "length-mutation-1",
+              name: "write_truth_file",
+              arguments: {
+                fileName: "current_focus.md",
+                content: "# Current Focus\n\nThis must never be committed.",
+              },
+            }],
+            api: "anthropic-messages",
+            provider: "anthropic",
+            model: "fake",
+            usage: EMPTY_USAGE,
+            stopReason: "length",
+            timestamp,
+          }
         : prompt === "think"
         ? assistant([
             { type: "thinking", thinking: "raw thought", thinkingSignature: "sig-1" },
@@ -196,6 +226,18 @@ vi.mock("@mariozechner/pi-ai", async () => {
                 id: "tool-1",
                 name: "read",
                 arguments: { path: "book-a/story/story_bible.md" },
+              },
+            ], timestamp)
+        : prompt === "write governed truth"
+          ? assistant([
+              {
+                type: "toolCall",
+                id: "governed-truth-1",
+                name: "write_truth_file",
+                arguments: {
+                  fileName: "current_focus.md",
+                  content: "# Current Focus\n\nPreserve the criminal victory.",
+                },
               },
             ], timestamp)
         : prompt === "raw chapter"
@@ -274,6 +316,10 @@ import {
 import { restoreAgentMessagesFromTranscript } from "../interaction/session-transcript-restore.js";
 import { PlayStore } from "../play/play-store.js";
 import { opaqueConversationId } from "../llm/agent-trajectory.js";
+import {
+  FICTION_CONTENT_CONTRACT,
+  verifyFictionContentInvocationReceipts,
+} from "../production/fiction-content-contract.js";
 
 async function writeProjectAgentSkill(
   projectRoot: string,
@@ -325,6 +371,8 @@ describe("runAgentSession cache — bookId switch", () => {
     evictAgentCache("s1");
     evictAgentCache("s-cache-seq");
     evictAgentCache("s-error");
+    evictAgentCache("s-error-empty");
+    evictAgentCache("s-length-mutation");
     evictAgentCache("s-project-root-cache");
     evictAgentCache("s-interleave-seq");
     evictAgentCache("s-context-window");
@@ -342,6 +390,8 @@ describe("runAgentSession cache — bookId switch", () => {
     evictAgentCache("abort-session");
     evictAgentCache("codex-loop-session");
     evictAgentCache("ko-reference-session");
+    evictAgentCache("governed-mutation-session");
+    evictAgentCache("governed-stub-session");
     await rm(projectRoot, { recursive: true, force: true });
     if (otherProjectRoot) await rm(otherProjectRoot, { recursive: true, force: true });
   });
@@ -402,6 +452,100 @@ describe("runAgentSession cache — bookId switch", () => {
     expect(listedText).toContain("연결된 참고 자료가 없습니다");
     expect(blockedText).toContain("이미 작품이 연결되어 있습니다");
     expect(`${listedText}\n${blockedText}`).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("persists a completed contract receipt and exact tool authorization before Book mutation", async () => {
+    const model = {
+      provider: "anthropic",
+      id: "fake",
+      name: "fake",
+      api: "anthropic-messages",
+      baseUrl: "https://example.invalid",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 4096,
+    } as any;
+
+    const result = await runAgentSession(
+      {
+        sessionId: "governed-mutation-session",
+        bookId: "book-a",
+        sessionKind: "book",
+        language: "en",
+        pipeline: {} as any,
+        projectRoot,
+        model,
+      },
+      "write governed truth",
+    );
+
+    expect(result.errorMessage).toBeUndefined();
+    expect(await readFile(
+      join(projectRoot, "books", "book-a", "story", "current_focus.md"),
+      "utf8",
+    )).toContain("Preserve the criminal victory");
+    expect(streamCalls).toHaveLength(2);
+    for (const call of streamCalls) {
+      expect(String(call.context.systemPrompt).split(FICTION_CONTENT_CONTRACT)).toHaveLength(2);
+    }
+    const audit = await verifyFictionContentInvocationReceipts(projectRoot, "book-a");
+    expect(audit.invocations).toHaveLength(2);
+    expect(audit.invocations.every((invocation) => invocation.status === "completed")).toBe(true);
+    const authorizationNames = await readdir(join(
+      projectRoot,
+      "books",
+      "book-a",
+      "story",
+      "runtime",
+      "fiction-content-neutral",
+      "tool-authorizations",
+    ));
+    expect(authorizationNames).toHaveLength(1);
+  });
+
+  it("fails a Book session stub closed and records the failed governed invocation", async () => {
+    const previous = process.env.INKOS_AGENT_LLM_STUB;
+    process.env.INKOS_AGENT_LLM_STUB = "1";
+    try {
+      const result = await runAgentSession(
+        {
+          sessionId: "governed-stub-session",
+          bookId: "book-a",
+          sessionKind: "book",
+          language: "en",
+          pipeline: {} as any,
+          projectRoot,
+          model: {
+            provider: "anthropic",
+            id: "stub",
+            name: "stub",
+            api: "anthropic-messages",
+            baseUrl: "https://example.invalid",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 200_000,
+            maxTokens: 4096,
+          } as any,
+        },
+        "try to mutate canon",
+      );
+      expect(result.errorMessage).toContain("cannot execute a Book/edit session");
+      expect(streamCalls).toHaveLength(0);
+      const audit = await verifyFictionContentInvocationReceipts(projectRoot, "book-a");
+      expect(audit.invocations).toEqual([
+        expect.objectContaining({
+          agentName: "book-agent-session",
+          stage: "agent-session:book",
+          status: "failed",
+        }),
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.INKOS_AGENT_LLM_STUB;
+      else process.env.INKOS_AGENT_LLM_STUB = previous;
+    }
   });
 
   it("rebuilds Agent when bookId goes from null to a real book", async () => {
@@ -1686,6 +1830,14 @@ describe("runAgentSession cache — bookId switch", () => {
     expect(events.map((event) => event.type)).toContain("request_failed");
     expect(events.map((event) => event.type)).not.toContain("request_committed");
 
+    const evidence = await verifyFictionContentInvocationReceipts(projectRoot, "book-a");
+    expect(evidence.invocations).toHaveLength(1);
+    expect(evidence.invocations[0]).toMatchObject({
+      agentName: "book-agent-session",
+      stage: "agent-session:book",
+      status: "failed",
+    });
+
     const restored = await restoreAgentMessagesFromTranscript(projectRoot, "s-error");
     expect(restored).toEqual([]);
 
@@ -1696,6 +1848,41 @@ describe("runAgentSession cache — bookId switch", () => {
     );
     expect(agentInstances).toHaveLength(instancesAfterError + 1);
     expect(JSON.stringify(streamCalls.at(-1)?.context.messages)).not.toContain("model error");
+  });
+
+  it("fails a terminal assistant error even when the provider omits errorMessage", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+
+    const result = await runAgentSession(
+      { sessionId: "s-error-empty", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
+      "model error no message",
+    );
+
+    expect(result.errorMessage).toBe("Provider stream ended with assistant stop reason error.");
+    const events = await readTranscriptEvents(projectRoot, "s-error-empty");
+    expect(events.map((event) => event.type)).toContain("request_failed");
+    expect(events.map((event) => event.type)).not.toContain("request_committed");
+  });
+
+  it("treats a length-truncated mutation tool call as failed and never authorizes it", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+
+    const result = await runAgentSession(
+      { sessionId: "s-length-mutation", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
+      "length mutation",
+    );
+
+    expect(result.errorMessage).toContain("token limit");
+    const events = await readTranscriptEvents(projectRoot, "s-length-mutation");
+    expect(events.map((event) => event.type)).toContain("request_failed");
+    expect(events.map((event) => event.type)).not.toContain("request_committed");
+    await expect(readFile(join(projectRoot, "books", "book-a", "story", "current_focus.md"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+
+    const evidence = await verifyFictionContentInvocationReceipts(projectRoot, "book-a");
+    expect(evidence.invocations.at(-1)).toMatchObject({ status: "failed" });
   });
 
   it("aborts and evicts an active cached agent session", async () => {

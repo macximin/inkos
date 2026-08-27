@@ -8,7 +8,17 @@ import {
   type AuditIssue,
 } from "./continuity.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
-import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
+import { readGenreProfile, readBookLanguage } from "./rules-reader.js";
+import {
+  projectRuleStackToVerifiedBookRules,
+  readEffectiveBookRules,
+} from "./effective-book-rules.js";
+import type { ArchitectMoralAuthoritySource } from "./architect.js";
+import {
+  assertChapterMemoMoralAuthority,
+  assertNarrativeEvidenceMoralAuthority,
+  assertProductionContextMoralAuthority,
+} from "./writer.js";
 import { countChapterLength } from "../utils/length-metrics.js";
 import { sanitizeLegacyFunFirstMethodology } from "../utils/writing-methodology.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
@@ -202,7 +212,7 @@ export class ReviserAgent extends BaseAgent {
       revisionInstruction?: string;
     },
   ): Promise<ReviseOutput> {
-    const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon] = await Promise.all([
+    const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon, creativeBrief] = await Promise.all([
       // Phase 5 consolidation: derive initial state from roles + seed hooks
       // when current_state.md is still the architect seed placeholder.
       readCurrentStateWithFallback(bookDir, "(文件不存在)"),
@@ -215,6 +225,7 @@ export class ReviserAgent extends BaseAgent {
       this.readFileSafe(join(bookDir, "story/chapter_summaries.md")),
       this.readFileSafe(join(bookDir, "story/parent_canon.md")),
       this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),
+      this.readFileSafe(join(bookDir, "story/brief.md")),
     ]);
 
     // Load genre profile and book rules
@@ -223,20 +234,25 @@ export class ReviserAgent extends BaseAgent {
       readGenreProfile(this.ctx.projectRoot, genreId),
       readBookLanguage(bookDir),
     ]);
-    const parsedRules = await readBookRules(bookDir);
-    const bookRules = parsedRules?.rules ?? null;
+    const effectiveRules = await readEffectiveBookRules(bookDir);
+    const bookRules = effectiveRules?.automatic ?? null;
+    const verifiedRuleGuidance = effectiveRules?.guidance ?? "";
+    const verifiedRuleStack = projectRuleStackToVerifiedBookRules(
+      options?.ruleStack,
+      effectiveRules,
+    );
+    const governedMode = Boolean(
+      options?.chapterIntent
+      && options?.contextPackage
+      && verifiedRuleStack,
+    );
 
-    // Fallback: use book_rules body when style_guide.md doesn't exist.
-    // Phase 5 hotfix 2: parsedRules.body is only populated for legacy
-    // book_rules.md sources — story_frame.md frontmatter yields an empty
-    // body, and an empty string is NOT a usable style guide. Treat
-    // missing/empty body as "no fallback available".
+    // BookRules prose is display/diagnostic material, never a style fallback.
     const resolvedLanguage = bookLanguage ?? gp.language;
     const usesEnglishControl = resolvedLanguage !== "zh";
-    const legacyRulesBody = parsedRules?.body?.trim();
     const persistedStyleGuide = styleGuideRaw !== "(文件不存在)"
       ? styleGuideRaw
-      : (legacyRulesBody || (resolvedLanguage === "ko" ? "(문체 지침 없음)" : "(无文风指南)"));
+      : (resolvedLanguage === "ko" ? "(문체 지침 없음)" : "(无文风指南)");
     const styleGuide = sanitizeLegacyFunFirstMethodology(persistedStyleGuide);
 
     const revisionIssues = mode === "auto"
@@ -259,6 +275,46 @@ export class ReviserAgent extends BaseAgent {
       };
     }
 
+    const ownerDirectionSources = new Set(["story/author_intent.md", "story/current_focus.md"]);
+    const moralAuthoritySources: ArchitectMoralAuthoritySource[] = [
+      { kind: "owner-direction", text: options?.revisionInstruction ?? "" },
+      { kind: "owner-direction", text: creativeBrief },
+      ...(options?.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        ownerDirectionSources.has(entry.source) && entry.excerpt
+          ? [{ kind: "owner-direction" as const, text: entry.excerpt }]
+          : []
+      )),
+      { kind: "persisted-book-canon", text: storyBible },
+      { kind: "persisted-book-canon", text: volumeOutline },
+      ...(effectiveRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
+    assertProductionContextMoralAuthority([
+      currentState,
+      ledger,
+      hooks,
+      characterMatrix,
+      chapterSummaries,
+      parentCanon,
+      fanficCanon,
+      governedMode ? undefined : styleGuideRaw,
+      JSON.stringify(revisionIssues),
+      options?.chapterIntent,
+      options?.chapterIntentData ? JSON.stringify(options.chapterIntentData) : undefined,
+      options?.arcProvenanceContext,
+      verifiedRuleStack ? JSON.stringify(verifiedRuleStack) : undefined,
+      ...(options?.contextPackage?.selectedContext ?? []).flatMap((entry) => [
+        entry.reason,
+        !ownerDirectionSources.has(entry.source) ? entry.excerpt : undefined,
+      ]),
+    ], moralAuthoritySources);
+    assertNarrativeEvidenceMoralAuthority([chapterContent], moralAuthoritySources);
+    if (options?.chapterMemo) {
+      assertChapterMemoMoralAuthority(options.chapterMemo, moralAuthoritySources);
+    }
+
     const issueList = mode === "auto"
       ? (buildTieredIssueList(revisionIssues, resolvedLanguage)
           || (resolvedLanguage === "ko"
@@ -279,10 +335,13 @@ export class ReviserAgent extends BaseAgent {
       : "";
     const protagonistBlock = bookRules?.protagonist
       ? (resolvedLanguage === "ko"
-          ? `\n\n주인공 고정점: ${bookRules.protagonist.name}. ${bookRules.protagonist.personalityLock.join(", ")}. 수정하면서 성격과 행동 원칙을 바꾸지 않습니다.`
+          ? `\n\n주인공 참고: ${bookRules.protagonist.name}. 성격 참고: ${bookRules.protagonist.personalityLock.join(", ") || "없음"}. 이는 인물 형상화용 참고이며, 그 자체로 수정 사유나 하드 규칙이 아닙니다.`
           : usesEnglishControl
-            ? `\n\nProtagonist lock: ${bookRules.protagonist.name} — ${bookRules.protagonist.personalityLock.join(", ")}. Revisions must not violate the protagonist profile.`
-            : `\n\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}。修改不得违反人设。`)
+            ? `\n\nProtagonist reference: ${bookRules.protagonist.name} — ${bookRules.protagonist.personalityLock.join(", ") || "none"}. This is characterization advice, not a hard rule or an independent reason to revise.`
+            : `\n\n主角参考：${bookRules.protagonist.name}，性格参考：${bookRules.protagonist.personalityLock.join("、") || "无"}。这只用于人物塑造，本身不是硬规则，也不能单独成为修改理由。`)
+      : "";
+    const verifiedRulesBlock = verifiedRuleGuidance
+      ? `\n\n${resolvedLanguage === "ko" ? "검증된 작품 규칙" : usesEnglishControl ? "Verified Book Rule Guidance" : "已验证本书规则指引"}:\n${verifiedRuleGuidance}`
       : "";
     // Length guardrail only used by legacy modes (manual CLI revise).
     // Auto mode delegates length to normalize, not reviser.
@@ -302,7 +361,6 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
       : usesEnglishControl
       ? `【LANGUAGE OVERRIDE】ALL output (FIXED_ISSUES, PATCHES, REVISED_CONTENT, UPDATED_STATE, UPDATED_HOOKS) MUST be in English.\n\n`
       : "";
-    const governedMode = Boolean(options?.chapterIntent && options?.contextPackage && options?.ruleStack);
     const hasChapterMemo = Boolean(options?.chapterMemo);
     const hooksWorkingSet = governedMode && options?.contextPackage
       ? buildGovernedHookWorkingSet({
@@ -325,9 +383,10 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
       : characterMatrix;
 
     const autoOutputMode = mode === "auto" ? resolveAutoOutputMode(revisionIssues) : "allow-full";
+    const governedProtagonistBlock = `${protagonistBlock}${verifiedRulesBlock}`;
     const systemPromptBase = mode === "auto"
-      ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode, hasChapterMemo })
-      : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
+      ? this.buildAutoSystemPrompt({ langPrefix, gp, protagonistBlock: governedProtagonistBlock, numericalRule, lengthGuardrail, resolvedLanguage, lengthSpec: options?.lengthSpec, autoOutputMode, hasChapterMemo })
+      : this.buildLegacySystemPrompt({ langPrefix, gp, protagonistBlock: governedProtagonistBlock, numericalRule, lengthGuardrail, mode, resolvedLanguage });
     const futureAdvantageGuard = options?.arcProvenanceContext?.includes("## Future Advantage Move")
       ? resolvedLanguage === "ko"
         ? "\n\n미래 선점 보존 규칙: 감리 문제를 고치더라도 미래 선점 move의 대상, 현재 구현 다리, 저항, 가시적 증거, 보상, 허용된 역사 분기를 삭제하거나 실제 역사대로 되돌리지 마세요. 주인공이 결과를 안다는 설정과 현재 구현법을 구분하고, 금지된 지름길이나 정보 경계 위반만 직접 고칩니다."
@@ -377,8 +436,8 @@ UPDATED_HOOKS는 입력 pending_hooks의 Markdown 표 머리글, 열 순서, 기
         ? `\n## 원작 정본\n원작의 인물과 세계 규칙, 이미 확정된 사실을 지킵니다. 인물의 말투도 유지합니다.\n${fanficCanon}\n`
         : `\n## 同人正典参照（修稿专用）\n本书为同人作品。修改时参照正典角色档案和世界规则，不可违反正典事实。角色对话必须保留原作语癖。\n${fanficCanon}\n`
       : "";
-    const reducedControlBlock = options?.contextPackage && options.ruleStack
-      ? this.buildReducedControlBlock(options.chapterMemo, options.chapterIntentData, options.chapterIntent, options.contextPackage, options.ruleStack, resolvedLanguage)
+    const reducedControlBlock = options?.contextPackage && verifiedRuleStack
+      ? this.buildReducedControlBlock(options.chapterMemo, options.chapterIntentData, options.chapterIntent, options.contextPackage, verifiedRuleStack, resolvedLanguage)
       : "";
     // Length guardrail only in legacy modes — auto mode delegates length to normalize.
     const lengthGuidanceBlock = mode !== "auto" && options?.lengthSpec

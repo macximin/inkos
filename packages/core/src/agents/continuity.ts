@@ -3,14 +3,25 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import type { FanficMode } from "../models/book.js";
 import type { ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
-import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
+import { readGenreProfile, readBookLanguage } from "./rules-reader.js";
+import {
+  projectRuleStackToVerifiedBookRules,
+  readEffectiveBookRules,
+} from "./effective-book-rules.js";
+import {
+  findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence,
+  type ArchitectMoralAuthoritySource,
+} from "./architect.js";
+import { assertProductionContextMoralAuthority } from "./writer.js";
 import { getFanficDimensionConfig, FANFIC_DIMENSIONS } from "./fanfic-dimensions.js";
 import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { filterHooks, filterSummaries, filterSubplots, filterEmotionalArcs, filterCharacterMatrix } from "../utils/context-filter.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
 import { sanitizeLegacyFunFirstMethodology } from "../utils/writing-methodology.js";
 import {
   readVolumeMap,
+  readStoryFrame,
   readCharacterContext,
   readCurrentStateWithFallback,
 } from "../utils/outline-paths.js";
@@ -50,20 +61,111 @@ export interface AuditIssue {
   readonly repairScope?: "local" | "structural" | "unknown";
   /** Research findings are evidence/status only and never drive automatic prose revision. */
   readonly track?: "creative" | "research";
+  /** Typed auditor dimension. Host validation never trusts a category label alone. */
+  readonly dimensionId?: number;
+  /** Stable name of the supplied evidence section (for example `current-state`). */
+  readonly evidenceSource?: string;
+  /** Exact, verbatim substring copied from the supplied canonical context. */
+  readonly evidenceQuote?: string;
+  /** Exact, verbatim substring from the chapter proving the present contradiction. */
+  readonly chapterQuote?: string;
+  /** Optional hard-rule identifier emitted by provenance-aware rule compilers. */
+  readonly ruleId?: string;
+  /** False when the host rejected the issue as non-actionable evidence or content policing. */
+  readonly revisionEligible?: boolean;
+  /** Host-only gate for automatic prose mutation; model output cannot opt itself in. */
+  readonly automaticRevisionEligible?: boolean;
+  /** True when the host neutralized a publication/morality objection, not a story defect. */
+  readonly contentNeutralized?: boolean;
 }
 
 export type ResearchStatus = "not-applicable" | "not-checked" | "needs-research" | "verified" | "conflict";
+
+export interface SanitizedLegacyCurrentState {
+  readonly text: string;
+  readonly removed: ReadonlyArray<string>;
+}
+
+/**
+ * Legacy Books may contain model-written control instructions inside
+ * current_state.md. Keep ordinary state facts and clearly attributed
+ * fictional speech/belief, but withhold any line that still carries an
+ * unauthorized moral/representation mandate before it reaches the auditor.
+ * This is a read-time projection only; the canonical file is never rewritten.
+ */
+export function sanitizeLegacyCurrentStateForAudit(
+  text: string,
+  authoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+): SanitizedLegacyCurrentState {
+  const removed = new Set<string>();
+  const kept = segmentLegacyCurrentState(text).flatMap((segment) => {
+    const findings = findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence(
+      segment.join(" "),
+      authoritySources,
+    );
+    for (const finding of findings) removed.add(finding);
+    return findings.length === 0 ? segment : [];
+  });
+  const sanitized = kept.join("\n").trim();
+  return {
+    text: sanitized || "(legacy current state withheld: unauthorized control text)",
+    removed: [...removed],
+  };
+}
+
+/** Group wrapped Markdown records so line wrapping cannot split obligation from target. */
+function segmentLegacyCurrentState(text: string): ReadonlyArray<ReadonlyArray<string>> {
+  const lines = text.split("\n");
+  const segments: string[][] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (!line.trim() || isStandaloneLegacyStateLine(line)) {
+      segments.push([line]);
+      index += 1;
+      continue;
+    }
+
+    const segment = [line];
+    index += 1;
+    while (index < lines.length) {
+      const next = lines[index]!;
+      if (!next.trim() || isStandaloneLegacyStateLine(next) || startsLegacyStateRecord(next)) {
+        break;
+      }
+      segment.push(next);
+      index += 1;
+    }
+    segments.push(segment);
+  }
+  return segments;
+}
+
+function isStandaloneLegacyStateLine(line: string): boolean {
+  return /^\s{0,3}#{1,6}\s/u.test(line) || /^\s*\|/u.test(line);
+}
+
+function startsLegacyStateRecord(line: string): boolean {
+  return /^\s*(?:[-*+]\s+|\d{1,4}[.)]\s+)/u.test(line);
+}
 
 export function isAutomaticRevisionIssue(issue: AuditIssue): boolean {
   // Automatic prose repair is reserved for reader-trust failures. Warnings
   // remain visible editorial advice; promoting them to blockers makes style
   // heuristics silently rewrite otherwise effective scenes.
-  return issue.track !== "research" && issue.severity === "critical";
+  return issue.track !== "research"
+    && issue.revisionEligible !== false
+    && issue.automaticRevisionEligible === true
+    && !issue.contentNeutralized
+    && issue.severity === "critical";
 }
 
 /** Issues an editor may address after an explicit manual revision request. */
 export function isRevisionCandidateIssue(issue: AuditIssue): boolean {
-  return issue.track !== "research" && issue.severity !== "info";
+  return issue.track !== "research"
+    && issue.revisionEligible !== false
+    && !issue.contentNeutralized
+    && issue.severity !== "info";
 }
 
 type PromptLanguage = "zh" | "ko" | "en";
@@ -100,6 +202,16 @@ function normalizeResearchStatus(value: unknown): ResearchStatus | undefined {
     : undefined;
 }
 
+function normalizeDimensionId(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function inferIssueTrack(issue: AuditIssue): "creative" | "research" {
   // A host-recognized research *category* wins over an LLM-supplied track so
   // unverified historical claims cannot become prose-rewrite commands. Do not
@@ -115,6 +227,115 @@ function inferIssueTrack(issue: AuditIssue): "creative" | "research" {
   return "creative";
 }
 
+interface CanonicalEvidenceSource {
+  readonly selector: string;
+  readonly content: string;
+}
+
+const CONTENT_POLICY_CATEGORY = /(?:sensitive(?: content| words?)?|publication(?: compatibility)?|platform (?:policy|compliance)|content (?:policy|moderation)|safety|ethic(?:s|al)?|moral(?:ity| acceptability)?|representation|diversity|political correctness|appropriateness|offensive content|harmful content|민감(?:어| 표현| 콘텐츠)?|공개 호환성|플랫폼 (?:정책|검수)|콘텐츠 (?:정책|검열)|안전|윤리|도덕|대표성|다양성|정치적 올바름|유해 콘텐츠|부적절성|敏感(?:词|内容)?|发布兼容|平台(?:政策|审核)|内容(?:政策|审核)|安全|伦理|道德|代表性|多样性|政治正确|有害内容|不当内容)/i;
+const CONTENT_ACCEPTABILITY_OBJECTION = /(?:immoral|unethical|problematic|offensive|inappropriate|harmful depiction|glorif(?:y|ies|ication)|normaliz(?:e|es|ation)|condemn|denounce|must (?:be )?punish|needs? (?:to )?(?:be )?punish|show remorse|feel guilt|apologi[sz]e|redeem|rehabilitat|learn (?:a |the )?lesson|pay (?:a |the )?(?:moral )?(?:price|cost)|deserves? punishment|도덕적|비윤리|문제적|불쾌|부적절|유해한 묘사|미화|정당화|규탄|비난|처벌해야|벌을 받아|반성해야|죄책감을 느껴|사과해야|속죄|갱생|교훈을 얻|대가를 치러야|道德上|不道德|不伦理|有问题|冒犯|不当|有害描写|美化|合理化|谴责|批判|必须惩罚|应受惩罚|悔过|内疚|道歉|赎罪|改造|吸取教训|付出道德代价)/i;
+const ROLE_OR_REPRESENTATION_OBJECTION = /(?:marriage reward|romantic reward|love interest only|victim only|exposition (?:device|source)|exists only to|balanced demographic|lack(?:s|ing)? representation|independent role|agency because (?:she|he|they)|여성 보상|결혼 보상|연애 보상|피해자 역할|설명 도구|도구적 역할|대표성 부족|인구학적 균형|독립적 역할|婚姻奖励|恋爱奖励|受害者角色|说明工具|工具人|代表性不足|人口平衡|独立角色)/i;
+const CONCRETE_CAUSAL_MECHANISM = /(?:causal (?:chain|continuity|logic)|timeline|information boundary|canon (?:conflict|contradiction)|established (?:fact|state|rule)|witness(?:es)?|evidence trail|police|law enforcement|investigat(?:e|ion)|security footage|alarm|cover.?up|retaliat(?:e|ion)|victim response|faction response|physical impossibility|travel time|resource ledger|incentive chain|인과(?:관계| 사슬| 단절| 붕괴)|시간선|정보 경계|정본 (?:모순|충돌)|목격자|증거|경찰|수사|보안 영상|경보|은폐|보복|피해자 반응|세력 반응|물리적 불가능|이동 시간|자원 장부|이익 사슬|因果(?:链|连续性|逻辑|断裂)|时间线|信息边界|正典(?:冲突|矛盾)|目击者|证据链|警察|执法|调查|监控录像|警报|掩盖|报复|受害者反应|势力反应|物理上不可能|行程时间|资源账本|利益链)/i;
+const CAUSAL_FAILURE_LANGUAGE = /(?:break|collapse|contradict|impossible|without (?:any )?(?:cause|reason|response|explanation)|no (?:response|investigation|cover.?up|reaction)|missing (?:response|step|cause|mechanism)|ignores? (?:the )?(?:evidence|witness|timeline|rule)|무너|붕괴|단절|모순|불가능|이유 없이|반응이 없|수사가 없|은폐 없이|설명 없이|단계가 빠|증거를 무시|목격자를 무시|시간선을 무시|崩塌|断裂|矛盾|不可能|无因|没有(?:回应|调查|掩盖|反应|解释)|缺少(?:回应|步骤|原因|机制)|无视(?:证据|目击者|时间线|规则))/i;
+
+function hasExactCanonicalQuote(
+  issue: AuditIssue,
+  sources: ReadonlyArray<CanonicalEvidenceSource>,
+): boolean {
+  const quote = issue.evidenceQuote;
+  if (!quote || quote.trim().length < 8) return false;
+  const selectedSources = issue.evidenceSource
+    ? sources.filter((source) => source.selector === issue.evidenceSource)
+    : sources;
+  return selectedSources.some((source) => source.content.includes(quote));
+}
+
+function hasVerifiedHardRuleEvidence(
+  issue: AuditIssue,
+  hardRuleRefs: RuleStack["ruleRefs"],
+  sources: ReadonlyArray<CanonicalEvidenceSource>,
+): boolean {
+  if (
+    !issue.ruleId
+    || issue.evidenceSource !== "rule-stack-hard"
+    || !hasExactCanonicalQuote(issue, sources)
+  ) {
+    return false;
+  }
+  const quote = issue.evidenceQuote!;
+  const verifiedRef = hardRuleRefs?.find((ref) => ref.ruleId === issue.ruleId && ref.strength === "hard");
+  if (!verifiedRef) return false;
+  return quote === verifiedRef.text
+    && createHash("sha256").update(verifiedRef.text, "utf8").digest("hex") === verifiedRef.textSha256;
+}
+
+function isConcreteCausalViolation(issue: AuditIssue): boolean {
+  const text = `${issue.category} ${issue.description} ${issue.suggestion}`;
+  return CONCRETE_CAUSAL_MECHANISM.test(text) && CAUSAL_FAILURE_LANGUAGE.test(text);
+}
+
+function hasConcreteCausalViolationEvidence(
+  issue: AuditIssue,
+  sources: ReadonlyArray<CanonicalEvidenceSource>,
+  chapterContent: string,
+): boolean {
+  if (
+    !isConcreteCausalViolation(issue)
+    || !issue.evidenceSource
+    || !issue.evidenceQuote
+    || !issue.chapterQuote
+    || issue.evidenceQuote.trim().length < 8
+    || issue.chapterQuote.trim().length < 8
+  ) {
+    return false;
+  }
+  const source = sources.find((candidate) => candidate.selector === issue.evidenceSource);
+  return Boolean(
+    source?.content.includes(issue.evidenceQuote)
+    && chapterContent.includes(issue.chapterQuote),
+  );
+}
+
+function isDimension14Finding(issue: AuditIssue): boolean {
+  if (issue.dimensionId === 14 || SIDE_CHARACTER_AGENCY_CATEGORY.test(issue.category)) return true;
+  const text = `${issue.category} ${issue.description}`;
+  return /(?:side|supporting|secondary) character|조연|配角/i.test(text)
+    && CHARACTER_CAUSAL_INPUT.test(text);
+}
+
+function isContentAcceptabilityObjection(
+  issue: AuditIssue,
+  sources: ReadonlyArray<CanonicalEvidenceSource>,
+  chapterContent: string,
+): boolean {
+  const text = `${issue.category} ${issue.description} ${issue.suggestion}`;
+  const policyCategory = issue.dimensionId === 27 || CONTENT_POLICY_CATEGORY.test(issue.category);
+  const acceptabilityText = CONTENT_ACCEPTABILITY_OBJECTION.test(text)
+    || ROLE_OR_REPRESENTATION_OBJECTION.test(text);
+  // Dimension 27 is publication metadata only. Even an evidence-shaped causal
+  // claim must be re-emitted under the actual structural dimension before it
+  // may affect creative pass/revision; otherwise policy wording can launder a
+  // morality objection into an automatic rewrite.
+  if (policyCategory) return true;
+  return acceptabilityText
+    && !hasConcreteCausalViolationEvidence(issue, sources, chapterContent);
+}
+
+function normalizeOverallScoreAfterHostRejection(
+  score: number | undefined,
+  issues: ReadonlyArray<AuditIssue>,
+): number | undefined {
+  if (score === undefined) return undefined;
+  if (!issues.some((issue) => issue.revisionEligible === false || issue.contentNeutralized)) {
+    return score;
+  }
+
+  const actionable = issues.filter(isRevisionCandidateIssue);
+  if (actionable.some((issue) => issue.severity === "critical")) return score;
+  const floor = actionable.some((issue) => issue.severity === "warning") ? 75 : 85;
+  return Math.max(score, floor);
+}
+
 function normalizeSeparatedAuditResult(
   result: AuditResult,
   options: {
@@ -122,17 +343,65 @@ function normalizeSeparatedAuditResult(
     readonly futureAdvantageActive: boolean;
     readonly futureAdvantageMoveId?: string;
     readonly chapterContent: string;
+    readonly canonicalEvidenceSources: ReadonlyArray<CanonicalEvidenceSource>;
+    readonly hardRuleEvidenceSources: ReadonlyArray<CanonicalEvidenceSource>;
+    readonly hardRuleRefs: RuleStack["ruleRefs"];
   },
 ): AuditResult {
   const issues = result.issues.map((rawIssue) => {
     const track = inferIssueTrack(rawIssue);
-    let severity = rawIssue.severity;
+    const verifiedHardRule = hasVerifiedHardRuleEvidence(
+      rawIssue,
+      options.hardRuleRefs,
+      options.hardRuleEvidenceSources,
+    );
+    let severity = verifiedHardRule
+      ? rawIssue.severity
+      : normalizeSideCharacterAgencySeverity(rawIssue);
     const text = `${rawIssue.category} ${rawIssue.description}`;
+    let revisionEligible = rawIssue.revisionEligible;
+    let contentNeutralized = rawIssue.contentNeutralized;
+    // A free-form model finding may remain useful for human/editorial review,
+    // but it cannot authorize an automatic manuscript mutation. Exact,
+    // provenance-verified hard BookRules are the only LLM-audit route that the
+    // host opts into here. Deterministic validators run outside this normalizer.
+    // LLM findings never authorize an automatic manuscript mutation. Even an
+    // exact hard-rule quote proves the rule's authority, not that the quoted
+    // chapter passage violates its predicate. Verified hard-rule findings stay
+    // critical/manual candidates; deterministic host validators opt in below
+    // this layer by setting automaticRevisionEligible=true themselves.
+    let automaticRevisionEligible = false;
+
+    if (
+      isContentAcceptabilityObjection(
+        rawIssue,
+        options.canonicalEvidenceSources,
+        options.chapterContent,
+      )
+      && !verifiedHardRule
+    ) {
+      severity = "info";
+      revisionEligible = false;
+      contentNeutralized = true;
+      automaticRevisionEligible = false;
+    } else if (
+      rawIssue.severity === "critical"
+      && isDimension14Finding(rawIssue)
+      && severity !== "critical"
+    ) {
+      // Unsupported canon claims remain visible as an auditor-quality warning,
+      // but must not enter either automatic or manual manuscript revision.
+      revisionEligible = false;
+      automaticRevisionEligible = false;
+    }
 
     // Missing or disputed research is a verification state, not a prose-repair
     // command. Critical future-advantage findings remain possible only for an
     // actual forbidden shortcut, information-boundary breach, or canon conflict.
-    if (track === "research") severity = "info";
+    if (track === "research") {
+      severity = "info";
+      automaticRevisionEligible = false;
+    }
     if (
       options.futureAdvantageActive
       && severity === "critical"
@@ -141,10 +410,17 @@ function normalizeSeparatedAuditResult(
     ) {
       severity = "warning";
     }
-    return { ...rawIssue, severity, track };
+    return {
+      ...rawIssue,
+      severity,
+      track,
+      revisionEligible,
+      automaticRevisionEligible,
+      contentNeutralized,
+    };
   });
   const creativePassed = !result.parseFailed
-    && !issues.some((issue) => issue.track !== "research" && issue.severity === "critical");
+    && !issues.some(isAutomaticRevisionIssue);
   const researchIssues = issues.filter((issue) => issue.track === "research");
   const inferredResearchStatus: ResearchStatus = !options.researchExpected
     ? "not-applicable"
@@ -168,6 +444,7 @@ function normalizeSeparatedAuditResult(
       ? inferredResearchStatus
       : (result.researchStatus ?? inferredResearchStatus),
     issues,
+    overallScore: normalizeOverallScoreAfterHostRejection(result.overallScore, issues),
     futureAdvantageExecution,
   };
 }
@@ -195,7 +472,7 @@ const DIMENSION_LABELS: Record<number, { readonly zh: string; readonly en: strin
   11: { zh: "利益链断裂", en: "Incentive Chain Check" },
   12: { zh: "年代考据", en: "Era Accuracy Check" },
   13: { zh: "配角降智", en: "Side Character Competence Check" },
-  14: { zh: "配角工具人化", en: "Side Character Instrumentalization Check" },
+  14: { zh: "配角能动性与能力一致性", en: "Side Character Agency/Competence Check" },
   15: { zh: "爽点虚化", en: "Payoff Dilution Check" },
   16: { zh: "台词失真", en: "Dialogue Authenticity Check" },
   17: { zh: "流水账", en: "Chronicle Drift Check" },
@@ -220,6 +497,22 @@ const DIMENSION_LABELS: Record<number, { readonly zh: string; readonly en: strin
   36: { zh: "关系动态", en: "Relationship Dynamics Check" },
   37: { zh: "正典事件一致性", en: "Canon Event Consistency Check" },
 };
+
+const SIDE_CHARACTER_AGENCY_CATEGORY = /(?:Side Character (?:Agency(?: and |\/)Competence|Instrumentalization)(?: Check)?|配角(?:能动性与能力一致性|工具人化)|조연 (?:능동성|도구화))/i;
+const CHARACTER_CAUSAL_INPUT = /(?:desire|goal|motive|objective|information|knowledge|competence|ability|skill|expertise|욕망|목표|동기|의도|정보|지식|능력|역량|欲望|目标|动机|意图|信息|知识|能力)/i;
+
+function normalizeSideCharacterAgencySeverity(
+  issue: AuditIssue,
+): AuditIssue["severity"] {
+  if (issue.severity !== "critical" || !isDimension14Finding(issue)) {
+    return issue.severity;
+  }
+  // Free-form natural-language quotes can prove that two strings exist, but
+  // not that their predicates are logically incompatible. Until InkOS has
+  // typed, receipt-bound character facts, dimension 14 remains advisory. A
+  // provenance-verified hard BookRule bypasses this function at the caller.
+  return "warning";
+}
 
 function containsChinese(text: string): boolean {
   return /[\u4e00-\u9fff]/u.test(text);
@@ -306,6 +599,24 @@ function buildDimensionNote(
         ? `Era: ${parts.join(", ")}`
         : `年代：${parts.join("，")}`;
     }
+  }
+
+  if (id === 14) {
+    if (language === "ko") {
+      return "조연의 성별, 정체성, 대표성, 호감도나 도덕성, 연애·악역·피해자·보상·설명 역할 자체는 결함이 아니며 overall_score를 낮추는 근거로도 쓰지 않습니다. 자유형 인용만으로는 논리적 모순을 증명할 수 없으므로 이 차원은 warning이 상한입니다. critical은 별도의 검증된 하드 BookRules 위반으로만 허용합니다. chapter_memo·chapter-control·arc-plan은 그 증명이 될 수 없습니다. 충분한 동기나 압력이 있다면 조연은 비합리적으로 행동하거나 굴복·배신·패배하고 범죄를 저지를 수도 있습니다.";
+    }
+    return language === "en"
+      ? "A side character's gender, identity, representation, likability, morality, or role as a love interest, villain, victim, reward, or exposition source is not a defect and must not lower overall_score. Free-form quotes cannot prove logical predicate incompatibility, so warning is the maximum in this dimension. Critical is allowed only as a separate provenance-verified hard BookRule violation. chapter_memo, chapter-control, and arc-plan cannot prove that rule. Supported pressure or motive may lead a side character to act irrationally, submit, betray, lose, or commit a crime."
+      : "配角的性别、身份、代表性、讨喜程度、道德立场，或其恋爱对象、反派、受害者、奖励、说明者等剧情功能本身都不是缺陷，也不得据此降低 overall_score。自由文本引文不能证明谓词在逻辑上互斥，因此本维度最高只能记 warning；critical 只允许作为另一条已验证硬 BookRule 的违规来报告。chapter_memo、chapter-control、arc-plan 不能证明该规则。有充分压力或动机时，配角可以失去理性、屈服、背叛、失败或犯罪。";
+  }
+
+  if (id === 27) {
+    if (language === "ko") {
+      return "공개 플랫폼 호환성 메타데이터만 기록합니다. 허구의 범죄·폭력·비도덕성·불쾌함 자체는 창작 결함이 아니며 severity=info만 허용합니다. 구체적인 인과·시간선·정보 경계·검증된 하드 규칙 위반은 해당 구조 차원으로 별도 보고하세요.";
+    }
+    return language === "en"
+      ? "Publication-platform compatibility metadata only. Fictional crime, violence, immorality, or offensiveness is not a creative defect and may only be logged as info here. Report concrete causality, timeline, information-boundary, or verified hard-rule violations under their structural dimension instead."
+      : "这里只记录发布平台兼容性元数据。虚构犯罪、暴力、不道德或冒犯本身不是创作缺陷，在此维度最多只能记 info。具体的因果、时间线、信息边界或已验证硬规则违规，应改在对应结构维度报告。";
   }
 
   // v10: Enhanced dimension notes with writing methodology awareness
@@ -426,36 +737,9 @@ function buildDimensionList(
   fanficMode?: FanficMode,
 ): ReadonlyArray<{ readonly id: number; readonly name: string; readonly note: string }> {
   const activeIds = new Set(gp.auditDimensions);
-
-  // Add book-level additional dimensions (supports both numeric IDs and name strings)
-  if (bookRules?.additionalAuditDimensions) {
-    // Build reverse lookup: name → id
-    const nameToId = new Map<string, number>();
-    for (const [id, labels] of Object.entries(DIMENSION_LABELS)) {
-      nameToId.set(labels.zh, Number(id));
-      nameToId.set(labels.en, Number(id));
-    }
-
-    for (const d of bookRules.additionalAuditDimensions) {
-      if (typeof d === "number") {
-        activeIds.add(d);
-      } else if (typeof d === "string") {
-        // Try exact match first, then substring match
-        const exactId = nameToId.get(d);
-        if (exactId !== undefined) {
-          activeIds.add(exactId);
-        } else {
-          // Fuzzy: find dimension whose name contains the string
-          for (const [name, id] of nameToId) {
-            if (name.includes(d) || d.includes(name)) {
-              activeIds.add(id);
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
+  // additionalAuditDimensions is free-form model output. It remains visible
+  // in raw BookRules but can never create an automatic review gate. Add new
+  // dimensions through a host-owned genre profile or typed code contract.
 
   // Always-active dimensions
   activeIds.add(32); // 读者期待管理 — universal
@@ -524,7 +808,7 @@ export class ContinuityAuditor extends BaseAgent {
       };
     },
   ): Promise<AuditResult> {
-    const [diskCurrentState, diskLedger, diskHooks, styleGuideRaw, subplotBoard, emotionalArcs, characterMatrix, chapterSummaries, parentCanon, fanficCanon, volumeOutline] =
+    const [diskCurrentState, diskLedger, diskHooks, styleGuideRaw, subplotBoard, emotionalArcs, characterMatrix, chapterSummaries, parentCanon, fanficCanon, volumeOutline, storyBible, creativeBrief] =
       await Promise.all([
         // Phase 5 consolidation: derive initial state from roles + seed hooks
         // when current_state.md is still the architect seed placeholder.
@@ -539,8 +823,10 @@ export class ContinuityAuditor extends BaseAgent {
         this.readFileSafe(join(bookDir, "story/parent_canon.md")),
         this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),
         readVolumeMap(bookDir, "(文件不存在)"),
+        readStoryFrame(bookDir, "(文件不存在)"),
+        this.readFileSafe(join(bookDir, "story/brief.md")),
       ]);
-    const currentState = options?.truthFileOverrides?.currentState ?? diskCurrentState;
+    const rawCurrentState = options?.truthFileOverrides?.currentState ?? diskCurrentState;
     const ledger = options?.truthFileOverrides?.ledger ?? diskLedger;
     const hooks = options?.truthFileOverrides?.hooks ?? diskHooks;
 
@@ -556,18 +842,35 @@ export class ContinuityAuditor extends BaseAgent {
       readGenreProfile(this.ctx.projectRoot, genreId),
       readBookLanguage(bookDir),
     ]);
-    const parsedRules = await readBookRules(bookDir);
-    const bookRules = parsedRules?.rules ?? null;
+    const effectiveRules = await readEffectiveBookRules(bookDir);
+    const bookRules = effectiveRules?.automatic ?? null;
+    const verifiedRuleGuidance = effectiveRules?.guidance ?? "";
+    const verifiedRuleStack = projectRuleStackToVerifiedBookRules(
+      options?.ruleStack,
+      effectiveRules,
+    );
+    const moralAuthoritySources: ArchitectMoralAuthoritySource[] = [
+      { kind: "owner-direction", text: creativeBrief },
+      { kind: "persisted-book-canon", text: storyBible },
+      { kind: "persisted-book-canon", text: volumeOutline },
+      ...(effectiveRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
+    const currentState = sanitizeLegacyCurrentStateForAudit(
+      rawCurrentState,
+      moralAuthoritySources,
+    ).text;
+    assertProductionContextMoralAuthority([
+      styleGuideRaw,
+      verifiedRuleStack ? JSON.stringify(verifiedRuleStack) : undefined,
+    ], moralAuthoritySources);
 
-    // Fallback: use book_rules body when style_guide.md doesn't exist.
-    // Phase 5 hotfix 2: parsedRules.body is only populated for legacy
-    // book_rules.md sources — story_frame.md frontmatter yields an empty
-    // body, and an empty string is NOT a usable style guide. Treat
-    // missing/empty body as "no fallback available".
-    const legacyRulesBody = parsedRules?.body?.trim();
+    // BookRules prose is display/diagnostic material, never a style fallback.
     const persistedStyleGuide = styleGuideRaw !== "(文件不存在)"
       ? styleGuideRaw
-      : (legacyRulesBody || "(无文风指南)");
+      : "(无文风指南)";
 
     const resolvedLanguage = bookLanguage ?? gp.language;
     const styleGuide = sanitizeLegacyFunFirstMethodology(persistedStyleGuide);
@@ -581,10 +884,13 @@ export class ContinuityAuditor extends BaseAgent {
 
     const protagonistBlock = bookRules?.protagonist
       ? resolvedLanguage === "ko"
-        ? `\n\n주인공 고정점: ${bookRules.protagonist.name}. 성격 고정점: ${joinLocalized(bookRules.protagonist.personalityLock, resolvedLanguage)}. 행동 제약: ${joinLocalized(bookRules.protagonist.behavioralConstraints, resolvedLanguage)}.`
+        ? `\n\n주인공 이름: ${bookRules.protagonist.name}. 검증된 행동 제약: ${joinLocalized(bookRules.protagonist.behavioralConstraints, resolvedLanguage) || "없음"}. book_rules의 성격 참고값은 자동 감리 근거가 아닙니다.`
         : isEnglish
-        ? `\n\nProtagonist lock: ${bookRules.protagonist.name}; personality locks: ${joinLocalized(bookRules.protagonist.personalityLock, resolvedLanguage)}; behavioral constraints: ${joinLocalized(bookRules.protagonist.behavioralConstraints, resolvedLanguage)}.`
-        : `\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}，行为约束：${bookRules.protagonist.behavioralConstraints.join("、")}`
+        ? `\n\nProtagonist name: ${bookRules.protagonist.name}; verified behavioral constraints: ${joinLocalized(bookRules.protagonist.behavioralConstraints, resolvedLanguage) || "none"}. BookRules personality references are not automatic audit evidence.`
+        : `\n主角姓名：${bookRules.protagonist.name}；已验证行为约束：${bookRules.protagonist.behavioralConstraints.join("、") || "无"}。book_rules 的性格参考不能作为自动审稿依据。`
+      : "";
+    const verifiedRulesBlock = verifiedRuleGuidance
+      ? `\n\n${resolvedLanguage === "ko" ? "검증된 작품 규칙" : isEnglish ? "Verified Book Rule Guidance" : "已验证本书规则指引"}:\n${verifiedRuleGuidance}`
       : "";
 
     const searchNote = gp.eraResearch
@@ -609,9 +915,14 @@ export class ContinuityAuditor extends BaseAgent {
     const koreanMemoAnchorAuditNote = resolvedLanguage === "ko" && options?.chapterMemo
       ? "\n\nchapter_memo의 '독자가 지금 기다리는 것'은 별도 점수가 아니라 이번 화의 재미 앵커입니다. 원고가 메모 문구를 반복했는지가 아니라 주인공의 선택, 상대의 대응, 반전이나 지급, 눈에 보이는 결과로 구현했는지 봅니다. 일부 지급·더 키움·아직 감춤은 합법이며 자동 실패로 만들지 않습니다. 메모가 '전부 지급' 또는 이번 화의 핵심 작업으로 명시했는데 해당 장면 자체가 없을 때만 Chapter Memo Drift Check의 creative critical로 판정하고 repair_scope=\"structural\"을 씁니다. 장면은 있으나 타격감이 약한 경우 warning으로만 남깁니다."
       : "";
+    const contentNeutralityNote = resolvedLanguage === "ko"
+      ? "\n\n## 허구 내용 중립 경계\n허구의 범죄, 폭력, 배신, 착취, 비도덕성, 불쾌함은 그 자체로 창작 결함이 아닙니다. 비난, 처벌, 반성, 사과, 속죄, 갱생, 도덕적 성장이나 대가의 부재도 사용자가 정본/하드 규칙으로 요구하지 않은 한 감점·critical·수정 사유가 아닙니다. 오직 제공된 정본에 대한 구체적 모순, 인과·시간선·정보 경계 붕괴, 또는 검증된 하드 규칙 위반만 창작 문제로 판정하세요."
+      : resolvedLanguage === "en"
+        ? "\n\n## Fiction-content-neutral boundary\nFictional crime, violence, betrayal, exploitation, immorality, or offensiveness is not a creative defect by itself. The absence of condemnation, punishment, remorse, apology, redemption, rehabilitation, moral growth, or a moral cost is not a scoring, critical, or revision reason unless supplied canon or a verified hard rule requires it. Only a concrete contradiction with supplied canon, a causality/timeline/information-boundary failure, or a verified hard-rule violation is a creative issue."
+        : "\n\n## 虚构内容中立边界\n虚构犯罪、暴力、背叛、剥削、不道德或冒犯本身不是创作缺陷。除非提供的正典或已验证硬规则明确要求，否则缺少谴责、惩罚、悔过、道歉、赎罪、改造、道德成长或道德代价，不得成为扣分、critical 或修稿理由。只有与已提供正典的具体矛盾、因果/时间线/信息边界崩坏，或已验证硬规则违规，才是创作问题。";
 
     const systemPromptBase = resolvedLanguage === "ko"
-      ? `당신은 엄격한 ${genreLabel} 웹소설 구조 편집자입니다. 문장 윤문이 아니라 회차의 완성도와 구조를 감리합니다.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}${koreanMemoAnchorAuditNote}
+      ? `당신은 엄격한 ${genreLabel} 웹소설 구조 편집자입니다. 문장 윤문이 아니라 회차의 완성도와 구조를 감리합니다.${protagonistBlock}${verifiedRulesBlock}${searchNote}${futureAdvantageAuditNote}${koreanMemoAnchorAuditNote}${contentNeutralityNote}
 
 ## 감리 범위(고정)
 
@@ -640,6 +951,11 @@ ${dimList}
       "severity": "critical|warning|info",
       "repair_scope": "local|structural|unknown",
       "track": "creative|research",
+      "dimension_id": "정수 또는 null",
+      "evidence_source": "아래 제공 문맥의 source selector 또는 null",
+      "evidence_quote": "해당 source에서 그대로 복사한 정본 근거 또는 null",
+      "chapter_quote": "현재 원고에서 모순 행동을 그대로 복사한 짧은 인용 또는 null",
+      "rule_id": "검증된 하드 규칙 ID 또는 null",
       "category": "감리 차원 이름",
       "description": "구체적인 문제",
       "suggestion": "수정 제안"
@@ -658,7 +974,7 @@ overall_score 기준:
 - 65 미만: 구조가 무너져 큰 재작성이 필요함
 작은 문제 하나로 점수를 크게 깎지 말고 전체 읽는 맛을 기준으로 판단하세요.`
       : isEnglish
-      ? `You are a strict ${genreLabel} web-fiction structural editor. Audit the chapter for completion and structure, not for prose craft. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
+      ? `You are a strict ${genreLabel} web-fiction structural editor. Audit the chapter for completion and structure, not for prose craft. ALL OUTPUT MUST BE IN ENGLISH.${protagonistBlock}${verifiedRulesBlock}${searchNote}${futureAdvantageAuditNote}${contentNeutralityNote}
 
 ## Reviewer Scope (hard constraints)
 
@@ -687,6 +1003,11 @@ Output format MUST be JSON:
 	      "severity": "critical|warning|info",
 	      "repair_scope": "local|structural|unknown",
 	      "track": "creative|research",
+	      "dimension_id": "integer or null",
+	      "evidence_source": "a source selector from supplied context or null",
+	      "evidence_quote": "an exact verbatim quote copied from that source or null",
+	      "chapter_quote": "an exact verbatim chapter excerpt showing the contradiction or null",
+	      "rule_id": "verified hard-rule ID or null",
 	      "category": "dimension name",
 	      "description": "specific issue description",
 	      "suggestion": "fix suggestion"
@@ -704,7 +1025,7 @@ overall_score calibration:
 - 65-74: Multiple issues hurt the reading experience, pacing or continuity has gaps
 - < 65: Structural breakdown, needs major rewrite
 Score holistically — do not let a single minor issue tank the score.`
-      : `你是一位严格的${gp.name}网络小说结构审稿编辑。你只审完成度 + 结构，不审文笔。${protagonistBlock}${searchNote}${futureAdvantageAuditNote}
+      : `你是一位严格的${gp.name}网络小说结构审稿编辑。你只审完成度 + 结构，不审文笔。${protagonistBlock}${verifiedRulesBlock}${searchNote}${futureAdvantageAuditNote}${contentNeutralityNote}
 
 ## 审稿边界（硬约束）
 
@@ -733,6 +1054,11 @@ ${dimList}
 	      "severity": "critical|warning|info",
 	      "repair_scope": "local|structural|unknown",
 	      "track": "creative|research",
+	      "dimension_id": "整数或 null",
+	      "evidence_source": "下方提供上下文中的 source selector 或 null",
+	      "evidence_quote": "从该 source 逐字复制的正典依据或 null",
+	      "chapter_quote": "从当前正文逐字复制、能显示矛盾行为的短引文或 null",
+	      "rule_id": "已验证硬规则 ID 或 null",
 	      "category": "审查维度名称",
 	      "description": "具体问题描述",
 	      "suggestion": "修改建议"
@@ -761,7 +1087,7 @@ overall_score 评分校准：
       : "";
 
     // Smart context filtering for auditor — same logic as writer
-    const bookRulesForFilter = parsedRules?.rules ?? null;
+    const bookRulesForFilter = bookRules;
     const filteredSubplots = filterSubplots(subplotBoard);
     const filteredArcs = filterEmotionalArcs(emotionalArcs, chapterNumber);
     const filteredMatrix = filterCharacterMatrix(characterMatrix, volumeOutline, bookRulesForFilter?.protagonist?.name);
@@ -841,8 +1167,8 @@ overall_score 评分校准：
         ? `\n## Arc Plan Snapshot (subordinate; check chapter drift)\n${options.arcContext.trim()}\n`
         : `\n## Arc 计划快照（从属约束；检查本章偏离）\n${options.arcContext.trim()}\n`
       : "";
-    const reducedControlBlock = options?.chapterIntent && options.contextPackage && options.ruleStack
-      ? this.buildReducedControlBlock(options.chapterIntent, options.contextPackage, options.ruleStack, resolvedLanguage)
+    const reducedControlBlock = options?.chapterIntent && options.contextPackage && verifiedRuleStack
+      ? this.buildReducedControlBlock(options.chapterIntent, options.contextPackage, verifiedRuleStack, resolvedLanguage)
       : "";
     const styleGuideBlock = reducedControlBlock.length === 0
       ? resolvedLanguage === "ko"
@@ -860,8 +1186,38 @@ overall_score 评分校准：
         : `\n## 上一章全文（用于衔接检查）\n${previousChapter}\n`
       : "";
 
+    // Host-trusted state/source whitelist for evidence-backed criticals.
+    // Planner/Composer control, chapter memos, and Arc plans remain useful
+    // diagnostic context, but they are model-generated plans rather than
+    // established story state and therefore cannot prove a dimension-14
+    // character contradiction. Rule text enters only through exact ruleRefs.
+    const canonicalEvidenceSources: ReadonlyArray<CanonicalEvidenceSource> = [
+      { selector: "current-state", content: currentState },
+      { selector: "resource-ledger", content: ledgerBlock },
+      { selector: "pending-hooks", content: hooksBlock },
+      { selector: "volume-summaries", content: volumeSummariesBlock },
+      { selector: "subplot-board", content: subplotBlock },
+      { selector: "emotional-arcs", content: emotionalBlock },
+      { selector: "character-matrix", content: matrixBlock },
+      { selector: "chapter-summaries", content: summariesBlock },
+      { selector: "parent-canon", content: canonBlock },
+      { selector: "fanfic-canon", content: fanficCanonBlock },
+      { selector: "previous-chapter", content: prevChapterBlock },
+    ].filter((source) => source.content.trim().length > 0 && source.content !== "(文件不存在)");
+    const hardRuleEvidenceSources: ReadonlyArray<CanonicalEvidenceSource> = [{
+      selector: "rule-stack-hard",
+      content: verifiedRuleStack?.ruleRefs?.map((ref) => ref.text).join("\n") ?? "",
+    }].filter((source) => source.content.trim().length > 0);
+    const selectableEvidenceSources = [...canonicalEvidenceSources, ...hardRuleEvidenceSources];
+    const sourceSelectorBlock = resolvedLanguage === "ko"
+      ? `\n## 정본 근거 source selector\n${selectableEvidenceSources.map((source) => `- ${source.selector}`).join("\n")}\n`
+      : isEnglish
+        ? `\n## Canonical evidence source selectors\n${selectableEvidenceSources.map((source) => `- ${source.selector}`).join("\n")}\n`
+        : `\n## 正典依据 source selector\n${selectableEvidenceSources.map((source) => `- ${source.selector}`).join("\n")}\n`;
+
     const userPrompt = resolvedLanguage === "ko"
       ? `제${chapterNumber}화를 감리하세요.
+${sourceSelectorBlock}
 
 ## 현재 상태
 ${currentState}
@@ -872,6 +1228,7 @@ ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBloc
 ${chapterContent}`
       : isEnglish
       ? `Review chapter ${chapterNumber}.
+${sourceSelectorBlock}
 
 ## Current State Card
 ${currentState}
@@ -881,6 +1238,7 @@ ${hooksBlock}${volumeSummariesBlock}${subplotBlock}${emotionalBlock}${matrixBloc
 ## Chapter Content Under Review
 ${chapterContent}`
       : `请审查第${chapterNumber}章。
+${sourceSelectorBlock}
 
 ## 当前状态卡
 ${currentState}
@@ -907,6 +1265,9 @@ ${chapterContent}`;
         futureAdvantageActive,
         futureAdvantageMoveId: parseFutureAdvantageMoveId(options?.arcContext),
         chapterContent,
+        canonicalEvidenceSources,
+        hardRuleEvidenceSources,
+        hardRuleRefs: verifiedRuleStack?.ruleRefs,
       },
     );
     return { ...result, tokenUsage: response.usage };
@@ -956,6 +1317,11 @@ ${chapterContent}`;
 	              suggestion: issue.suggestion ?? "",
 	              repairScope: normalizeRepairScope(issue.repair_scope ?? issue.repairScope),
 	              track: issue.track === "research" ? "research" : issue.track === "creative" ? "creative" : undefined,
+	              dimensionId: normalizeDimensionId(issue.dimension_id ?? issue.dimensionId),
+	              evidenceSource: normalizeOptionalString(issue.evidence_source ?? issue.evidenceSource ?? issue.source_selector ?? issue.sourceSelector),
+	              evidenceQuote: normalizeOptionalString(issue.evidence_quote ?? issue.evidenceQuote),
+	              chapterQuote: normalizeOptionalString(issue.chapter_quote ?? issue.chapterQuote),
+	              ruleId: normalizeOptionalString(issue.rule_id ?? issue.ruleId),
 	            });
           } catch {
             // skip malformed individual issue
@@ -1004,6 +1370,9 @@ ${chapterContent}`;
         .map((override) => `- ${override.from} -> ${override.to}: ${override.reason} (${override.target})`)
         .join("\n")
       : "- none";
+    const verifiedHardBookRules = ruleStack.ruleRefs?.length
+      ? ruleStack.ruleRefs.map((ref) => `- [${ref.ruleId}] ${ref.text}`).join("\n")
+      : "- none";
 
     return language !== "zh"
       ? `\n## Chapter Control Inputs (compiled by Planner/Composer)
@@ -1017,6 +1386,9 @@ ${selectedContext || "- none"}
 - Soft constraints: ${ruleStack.sections.soft.join(", ") || "(none)"}
 - Diagnostic rules: ${ruleStack.sections.diagnostic.join(", ") || "(none)"}
 
+### Verified Hard Book Rules
+${verifiedHardBookRules}
+
 ### Active Overrides
 ${overrides}\n`
       : `\n## 本章控制输入（由 Planner/Composer 编译）
@@ -1029,6 +1401,9 @@ ${selectedContext || "- none"}
 - 硬护栏：${ruleStack.sections.hard.join("、") || "(无)"}
 - 软约束：${ruleStack.sections.soft.join("、") || "(无)"}
 - 诊断规则：${ruleStack.sections.diagnostic.join("、") || "(无)"}
+
+### 已验证硬规则
+${verifiedHardBookRules}
 
 ### 当前覆盖
 ${overrides}\n`;
@@ -1086,6 +1461,11 @@ ${overrides}\n`;
 	              suggestion: (i.suggestion as string) ?? "",
 	              repairScope: normalizeRepairScope(i.repair_scope ?? i.repairScope),
 	              track: i.track === "research" ? "research" : i.track === "creative" ? "creative" : undefined,
+	              dimensionId: normalizeDimensionId(i.dimension_id ?? i.dimensionId),
+	              evidenceSource: normalizeOptionalString(i.evidence_source ?? i.evidenceSource ?? i.source_selector ?? i.sourceSelector),
+	              evidenceQuote: normalizeOptionalString(i.evidence_quote ?? i.evidenceQuote),
+	              chapterQuote: normalizeOptionalString(i.chapter_quote ?? i.chapterQuote),
+	              ruleId: normalizeOptionalString(i.rule_id ?? i.ruleId),
 	            }))
           : [],
         summary: String(parsed.summary ?? ""),

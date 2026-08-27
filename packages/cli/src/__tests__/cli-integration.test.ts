@@ -56,6 +56,28 @@ function runStderr(args: string[], options?: { env?: Record<string, string> }): 
   }
 }
 
+async function writeFixtureFileIfMissing(filePath: string, content: string): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true });
+  try {
+    await writeFile(filePath, content, { encoding: "utf-8", flag: "wx" });
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EEXIST") throw error;
+  }
+}
+
+async function makeBookDiscoverable(bookId: string): Promise<void> {
+  const bookDir = join(projectDir, "books", bookId);
+  const storyDir = join(bookDir, "story");
+  await Promise.all([
+    writeFixtureFileIfMissing(join(storyDir, "story_bible.md"), "# Story Bible\n"),
+    writeFixtureFileIfMissing(join(storyDir, "volume_outline.md"), "# Volume Outline\n"),
+    writeFixtureFileIfMissing(join(storyDir, "book_rules.md"), "# Book Rules\n"),
+    writeFixtureFileIfMissing(join(storyDir, "current_state.md"), "# Current State\n"),
+    writeFixtureFileIfMissing(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n"),
+    writeFixtureFileIfMissing(join(bookDir, "chapters", "index.json"), "[]"),
+  ]);
+}
+
 const failingLlmEnv = {
   INKOS_LLM_PROVIDER: "openai",
   INKOS_LLM_BASE_URL: "http://127.0.0.1:9/v1",
@@ -410,6 +432,7 @@ describe("CLI integration", () => {
         ], null, 2),
         "utf-8",
       );
+      await makeBookDiscoverable("english-status");
 
       const output = run(["status", "english-status", "--chapters"]);
       expect(output).toContain('Ch.1 "A Quiet Sky" | 7 words | ready-for-review');
@@ -450,6 +473,7 @@ describe("CLI integration", () => {
         ], null, 2),
         "utf-8",
       );
+      await makeBookDiscoverable("degraded-status");
 
       const output = run(["status", "degraded-status", "--chapters"]);
       expect(output).toContain("Degraded: 1");
@@ -483,6 +507,7 @@ describe("CLI integration", () => {
       await writeFile(join(bookDir, "chapters", "index.json"), "[]", "utf-8");
       await writeFile(join(storyDir, "current_state.md"), "# Current State\n\nLegacy state.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n", "utf-8");
+      await makeBookDiscoverable("legacy-status-hint");
 
       const output = run(["status", "legacy-status-hint"]);
       expect(output).toContain("legacy format");
@@ -551,6 +576,7 @@ describe("CLI integration", () => {
         writeFile(join(stateDir, "hooks.json"), JSON.stringify({ hooks: [] }, null, 2), "utf-8"),
         writeFile(join(stateDir, "chapter_summaries.json"), JSON.stringify({ rows: [] }, null, 2), "utf-8"),
       ]);
+      await makeBookDiscoverable(bookId);
 
       const output = run(["status", bookId]);
       expect(output).toContain("Chapters: 1 / 10");
@@ -650,6 +676,7 @@ describe("CLI integration", () => {
       await writeFile(join(bookDir, "chapters", "index.json"), "[]", "utf-8");
       await writeFile(join(storyDir, "current_state.md"), "# Current State\n\nLegacy state.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n", "utf-8");
+      await makeBookDiscoverable("legacy-doctor-hint");
 
       const { stdout } = runStderr(["doctor"]);
       expect(stdout).toContain("Version Migration");
@@ -681,6 +708,7 @@ describe("CLI integration", () => {
       await writeFile(join(bookDir, "chapters", "index.json"), "[]", "utf-8");
       await writeFile(join(storyDir, "current_state.md"), "# Current State\n\nLegacy state.\n", "utf-8");
       await writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n", "utf-8");
+      await makeBookDiscoverable("legacy-write-hint");
 
       const { stdout, stderr } = runStderr(["write", "next", "legacy-write-hint"], {
         env: failingLlmEnv,
@@ -719,6 +747,7 @@ describe("CLI integration", () => {
         { number: 1, title: "Ch1", status: "approved", wordCount: 100, createdAt: "", updatedAt: "", auditIssues: [], lengthWarnings: [] },
         { number: 2, title: "Ch2", status: "approved", wordCount: 100, createdAt: "", updatedAt: "", auditIssues: [], lengthWarnings: [] },
       ], null, 2), "utf-8");
+      await makeBookDiscoverable(bookId);
 
       const { exitCode, stdout, stderr } = runStderr(["write", "rewrite", bookId, "2", "--force"], {
         env: failingLlmEnv,
@@ -767,6 +796,7 @@ describe("CLI integration", () => {
         ], null, 2),
         "utf-8",
       );
+      await makeBookDiscoverable(bookId);
 
       await state.snapshotState(bookId, 1);
 
@@ -851,6 +881,7 @@ describe("CLI integration", () => {
         ], null, 2),
         "utf-8",
       );
+      await makeBookDiscoverable(bookId);
 
       await state.snapshotState(bookId, 1);
 
@@ -1031,6 +1062,7 @@ describe("CLI integration", () => {
         "# 第1章 Dawn Ledger\n\n正文。\n",
         "utf-8",
       );
+      await makeBookDiscoverable("export-book");
     });
 
     it("creates missing parent directories for custom output paths", async () => {

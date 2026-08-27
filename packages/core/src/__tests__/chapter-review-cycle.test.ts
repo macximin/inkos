@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runChapterReviewCycle } from "../pipeline/chapter-review-cycle.js";
 import type { AuditResult, AuditIssue } from "../agents/continuity.js";
+import { analyzeSensitiveWords } from "../agents/sensitive-words.js";
 import type { LengthSpec } from "../models/length-governance.js";
 
 const LENGTH_SPEC: LengthSpec = {
@@ -43,7 +44,11 @@ const baseParams = {
     totalTokens: left.totalTokens + (right?.totalTokens ?? 0),
   }),
   analyzeAITells: () => ({ issues: [] as AuditIssue[] }),
-  analyzeSensitiveWords: () => ({ found: [] as Array<{ severity: "warn" | "block" }>, issues: [] as AuditIssue[] }),
+  analyzeSensitiveWords: () => ({
+    track: "publication-compatibility" as const,
+    found: [],
+    issues: [],
+  }),
   logWarn: () => undefined,
   logStage: () => undefined,
 } as const;
@@ -90,7 +95,7 @@ describe("runChapterReviewCycle v9", () => {
       // Simulates: the reviser fixed the chapter-ref, so re-check returns empty
       runPostWriteChecks: (content) =>
         content === "b".repeat(200)
-          ? [{ severity: "critical" as const, category: "chapter-number-reference", description: "contains chapter ref", suggestion: "remove it" }]
+          ? [{ severity: "critical" as const, category: "chapter-number-reference", description: "contains chapter ref", suggestion: "remove it", automaticRevisionEligible: true }]
           : [],
     });
 
@@ -108,7 +113,7 @@ describe("runChapterReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 70,
-        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
+        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix", automaticRevisionEligible: true }],
       }))
       .mockResolvedValueOnce(createAuditResult({ passed: true, overallScore: 90 }));
     const reviseChapter = vi.fn().mockResolvedValue({
@@ -202,7 +207,7 @@ describe("runChapterReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 70,
-        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
+        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix", automaticRevisionEligible: true }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
@@ -251,14 +256,14 @@ describe("runChapterReviewCycle v9", () => {
         passed: false,
         overallScore: 70,
         issues: [
-          { severity: "critical", category: "continuity", description: "broken", suggestion: "fix" },
-          { severity: "critical", category: "timeline", description: "time order broken", suggestion: "restore order" },
+          { severity: "critical", category: "continuity", description: "broken", suggestion: "fix", automaticRevisionEligible: true },
+          { severity: "critical", category: "timeline", description: "time order broken", suggestion: "restore order", automaticRevisionEligible: true },
         ],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 69,
-        issues: [{ severity: "critical", category: "continuity", description: "still broken", suggestion: "fix again" }],
+        issues: [{ severity: "critical", category: "continuity", description: "still broken", suggestion: "fix again", automaticRevisionEligible: true }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: true,
@@ -318,7 +323,7 @@ describe("runChapterReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 80,
-        issues: [{ severity: "critical", category: "continuity", description: "needs work", suggestion: "tighten" }],
+        issues: [{ severity: "critical", category: "continuity", description: "needs work", suggestion: "tighten", automaticRevisionEligible: true }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: true,
@@ -368,7 +373,7 @@ describe("runChapterReviewCycle v9", () => {
       .mockResolvedValueOnce(createAuditResult({
         passed: false,
         overallScore: 70,
-        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix" }],
+        issues: [{ severity: "critical", category: "continuity", description: "broken", suggestion: "fix", automaticRevisionEligible: true }],
       }))
       .mockResolvedValueOnce(createAuditResult({
         passed: true,
@@ -494,6 +499,53 @@ describe("runChapterReviewCycle v9", () => {
     expect(result.auditResult.researchStatus).toBe("needs-research");
   });
 
+  it("keeps blocked and warned publication terms outside creative review and auto revision", async () => {
+    const originalContent = `法轮功被写进旧报纸，强奸案与肢解案仍未侦破。${"山".repeat(180)}`;
+    const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
+      passed: true,
+      creativePassed: true,
+      overallScore: 96,
+      summary: "commercially effective scene",
+    }));
+    const reviseChapter = vi.fn();
+    const createReviser = vi.fn(() => ({ reviseChapter }));
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser,
+      auditor: { auditChapter },
+      analyzeSensitiveWords: (content) => analyzeSensitiveWords(content),
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+    });
+
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.revised).toBe(false);
+    expect(result.auditResult.passed).toBe(true);
+    expect(result.auditResult.creativePassed).toBe(true);
+    expect(result.auditResult.overallScore).toBe(96);
+    expect(result.auditResult.issues).toEqual([]);
+    expect(createReviser).not.toHaveBeenCalled();
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.publicationCompatibility).toMatchObject({
+      track: "publication-compatibility",
+      found: expect.arrayContaining([
+        expect.objectContaining({ word: "法轮功", severity: "block" }),
+        expect.objectContaining({ word: "强奸", severity: "warn" }),
+        expect.objectContaining({ word: "肢解", severity: "warn" }),
+      ]),
+    });
+  });
+
   it("reports a deterministic warning without auto-revising the chapter", async () => {
     const originalContent = "b".repeat(200);
     const revisedContent = "a".repeat(200);
@@ -588,12 +640,51 @@ describe("runChapterReviewCycle v9", () => {
     expect(logWarn).not.toHaveBeenCalled();
   });
 
+  it("keeps an untrusted LLM critical visible but denies automatic prose mutation", async () => {
+    const originalContent = "b".repeat(200);
+    const auditChapter = vi.fn().mockResolvedValue(createAuditResult({
+      passed: false,
+      overallScore: 45,
+      issues: [{
+        severity: "critical",
+        category: "Narrative integrity",
+        description: "The clean criminal victory should be morally interrogated.",
+        suggestion: "Add consequences.",
+      }],
+    }));
+    const reviseChapter = vi.fn();
+
+    const result = await runChapterReviewCycle({
+      ...baseParams,
+      initialOutput: {
+        content: originalContent,
+        wordCount: originalContent.length,
+        postWriteErrors: [],
+      },
+      createReviser: () => ({ reviseChapter }),
+      auditor: { auditChapter },
+      normalizeDraftLengthIfNeeded: async (content) => ({
+        content,
+        wordCount: content.length,
+        applied: false,
+        tokenUsage: ZERO_USAGE,
+      }),
+      maxReviewIterations: 1,
+    });
+
+    expect(reviseChapter).not.toHaveBeenCalled();
+    expect(result.finalContent).toBe(originalContent);
+    expect(result.auditResult.passed).toBe(true);
+    expect(result.auditResult.issues[0]).toMatchObject({ severity: "critical" });
+  });
+
   it("rejects a contradictory pass verdict when creative critical evidence exists", async () => {
     const originalContent = "b".repeat(200);
     const revisedContent = "r".repeat(200);
     const criticalIssue: AuditIssue = {
       severity: "critical",
       track: "creative",
+      automaticRevisionEligible: true,
       category: "continuity",
       description: "The protagonist uses knowledge they never acquired.",
       suggestion: "Restore the established information boundary.",
@@ -713,6 +804,7 @@ describe("runChapterReviewCycle v9", () => {
     const stillBlockedRevision = "수".repeat(200);
     const unresolvedIssue: AuditIssue = {
       severity: "critical",
+      automaticRevisionEligible: true,
       category: "독자 보상 누락",
       description: "약속한 핵심 보상 장면이 없습니다.",
       suggestion: "핵심 보상 장면을 실제 행동으로 지급하세요.",
@@ -784,7 +876,7 @@ describe("runChapterReviewCycle v9", () => {
       normalizePostWriteSurface: (content) => content.replace(/——+/g, "，"),
       runPostWriteChecks: (content) =>
         content.includes("——")
-          ? [{ severity: "critical" as const, category: "禁止破折号", description: "出现了破折号", suggestion: "用逗号断句" }]
+          ? [{ severity: "critical" as const, category: "禁止破折号", description: "出现了破折号", suggestion: "用逗号断句", automaticRevisionEligible: true }]
           : [],
     });
 

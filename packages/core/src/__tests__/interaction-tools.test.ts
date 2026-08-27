@@ -283,6 +283,8 @@ describe("interaction tools", () => {
 
     await expect(tools.writeTruthFile("harbor", "runtime/agent_notes.md", "notes"))
       .rejects.toThrow("Invalid truth file name");
+    await expect(tools.writeTruthFile("harbor", "book_rules.md", "# raw overwrite"))
+      .rejects.toThrow("Invalid truth file name");
   });
 
   it("forwards foundation draft fields into shared book creation", async () => {
@@ -338,6 +340,13 @@ describe("interaction tools", () => {
       volumeOutline: "卷一先查账，再暴露港口旧案。",
       authorIntent: "# 作者意图\n\n写成冷硬、克制、利益驱动的商战悬疑。\n",
       currentFocus: "# 当前聚焦\n\n先把旧账线和港口势力网立住。\n",
+      hardRules: [{
+        collection: "prohibitions",
+        text: "Never resolve the central debt off-page.",
+        decision: "adopt",
+        decisionId: "studio-hil:decision-1",
+        adoptedByActorId: "studio-local-owner",
+      }],
     });
 
     expect(pipeline.initBook).toHaveBeenCalledWith(
@@ -352,6 +361,13 @@ describe("interaction tools", () => {
         externalContext: expect.stringContaining("近未来架空香港"),
         authorIntent: expect.stringContaining("冷硬、克制"),
         currentFocus: expect.stringContaining("旧账线"),
+        bookRuleOwnerDecisions: [{
+          collection: "prohibitions",
+          text: "Never resolve the central debt off-page.",
+          decision: "adopt",
+          decisionId: "studio-hil:decision-1",
+          adoptedByActorId: "studio-local-owner",
+        }],
       }),
     );
   });

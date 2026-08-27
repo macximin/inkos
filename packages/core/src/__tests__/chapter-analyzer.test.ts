@@ -105,6 +105,14 @@ describe("ChapterAnalyzerAgent", () => {
   it("uses English prompts when analyzing imported English chapters", async () => {
     const bookDir = await mkdtemp(join(tmpdir(), "inkos-chapter-analyzer-en-"));
     const englishContent = "He looked at the sky and waited.";
+    await mkdir(join(bookDir, "story"), { recursive: true });
+    await writeFile(join(bookDir, "story", "book_rules.md"), [
+      "---",
+      "prohibitions:",
+      "  - The culprit must repent before the chapter ends.",
+      "---",
+      "RAW_ANALYZER_BOOK_RULES_MUST_NOT_LEAK",
+    ].join("\n"), "utf8");
     const agent = new ChapterAnalyzerAgent({
       client: {
         provider: "openai",
@@ -183,6 +191,8 @@ describe("ChapterAnalyzerAgent", () => {
 
       const messages = chat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
       expect(messages[0]?.content).toContain("ALL output MUST be in English");
+      expect(messages[0]?.content).not.toContain("RAW_ANALYZER_BOOK_RULES_MUST_NOT_LEAK");
+      expect(messages[0]?.content).not.toContain("The culprit must repent before the chapter ends.");
       expect(messages[1]?.content).toContain("Analyze chapter 1");
       expect(messages[1]?.content).toContain("## Chapter Content");
       expect(messages[1]?.content).toContain("## Current State");

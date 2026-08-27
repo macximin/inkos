@@ -299,6 +299,131 @@ export interface LLMClient {
   };
 }
 
+export class ProviderRefusalError extends Error {
+  constructor() {
+    super("Provider refusal: model returned an explicit request-refusal message instead of task output");
+    this.name = "ProviderRefusalError";
+  }
+}
+
+function refusalCandidate(content: string): string {
+  // A provider can satisfy the writer's outer marker contract while placing a
+  // refusal in the actual chapter body. Inspect the same block the writer
+  // parser would persist instead of treating the marker itself as proof that
+  // the response is fiction.
+  const chapterContent = content.match(
+    /===\s*CHAPTER_CONTENT\s*===\s*([\s\S]*?)(?=\s*===\s*[A-Z_]+\s*===|$)/i,
+  )?.[1];
+  return chapterContent ?? content;
+}
+
+function hasExplicitFictionalAttribution(
+  sample: string,
+  language: "en" | "ko" | "zh",
+): boolean {
+  if (language === "en") {
+    const attributedSpeech = /(?:(?:I|we|he|she|they|[A-Z][a-z'-]+|the\s+(?:screen|terminal|placard|notice))\s+(?:said|told|asked|whispered|muttered|shouted|replied|read|recited|quoted|flashed|displayed|showed)[,:]\s*["“]|[,;]\s*(?:I|we|he|she|they|[A-Z][a-z'-]+)\s+(?:said|told|asked|whispered|muttered|shouted|replied|read|recited|quoted)\b|["”]\s*(?:I|we|he|she|they|[A-Z][a-z'-]+)?\s*(?:said|asked|whispered|muttered|shouted|replied|read|recited|quoted)\b)/i.test(sample);
+    const inWorldMessage = /\b(?:the\s+)?(?:screen|terminal|placard|notice|archive\s+notice)\s+(?:displayed|showed|read|flashed)[,:]/i.test(sample);
+    const narrativeContinuation = /(?:[.!?]|,\s*(?:so|then))\s*(?:he|she|they|[A-Z][a-z'-]+)\s+(?:tore|ripped|bribed|stole|smashed|crossed|entered|left|ran|walked|pulled|pushed|drew|grabbed|hid|burned|opened|closed|struck|slipped|pocketed|broke|shut|kicked)\b/i.test(sample);
+    return attributedSpeech || inWorldMessage || narrativeContinuation;
+  }
+  if (language === "ko") {
+    const attributedSpeech = /(?:(?:[가-힣]{1,8})(?:은|는|이|가)?\s*(?:말했|말하|대답|중얼|속삭|외쳤|읽었|낭독|인용)[가-힣]{0,3}[,:.]\s*["“]|(?:라고|하고|라며|라면서)[^.!?。！？\n]{0,32}(?:말했|말하|대답|중얼|속삭|외쳤|생각했|읽었|낭독|인용)|(?:라는|이라고\s*적힌)[^.!?。！？\n]{0,24}(?:문구|글자|안내|경고))/.test(sample);
+    const inWorldMessage = /(?:단말기?|화면|안내문|경고문|문서|공문)[^.!?。！？\n]{0,80}(?:떴|표시|적혀|쓰여|나타났)/.test(sample);
+    const narrativeContinuation = /[.!?]\s*(?:그|그녀|그들|[가-힣]{1,8})(?:은|는|이|가)\s+[^.!?]{0,48}(?:찢|들어가|매수|꺼\s*버|깨뜨|부숴|숨기|열|닫|뛰|걷|훔치|불태|밀어|잡|도망|으쓱)/.test(sample);
+    return attributedSpeech || inWorldMessage || narrativeContinuation;
+  }
+  const attributedSpeech = /(?:(?:我|他|她|他们|她们|[\p{Script=Han}]{1,8})(?:对[^，。！？\n]{0,8})?(?:说|说道|回答|低声说|喊道|朗读|引用|显示|写着|弹出)[：:]\s*[“"「『]|[，”、]\s*(?:我|他|她|他们|她们|[\p{Script=Han}]{1,4})(?:对[^，。！？\n]{0,8})?(?:说|说道|回答|低声说|喊道|朗读|引用)|[”」』]\s*(?:我|他|她|他们|她们|[\p{Script=Han}]{1,4})?(?:说|说道|回答|低声说|喊道|朗读|引用))/u.test(sample);
+  const inWorldMessage = /(?:终端|屏幕|告示|通知|文件|档案)[^。！？\n]{0,48}(?:显示|写着|弹出|出现|熄灭)/u.test(sample);
+  const narrativeContinuation = /[。！？]\s*(?:他|她|他们|她们|[\p{Script=Han}]{2,4})(?:随即|便|就)?[^。！？\n]{0,32}(?:撕|闯|砸|拔|拿|藏|烧|推|拉|跑|走|关|开|偷|踢|打|抓|掏|笑)/u.test(sample);
+  return attributedSpeech || inWorldMessage || narrativeContinuation;
+}
+
+function isExplicitProviderRefusalText(content: string): boolean {
+  const sample = refusalCandidate(content)
+    .trimStart()
+    .slice(0, 1_200)
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!sample) return false;
+  const opening = sample.slice(0, 600);
+
+  // Fail closed only for direct, first-person provider boilerplate. Quoted
+  // dialogue and ordinary narration do not begin with these unquoted leads.
+  // A single first-person refusal can still be fiction, so require a provider-
+  // style apology/self-reference or a second independent refusal expression.
+  const englishLead = /^(?:(?:i(?:'m| am) sorry|i apologize|sorry)[,;:!\s-]*(?:but\s+)?|as\s+an?\s+(?:ai(?:\s+(?:language\s+model|assistant))?|language\s+model)[,;:!\s-]+|sure\s*(?:[-—–,:;]\s*)?(?:however|but)[,;:!\s-]*|unfortunately[,;:!\s-]*)?i\s+(?:(?:can(?:not|'t)|won(?:not|'t))\s+|(?:am\s+)?unable\s+to\s+|(?:must|have\s+to|need\s+to)\s+(?:refuse|decline)(?:\s+to)?\s+)/i;
+  const englishRefusalCount = sample.match(
+    /\bi\s+(?:(?:can(?:not|'t)|won(?:not|'t))\s+|(?:am\s+)?unable\s+to\s+|(?:must|have\s+to|need\s+to)\s+(?:refuse|decline)\b)/gi,
+  )?.length ?? 0;
+  const englishCorroboration = /^(?:i(?:'m| am) sorry|i apologize|sorry)\b/i.test(sample)
+    || /\b(?:as an ai|ai assistant|language model|provider|content policy|safety policy|safety reasons?|policy|guidelines?)\b/i.test(sample)
+    || englishRefusalCount >= 2;
+  const englishPolicyRefusal = /\b(?:(?:safety|content)\s+(?:policy|policies|guidelines?)|safety\s+reasons?)\b/i.test(opening)
+    && /\b(?:request|content|task|prompt|instruction|assistance)\b/i.test(opening)
+    && /\b(?:can(?:not|'t)|unable|unavailable|not\s+able|prevent(?:s|ed|ing)?|prohibit(?:s|ed|ing)?|forbid(?:s|den)?|declin(?:e|es|ed|ing)|refus(?:e|es|ed|ing)|will\s+not|won't)\b/i.test(opening);
+  if (
+    (englishLead.test(sample) || englishPolicyRefusal)
+    && englishCorroboration
+    && (
+      /\b(?:assist|help|generate|write|provide|comply|fulfill|complete|create|produce|refuse|decline)\b/i.test(sample)
+      || englishPolicyRefusal
+    )
+    && /\b(?:request|prompt|instruction|content|task|that|this)\b/i.test(sample)
+  ) {
+    return !hasExplicitFictionalAttribution(sample, "en");
+  }
+
+  const koreanLead = /^(?:(?:죄송(?:합니다|하지만|하나)?[,!?.\s]*(?:하지만\s*)?)?(?:저는|제가|나는|내가)\s|(?:AI|인공지능)(?:\s*언어\s*모델)?로서\s|안타깝(?:지만|게)[,!?.\s]*|(?:이|해당|그)\s*요청(?:은|은요|에|을|이|대로)?\s)/i;
+  const koreanRefusalCount = sample.match(
+    /(?:(?:할|해|드릴)\s*수\s*없|거부(?:합니다|하겠습니다)|응할\s*수\s*없)/g,
+  )?.length ?? 0;
+  const koreanCorroboration = /^죄송/.test(sample)
+    || /(?:AI|인공지능|언어\s*모델|제공자|(?:안전|콘텐츠|내용)?\s*(?:정책|지침|가이드라인))/i.test(sample)
+    || koreanRefusalCount >= 2;
+  const koreanPolicyRefusal = /(?:안전|콘텐츠|내용)?\s*(?:정책|지침|가이드라인)(?:\s*위반|\s*제한)?/.test(opening)
+    && /(?:요청|콘텐츠|내용|작업|프롬프트|답변|지원)/.test(opening)
+    && /(?:불가능|불가|(?:할|해|드릴)\s*수\s*없|거부|응할\s*수\s*없|하지\s*않(?:겠|습)|금지|못(?:하|해))/.test(opening);
+  if (
+    (koreanLead.test(sample) || koreanPolicyRefusal)
+    && koreanCorroboration
+    && (
+      /(?:할|해|드릴)\s*수\s*없|거부(?:합니다|하겠습니다)|응할\s*수\s*없/.test(sample)
+      || koreanPolicyRefusal
+    )
+    && /(?:도와|지원|생성|작성|쓰|제공|수행|준수|처리|진행|계속|응|답)/.test(sample)
+    && /(?:요청|지시|내용|콘텐츠|작업|프롬프트|그것|이것)/.test(sample)
+  ) {
+    return !hasExplicitFictionalAttribution(sample, "ko");
+  }
+
+  const chineseLead = /^(?:(?:抱歉|很抱歉)[，,。!！\s]*(?:(?:但是|但)\s*)?我|我|作为(?:一个)?(?:AI|人工智能|语言模型)[^，,。!！\n]{0,20}[，,]\s*我|(?:抱歉|很抱歉)[，,。!！\s]*(?:这个|该|这类)请求[^，,。!！\n]{0,12}我)/i;
+  const chineseRefusalCount = sample.match(/(?:不能|无法|不会|必须拒绝|需要拒绝|拒绝)/g)?.length ?? 0;
+  const chineseCorroboration = /^(?:抱歉|很抱歉|很遗憾)/.test(sample)
+    || /(?:AI|人工智能|语言模型|提供商|内容政策|安全政策|政策|准则|限制)/i.test(sample)
+    || chineseRefusalCount >= 2;
+  const chinesePolicyRefusal = /(?:安全|内容)?(?:政策|准则|限制)|很遗憾/.test(opening)
+    && /(?:请求|内容|任务|提示|指令|协助|帮助)/.test(opening)
+    && /(?:不能|无法|不会|不予|禁止|不可|拒绝)/.test(opening);
+  const isChineseRefusal = (chineseLead.test(sample) || chinesePolicyRefusal)
+    && chineseCorroboration
+    && (
+      /(?:不能|无法|不会|必须拒绝|需要拒绝|拒绝)/.test(sample)
+      || chinesePolicyRefusal
+    )
+    && /(?:协助|帮助|生成|创作|撰写|写作|提供|遵从|执行|完成|处理|继续|回应|答复)/.test(sample)
+    && /(?:请求|内容|指令|任务|提示|这个|这类|该)/.test(sample);
+  return isChineseRefusal && !hasExplicitFictionalAttribution(sample, "zh");
+}
+
+function rejectExplicitProviderRefusal(response: LLMResponse): LLMResponse {
+  if (isExplicitProviderRefusalText(response.content)) {
+    throw new ProviderRefusalError();
+  }
+  return response;
+}
+
 // === Factory ===
 
 export function createLLMClient(config: LLMConfig): LLMClient {
@@ -428,6 +553,86 @@ export class PartialResponseError extends Error {
     this.name = "PartialResponseError";
     this.partialContent = partialContent;
   }
+}
+
+function terminalStateError(
+  protocol: string,
+  state: unknown,
+  allowedStates: readonly string[],
+  detail?: unknown,
+): Error | undefined {
+  // Streaming event parsers may see ordinary chunks that do not carry terminal
+  // metadata. Call requiredTerminalStateError at the response boundary when a
+  // protocol requires an explicit completion state.
+  if (state === undefined || state === null || state === "") return undefined;
+  const normalized = String(state);
+  if (allowedStates.includes(normalized)) return undefined;
+  const detailText = typeof detail === "string" && detail.trim() ? `: ${detail.trim()}` : "";
+  return new Error(`${protocol} ended with non-complete terminal state "${normalized}"${detailText}`);
+}
+
+function requiredTerminalStateError(
+  protocol: string,
+  state: unknown,
+  allowedStates: readonly string[],
+  detail?: unknown,
+): Error | undefined {
+  if (state === undefined || state === null || state === "") {
+    return new Error(`${protocol} omitted its required terminal state`);
+  }
+  return terminalStateError(protocol, state, allowedStates, detail);
+}
+
+function throwTerminalState(error: Error | undefined, partialContent: string): void {
+  if (!error) return;
+  if (partialContent) throw new PartialResponseError(partialContent, error);
+  throw error;
+}
+
+function unsupportedToolCallError(protocol: string, callType: unknown): Error | undefined {
+  if (typeof callType !== "string" || !callType.trim()) return undefined;
+  return new Error(
+    `${protocol} returned unsupported tool call "${callType}" where a completed text response was required`,
+  );
+}
+
+function anthropicToolCallType(json: any): string | undefined {
+  const blocks = Array.isArray(json?.content) ? json.content : [];
+  return blocks.find((block: any) => block?.type === "tool_use" || block?.type === "server_tool_use")?.type;
+}
+
+function openAIChatToolCallType(json: any): string | undefined {
+  const choice = json?.choices?.[0];
+  const payload = choice?.message ?? choice?.delta;
+  if (Array.isArray(payload?.tool_calls) && payload.tool_calls.length > 0) return "tool_calls";
+  if (payload?.function_call && typeof payload.function_call === "object") return "function_call";
+  return undefined;
+}
+
+function responsesToolCallType(json: any): string | undefined {
+  const records = [
+    ...(Array.isArray(json?.output) ? json.output : []),
+    ...(json?.item && typeof json.item === "object" ? [json.item] : []),
+  ];
+  const recordType = records
+    .map((record: any) => record?.type)
+    .find((type: unknown): type is string => typeof type === "string" && /(?:^function_call$|_call$)/.test(type));
+  if (recordType) return recordType;
+
+  const eventType = typeof json?.type === "string" ? json.type : "";
+  const eventCall = eventType.match(/^response\.((?:function_call_arguments)|(?:[a-z_]+_call))\./)?.[1];
+  return eventCall;
+}
+
+function piToolCallType(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return undefined;
+  return content.some((block) => (
+    block !== null
+    && typeof block === "object"
+    && (block as { type?: unknown }).type === "toolCall"
+  )) ? "toolUse" : undefined;
 }
 
 export class ContextWindowExceededError extends Error {
@@ -1067,6 +1272,14 @@ async function chatCompletionViaCustomAnthropicCompatible(
   if (!client.stream) {
     const json = await response.json() as any;
     const content = extractAnthropicContent(json);
+    throwTerminalState(
+      requiredTerminalStateError(
+        "Anthropic Messages API",
+        json?.stop_reason,
+        ["end_turn", "stop_sequence"],
+      ) ?? unsupportedToolCallError("Anthropic Messages API", anthropicToolCallType(json)),
+      content,
+    );
     if (!content) {
       throw wrapLLMError(new Error("LLM returned empty response"), errorCtx);
     }
@@ -1087,6 +1300,8 @@ async function chatCompletionViaCustomAnthropicCompatible(
   let content = "";
   let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let sawMessageStop = false;
+  let terminalState: unknown;
+  let terminalError: Error | undefined;
   const monitor = createStreamMonitor(onStreamProgress);
 
   try {
@@ -1108,8 +1323,24 @@ async function chatCompletionViaCustomAnthropicCompatible(
           monitor.onChunk(json.delta.text);
           onTextDelta?.(json.delta.text);
         }
-        if (json.type === "message_delta" && json.usage) {
-          usage.completionTokens = json.usage.output_tokens ?? usage.completionTokens;
+        if (json.type === "message_delta") {
+          if (json.usage) {
+            usage.completionTokens = json.usage.output_tokens ?? usage.completionTokens;
+          }
+          if (json.delta?.stop_reason !== undefined && json.delta?.stop_reason !== null) {
+            terminalState = json.delta.stop_reason;
+            terminalError ??= terminalStateError(
+              "Anthropic Messages API",
+              terminalState,
+              ["end_turn", "stop_sequence"],
+            );
+          }
+        }
+        if (json.type === "content_block_start") {
+          terminalError ??= unsupportedToolCallError(
+            "Anthropic Messages API",
+            anthropicToolCallType({ content: [json.content_block] }),
+          );
         }
         if (json.type === "message_stop") {
           sawMessageStop = true;
@@ -1121,6 +1352,12 @@ async function chatCompletionViaCustomAnthropicCompatible(
     monitor.stop();
   }
 
+  terminalError ??= requiredTerminalStateError(
+    "Anthropic Messages API",
+    terminalState,
+    ["end_turn", "stop_sequence"],
+  );
+  throwTerminalState(terminalError, content);
   if (!content) {
     throw wrapLLMError(new Error("LLM returned empty response from stream"), errorCtx);
   }
@@ -1190,6 +1427,15 @@ async function chatCompletionViaCustomOpenAICompatible(
     if (!client.stream) {
       const json = await response.json() as any;
       const content = extractResponsesContent(json);
+      throwTerminalState(
+        requiredTerminalStateError(
+          "OpenAI Responses API",
+          json?.status,
+          ["completed"],
+          json?.incomplete_details?.reason ?? json?.error?.message ?? json?.error?.code,
+        ) ?? unsupportedToolCallError("OpenAI Responses API", responsesToolCallType(json)),
+        content,
+      );
       if (!content) {
         throw wrapLLMError(new Error("LLM returned empty response"), errorCtx);
       }
@@ -1210,6 +1456,7 @@ async function chatCompletionViaCustomOpenAICompatible(
     let content = "";
     let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let sawResponseTerminal = false;
+    let terminalError: Error | undefined;
     const monitor = createStreamMonitor(onStreamProgress);
 
     try {
@@ -1223,12 +1470,21 @@ async function chatCompletionViaCustomOpenAICompatible(
         for (const event of parsed.events) {
           if (!event.data) continue;
           const json = JSON.parse(event.data);
+          terminalError ??= unsupportedToolCallError(
+            "OpenAI Responses API",
+            responsesToolCallType(json),
+          );
           if (json.type === "response.output_text.delta" && typeof json.delta === "string") {
             content += json.delta;
             monitor.onChunk(json.delta);
             onTextDelta?.(json.delta);
           }
-          if (json.type === "response.completed" || json.type === "response.incomplete") {
+          if (
+            json.type === "response.completed"
+            || json.type === "response.incomplete"
+            || json.type === "response.failed"
+            || json.type === "response.cancelled"
+          ) {
             sawResponseTerminal = true;
             usage = {
               promptTokens: json.response?.usage?.input_tokens ?? 0,
@@ -1238,6 +1494,18 @@ async function chatCompletionViaCustomOpenAICompatible(
             if (!content) {
               content = extractResponsesContent(json.response);
             }
+            const eventStatus = json.type.slice("response.".length);
+            terminalError ??= terminalStateError(
+              "OpenAI Responses API",
+              json.response?.status ?? eventStatus,
+              ["completed"],
+              json.response?.incomplete_details?.reason
+                ?? json.response?.error?.message
+                ?? json.response?.error?.code,
+            ) ?? unsupportedToolCallError(
+              "OpenAI Responses API",
+              responsesToolCallType(json.response),
+            );
           }
         }
       }
@@ -1245,6 +1513,7 @@ async function chatCompletionViaCustomOpenAICompatible(
       monitor.stop();
     }
 
+    throwTerminalState(terminalError, content);
     if (!content) {
       throw wrapLLMError(new Error("LLM returned empty response from stream"), errorCtx);
     }
@@ -1303,6 +1572,14 @@ async function chatCompletionViaCustomOpenAICompatible(
     // MiniMax M2.x 等模型可能把思考内容以 <think>...</think> 内联在 content 开头，
     // 剥掉起始处的完整 think 块，防止思考内容混进章节/对话正文（issue #329）。
     const content = stripLeadingThinkBlock(extractChatContent(json));
+    throwTerminalState(
+      requiredTerminalStateError(
+        "OpenAI Chat Completions API",
+        json?.choices?.[0]?.finish_reason,
+        ["stop"],
+      ) ?? unsupportedToolCallError("OpenAI Chat Completions API", openAIChatToolCallType(json)),
+      content,
+    );
     if (!content) {
       throw wrapLLMError(new Error("LLM returned empty response"), errorCtx);
     }
@@ -1323,9 +1600,12 @@ async function chatCompletionViaCustomOpenAICompatible(
   let content = "";
   let reasoningContent = "";
   let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-  // OpenAI 协议的正常结束必须出现 [DONE] 哨兵或带 finish_reason 的 chunk。
-  // 网关掐断长连接时流会"干净地"关闭但没有任何终止信号——那是截断，不是完成。
+  // OpenAI chat text is complete only after an explicit successful
+  // finish_reason. [DONE] is a transport sentinel, not semantic proof that a
+  // preceding text delta was complete.
   let sawTerminal = false;
+  let terminalState: unknown;
+  let terminalError: Error | undefined;
   const monitor = createStreamMonitor(onStreamProgress);
   // 内联 <think>...</think> 的模型（如 MiniMax M2.x）：剥掉响应起始处的完整
   // think 块，思考内容既不并入正文也不通过 onTextDelta 发给 UI（issue #329）。
@@ -1346,9 +1626,20 @@ async function chatCompletionViaCustomOpenAICompatible(
           continue;
         }
         const json = JSON.parse(event.data);
-        if (json?.choices?.[0]?.finish_reason) {
+        const finishReason = json?.choices?.[0]?.finish_reason;
+        if (finishReason) {
           sawTerminal = true;
+          terminalState = finishReason;
+          terminalError ??= terminalStateError(
+            "OpenAI Chat Completions API",
+            finishReason,
+            ["stop"],
+          );
         }
+        terminalError ??= unsupportedToolCallError(
+          "OpenAI Chat Completions API",
+          openAIChatToolCallType(json),
+        );
         const delta = extractChatDeltaContent(json);
         if (delta) {
           monitor.onChunk(delta);
@@ -1380,6 +1671,12 @@ async function chatCompletionViaCustomOpenAICompatible(
   // 流结束仍缓冲在剥离器里的文本（未闭合的 think 块等）原样并回，避免数据丢失。
   content += thinkStripper.flush();
   const finalContent = content || reasoningContent;
+  terminalError ??= requiredTerminalStateError(
+    "OpenAI Chat Completions API",
+    terminalState,
+    ["stop"],
+  );
+  throwTerminalState(terminalError, finalContent);
   if (!finalContent) {
     throw wrapLLMError(new Error("LLM returned empty response from stream"), errorCtx);
   }
@@ -1409,14 +1706,16 @@ export async function chatCompletion(
     readonly retry?: boolean;
   },
 ): Promise<LLMResponse> {
-  if (isLlmStubEnabled()) return Promise.resolve(stubChatCompletion(messages, model));
+  if (isLlmStubEnabled()) {
+    return Promise.resolve(rejectExplicitProviderRefusal(stubChatCompletion(messages, model)));
+  }
   if (client.service === CODEX_SERVICE_ID) {
     const maxTokens = options?.maxTokens ?? client.defaults.maxTokens;
     const signal = options?.signal;
     const errorCtx = { baseUrl: "local://codex-subscription", model, service: client.service };
     const systemParts = messages.filter((message) => message.role === "system").map((message) => message.content);
     try {
-      return await withTransientLLMRetry(async () => {
+      const response = await withTransientLLMRetry(async () => {
         signal?.throwIfAborted();
         assertWithinContextWindow({
           piModel: resolvePiModel(client, model),
@@ -1474,6 +1773,7 @@ export async function chatCompletion(
           },
         };
       }, { enabled: options?.retry ?? true, signal });
+      return rejectExplicitProviderRefusal(response);
     } catch (error) {
       throw wrapLLMError(error, errorCtx);
     }
@@ -1495,7 +1795,7 @@ export async function chatCompletion(
   const modelCall = beginAgentModelCall();
 
   try {
-    return await withTransientLLMRetry(
+    const response = await withTransientLLMRetry(
       async (attempt) => {
         signal?.throwIfAborted();
         const traceHeaders = agentTrajectoryHeaders(client._piModel?.baseUrl, modelCall, attempt, {
@@ -1561,6 +1861,7 @@ export async function chatCompletion(
       // text; callers can also opt out (e.g. fast-fail diagnostics).
       { enabled: (options?.retry ?? true) && !onTextDelta, signal },
     );
+    return rejectExplicitProviderRefusal(response);
   } catch (error) {
     // 注意：中断的流（PartialResponseError）不再"打捞"半截内容当成功返回——
     // 那会产出写到一半就结束的章节/设定文件。重试由 withTransientLLMRetry
@@ -1631,13 +1932,19 @@ async function chatCompletionViaPiAi(
 
   if (!client.stream) {
     const response = await piCompleteSimple(piModel, context, streamOpts);
-    if (response.stopReason === "error" && response.errorMessage) {
-      throw new Error(response.errorMessage);
-    }
     const content = response.content
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
       .map((block) => block.text)
       .join("");
+    throwTerminalState(
+      requiredTerminalStateError(
+        "pi-ai",
+        response.stopReason,
+        ["stop"],
+        response.errorMessage,
+      ) ?? unsupportedToolCallError("pi-ai", piToolCallType(response)),
+      content,
+    );
     if (!content) {
       const diag = `usage=${response.usage.input}+${response.usage.output}`;
       console.warn(`[inkos] LLM 非流式响应无文本内容 (${diag})`);
@@ -1680,13 +1987,21 @@ async function chatCompletionViaPiAi(
         outputTokens = msg.usage.output;
         if (event.type === "done") {
           sawDone = true;
+          throwTerminalState(
+            requiredTerminalStateError(
+              "pi-ai",
+              msg.stopReason,
+              ["stop"],
+              msg.errorMessage,
+            ) ?? unsupportedToolCallError("pi-ai", piToolCallType(msg)),
+            chunks.join(""),
+          );
         }
-        if (event.type === "error" && msg.errorMessage) {
+        if (event.type === "error") {
           const partial = chunks.join("");
-          if (partial) {
-            throw new PartialResponseError(partial, new Error(msg.errorMessage));
-          }
-          throw new Error(msg.errorMessage);
+          const error = new Error(msg.errorMessage || "pi-ai emitted an error terminal event");
+          if (partial) throw new PartialResponseError(partial, error);
+          throw error;
         }
       }
     }

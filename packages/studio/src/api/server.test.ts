@@ -426,8 +426,17 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
   }
 
   class MockPipelineRunner {
+    private readonly config: {
+      readonly client?: unknown;
+      readonly model?: string;
+    };
+
     constructor(config: unknown) {
       pipelineConfigs.push(config);
+      this.config = config as {
+        readonly client?: unknown;
+        readonly model?: string;
+      };
     }
 
     // 与真实 PipelineRunner.runWithAbortSignal 行为一致（入口检查一次 signal），
@@ -452,6 +461,15 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     resyncChapterArtifacts = resyncChapterArtifactsMock;
     writeNextChapter = writeNextChapterMock;
     writeChapters = writeChaptersMock;
+    completeBookBound = vi.fn(async (_bookId: string, request: {
+      readonly messages: ReadonlyArray<{ readonly role: string; readonly content: string }>;
+      readonly options?: Record<string, unknown>;
+    }) => chatCompletionMock(
+      this.config.client,
+      this.config.model,
+      request.messages,
+      request.options,
+    ));
   }
 
   class MockConsolidatorAgent {
@@ -504,6 +522,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     normalizePlatformOrOther: actual.normalizePlatformOrOther,
     defaultChapterLength: actual.defaultChapterLength,
     inferLanguage: actual.inferLanguage,
+    BookRuleOwnerDecisionDraftSchema: actual.BookRuleOwnerDecisionDraftSchema,
+    BookRuleOwnerDecisionInputSchema: actual.BookRuleOwnerDecisionInputSchema,
     readBookRules: actual.readBookRules,
     ingestMaterial: actual.ingestMaterial,
     listBookReferences: actual.listBookReferences,
@@ -3823,6 +3843,65 @@ futureAdvantage:
     }));
   });
 
+  it("requires a distinct owner confirmation before accepting typed hard rules", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Owner Rule Missing Confirmation",
+        genre: "urban",
+        language: "en",
+        hardRules: [{
+          collection: "prohibitions",
+          text: "The protagonist never surrenders the voting shares.",
+          decision: "adopt",
+        }],
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("separate explicit owner-adoption confirmation"),
+    });
+    expect(processProjectInteractionRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("binds confirmed Studio hardRules to host-generated owner decision identities", async () => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/books/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Owner Rule Receipt",
+        genre: "urban",
+        language: "en",
+        hardRulesConfirmed: true,
+        hardRules: [{
+          collection: "prohibitions",
+          text: "The protagonist never surrenders the voting shares.",
+          decision: "adopt",
+        }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const call = processProjectInteractionRequestMock.mock.calls[0]?.[0] as {
+      request?: { hardRules?: ReadonlyArray<Record<string, unknown>> };
+    };
+    expect(call.request?.hardRules).toEqual([expect.objectContaining({
+      collection: "prohibitions",
+      text: "The protagonist never surrenders the voting shares.",
+      decision: "adopt",
+      adoptedByActorId: "studio-local-owner",
+      decisionId: expect.stringMatching(/^studio-hil:/),
+    })]);
+  });
+
   it("creates books with Studio Ollama config without requiring an API key", async () => {
     await writeFile(join(root, "inkos.json"), JSON.stringify({
       ...projectConfig,
@@ -4428,6 +4507,7 @@ futureAdvantage:
       }),
       { externalContext: "创建《夜间派送》，番茄，100章以内。" },
     );
+    expect(initBookMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("bookRuleAuthoritySources");
     await expect(response.json()).resolves.toMatchObject({
       session: { activeBookId: "夜间派送" },
     });
@@ -4481,6 +4561,7 @@ futureAdvantage:
       }),
       { externalContext: "한국어 기업물 작품의 기반을 만들어 줘." },
     );
+    expect(initBookMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("bookRuleAuthoritySources");
   });
 
   it("infers English before directly executing a confirmed short action", async () => {

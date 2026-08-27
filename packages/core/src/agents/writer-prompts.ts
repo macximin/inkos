@@ -20,7 +20,7 @@ export function buildWriterSystemPrompt(
   book: BookConfig,
   genreProfile: GenreProfile,
   bookRules: BookRules | null,
-  bookRulesBody: string,
+  bookRulesGuidance: string,
   genreBody: string,
   styleGuide: string,
   styleFingerprint?: string,
@@ -40,7 +40,7 @@ export function buildWriterSystemPrompt(
       book,
       genreProfile,
       bookRules,
-      bookRulesBody,
+      bookRulesGuidance,
       genreBody,
       styleGuide,
       styleFingerprint,
@@ -75,9 +75,9 @@ export function buildWriterSystemPrompt(
         buildImmersionPillars("en"),
         buildGoldenOpeningDiscipline(chapterNumber, "en"),
         buildGenreRules(genreProfile, genreBody, resolvedLanguage),
-        buildProtagonistRules(bookRules),
+        buildProtagonistRules(bookRules, "en"),
         buildNarrativePersonRule(bookRules, "en"),
-        buildBookRulesBody(bookRulesBody),
+        buildBookRulesGuidance(bookRulesGuidance),
         buildStyleGuide(styleGuide),
         buildStyleFingerprint(styleFingerprint),
         fanficContext ? buildFanficCanonSection(fanficContext.fanficCanon, fanficContext.fanficMode) : "",
@@ -100,9 +100,9 @@ export function buildWriterSystemPrompt(
         buildGoldenChaptersRules(chapterNumber, "zh"),
         bookRules?.enableFullCastTracking ? buildFullCastTracking() : "",
         buildGenreRules(genreProfile, genreBody, "zh"),
-        buildProtagonistRules(bookRules),
+        buildProtagonistRules(bookRules, "zh"),
         buildNarrativePersonRule(bookRules, "zh"),
-        buildBookRulesBody(bookRulesBody),
+        buildBookRulesGuidance(bookRulesGuidance),
         buildStyleGuide(styleGuide),
         buildStyleFingerprint(styleFingerprint),
         fanficContext ? buildFanficCanonSection(fanficContext.fanficCanon, fanficContext.fanficMode) : "",
@@ -119,7 +119,7 @@ function buildKoreanWriterSystemPrompt(
   book: BookConfig,
   gp: GenreProfile,
   bookRules: BookRules | null,
-  bookRulesBody: string,
+  bookRulesGuidance: string,
   genreBody: string,
   styleGuide: string,
   styleFingerprint: string | undefined,
@@ -160,8 +160,8 @@ function buildKoreanWriterSystemPrompt(
   const narrativeRule = !bookRules?.narrativePerson
     ? ""
     : bookRules.narrativePerson === "first"
-      ? "## 서술 시점\n\n사용자가 정한 1인칭을 끝까지 지킵니다. 같은 장면에서 3인칭이나 전지적 시점으로 빠지지 않습니다."
-      : "## 서술 시점\n\n사용자가 정한 3인칭을 끝까지 지킵니다.";
+      ? "## 서술 시점 참고(자동 하드 규칙 아님)\n\nBookRules에는 1인칭 참고값이 있습니다. 장면의 시점을 고를 때 우선 참고하되, 검증된 작품 규칙이나 사용자 직접 지시가 아니므로 그 자체를 자동 오류 판정 근거로 쓰지 않습니다."
+      : "## 서술 시점 참고(자동 하드 규칙 아님)\n\nBookRules에는 3인칭 참고값이 있습니다. 장면의 시점을 고를 때 우선 참고하되, 검증된 작품 규칙이나 사용자 직접 지시가 아니므로 그 자체를 자동 오류 판정 근거로 쓰지 않습니다.";
   const referenceRules = fanficContext
     ? `## 원작 정본과 허용 범위
 
@@ -171,7 +171,9 @@ ${fanficContext.fanficCanon}
 - 허용된 변경: ${fanficContext.allowedDeviations.length > 0 ? fanficContext.allowedDeviations.join(", ") : "없음"}
 - 원작 사실과 인물의 말투를 지키되, 원작 문장을 베껴 붙이지 않습니다.`
     : "";
-  const localRules = bookRulesBody ? `## 이 작품의 규칙\n\n${bookRulesBody}` : "";
+  const localRules = bookRulesGuidance
+    ? `## 검증된 작품 규칙 안내\n\n${bookRulesGuidance}`
+    : "";
   const localStyle = styleGuide && styleGuide !== "(파일尚未创建)" && styleGuide !== "(文件尚未创建)"
     ? `## 문체 지침\n\n${styleGuide}`
     : "";
@@ -217,13 +219,13 @@ ${funAnchorRule}
 
 function buildKoreanProtagonistRules(bookRules: BookRules | null): string {
   if (!bookRules?.protagonist && (bookRules?.prohibitions.length ?? 0) === 0) return "";
-  const lines = ["## 인물과 금지 사항"];
+  const lines = ["## 인물 참고와 검증된 금지 사항"];
   if (bookRules?.protagonist) {
     lines.push(`- 주인공: ${bookRules.protagonist.name}`);
     if (bookRules.protagonist.personalityLock.length > 0) {
-      lines.push(`- 성격 고정점: ${bookRules.protagonist.personalityLock.join(", ")}`);
+      lines.push(`- 성격 참고(인물 형상화용, 자동 금지 아님): ${bookRules.protagonist.personalityLock.join(", ")}`);
     }
-    for (const rule of bookRules.protagonist.behavioralConstraints) lines.push(`- 행동 제약: ${rule}`);
+    for (const rule of bookRules.protagonist.behavioralConstraints) lines.push(`- 검증된 행동 제약: ${rule}`);
   }
   for (const rule of bookRules?.prohibitions ?? []) lines.push(`- 금지: ${rule}`);
   for (const rule of bookRules?.genreLock?.forbidden ?? []) lines.push(`- 장르 금지: ${rule}`);
@@ -658,7 +660,7 @@ function buildWritingCraftCard(language: "zh" | "ko" | "en"): string {
 - **Forbidden**: Info-dump character introductions / introducing 3+ new characters at once / "everyone gasped in unison"
 - **Escalation**: When the scene calls for escalation, make each added setback causally sharper; when it calls for settlement, let the result land without inventing a worse problem
 - **Cycle awareness**: If currently in build-up phase, lay new obstacles and information; if climax phase, write payoff that exceeds expectations; if aftermath phase, write consequences — who lost what, who gained what, how relationships changed
-- **Post-climax impact**: Let costs, status shifts, or the new normal land before any new build-up; clean settlement is valid and carries no fixed chapter quota
+- **Post-climax impact**: Let earned payoffs, actual costs, status shifts, or the new normal land before any new build-up; clean settlement is valid, carries no fixed chapter quota, and needs no invented cost or growth beat
 - **Expectation management**: Make an earned result visible. Carry expectation forward only when causality or character choice genuinely requires it, never merely to amplify payoff
 - **Information boundary**: What does this character know? What don't they know? What are they wrong about? Characters must act only on information they possess`;
   }
@@ -677,7 +679,7 @@ function buildWritingCraftCard(language: "zh" | "ko" | "en"): string {
 - **禁止**：资料卡式介绍角色 / 一次引入超3个新角色 / 众人齐声惊呼
 - **升级**：场景确实需要升级时，让新增阻力在因果上更尖锐；场景需要结算时，让结果落地，不为续压强造更坏的问题
 - **小目标周期意识**：如果当前处于蓄压阶段，铺新阻力新信息；如果是爆发阶段，写兑现超预期；如果是后效阶段，写改变和代价
-- **高潮后影响**：先让代价、地位变化或新常态落地，再决定是否进入下一轮；完整收束合法，不设固定章数配额
+- **高潮后影响**：先让已经发生的兑现、实际代价、地位变化或新常态落地，再决定是否进入下一轮；完整收束合法，不设固定章数配额，也不凭空补代价或成长
 - **期待管理**：让已经挣到的结果可见。只有因果或人物选择确实需要时才继续承接，不为放大快感故意拖延兑现
 - **信息边界**：角色此刻知道什么？不知道什么？对局势有什么误判？角色只能基于已掌握的信息行动`;
 }
@@ -692,7 +694,7 @@ function buildCreativeConstitution(language: "zh" | "ko" | "en"): string {
 
 These fourteen principles are your spine. Internalise them — never quote them, never list them, never narrate them. They tell you how to pick between two plausible next sentences.
 
-Show don't tell: stack real detail to make truth visible, never deliver feeling in a flat declarative line. Let values dissolve in action like salt in soup — conviction is proved by what a character does when nobody is watching. Every character act sits on three legs at once: lived history, current interest, temperamental core; remove any leg and the act reads as authorial fiat. Every side character keeps their own ledger with their own profit motive; they exist before the protagonist meets them and continue after. Rhythm breathes — slow fires cook the richest broth, and daily moments earn their place through present emotion, relationship, information, choice, payoff, or consequence. Let an ending carry momentum through a visible result, decision, or pressure; clean settlement is valid, and a hook is never a quota. Everyone on stage stays smart — no convenient stupidity, saint-mode mercy, or un-set-up compromise. Use after-time references in the voice of the era they land in. Timeline and period common sense cannot be bent. Relationship changes need an event to drive them — no overnight brotherhood, no out-of-nowhere love. Character setup holds across the arc; growth shows its work. Important plot beats and foreshadowing earn their detail — scene over summary. Refuse chronicle drift: every line either moves the plot, sharpens a person, or lets a consequence land.`;
+Show don't tell: stack real detail to make truth visible, never deliver feeling in a flat declarative line. Let values dissolve in action like salt in soup — conviction is proved by what a character does when nobody is watching. Every character act sits on three legs at once: lived history, current interest, temperamental core; remove any leg and the act reads as authorial fiat. Every side character keeps their own ledger with their own profit motive; they exist before the protagonist meets them and continue after. Rhythm breathes — slow fires cook the richest broth, and daily moments earn their place through present emotion, relationship, information, choice, payoff, or consequence. Let an ending carry momentum through a visible result, decision, or pressure; clean settlement is valid, and a hook is never a quota. Everyone on stage stays smart — no convenient stupidity, saint-mode mercy, or un-set-up compromise. Use after-time references in the voice of the era they land in. Timeline and period common sense cannot be bent. Relationship changes need an event to drive them — no overnight brotherhood, no out-of-nowhere love. Character setup holds across the arc; when growth occurs, show its work, but do not require it. Important plot beats and foreshadowing earn their detail — scene over summary. Refuse chronicle drift: every line either moves the plot, sharpens a person, or lets a consequence land.`;
   }
   return `## 创作宪法
 
@@ -894,20 +896,19 @@ function buildGenreRules(gp: GenreProfile, genreBody: string, language: "zh" | "
 // Protagonist rules from book_rules
 // ---------------------------------------------------------------------------
 
-// Narrative person is a durable user constraint: enforce it only when the user
-// explicitly set one (book_rules.narrativePerson). When unset, stay silent so the
-// genre default applies — we never impose a person the user didn't ask for.
+// Legacy BookRules can carry narrative person without proving who authorized
+// it. Keep it as style advice only; verified hard rules travel separately.
 function buildNarrativePersonRule(bookRules: BookRules | null, language: "zh" | "ko" | "en"): string {
   const person = bookRules?.narrativePerson;
   if (!person) return "";
   if (language === "en") {
     return person === "first"
-      ? "## Narrative person (hard constraint)\nWrite this book entirely in FIRST person (the protagonist's inner viewpoint). Do NOT slip into third person or an omniscient narrator — this overrides genre convention and your default."
-      : "## Narrative person (hard constraint)\nWrite this book in THIRD person.";
+      ? "## Narrative-person reference (advisory)\nBookRules records first person as a preferred style reference. Follow it when it fits established canon, but this unverified field is not a hard rule and cannot by itself justify automatic revision."
+      : "## Narrative-person reference (advisory)\nBookRules records third person as a preferred style reference. Follow it when it fits established canon, but this unverified field is not a hard rule and cannot by itself justify automatic revision.";
   }
   return person === "first"
-    ? "## 叙事人称（硬约束）\n本书必须全程使用第一人称（主角内心视角）叙述，禁止切换到第三人称或全知视角——此约束优先于题材惯例与你的默认倾向。"
-    : "## 叙事人称（硬约束）\n本书使用第三人称叙述。";
+    ? "## 叙事人称参考（非自动硬规则）\nBookRules 记录了第一人称偏好。与既有正典一致时优先参考，但未经验证的字段本身不能成为自动修改理由。"
+    : "## 叙事人称参考（非自动硬规则）\nBookRules 记录了第三人称偏好。与既有正典一致时优先参考，但未经验证的字段本身不能成为自动修改理由。";
 }
 
 /**
@@ -932,17 +933,21 @@ function buildProseExecutionRules(language: "zh" | "ko" | "en"): string {
 **高潮必须演出、不许概述。** 本章的高密度／高风险节拍——冲突爆发、生死、重大转折、真相揭露、动作高潮——必须一拍一拍现场演出（动作、对话、五感、停顿、节奏），绝不能用一两句"然后他救了人、警察来了、对手被捕"带过。当一章里挤了多个重大事件时，挑最关键的那一拍写成完整场景，次要的可压成过渡，但最关键那拍永远不许退化成总结。章节越紧凑越要守这条——字数不够就少塞事件，而不是把高潮写成梗概。`;
 }
 
-function buildProtagonistRules(bookRules: BookRules | null): string {
+function buildProtagonistRules(bookRules: BookRules | null, language: "zh" | "en"): string {
   if (!bookRules?.protagonist) return "";
 
   const p = bookRules.protagonist;
-  const lines = [`## 主角铁律（${p.name}）`];
+  const lines = [language === "en"
+    ? `## Protagonist reference and verified rules (${p.name})`
+    : `## 主角参考与已验证规则（${p.name}）`];
 
   if (p.personalityLock.length > 0) {
-    lines.push(`\n性格锁定：${p.personalityLock.join("、")}`);
+    lines.push(language === "en"
+      ? `\nCharacterization reference (advisory, not a hard rule): ${p.personalityLock.join(", ")}`
+      : `\n性格参考（仅供人物塑造，不是硬规则）：${p.personalityLock.join("、")}`);
   }
   if (p.behavioralConstraints.length > 0) {
-    lines.push("\n行为约束：");
+    lines.push(language === "en" ? "\nVerified behavioral constraints:" : "\n已验证行为约束：");
     for (const c of p.behavioralConstraints) {
       lines.push(`- ${c}`);
     }
@@ -963,12 +968,12 @@ function buildProtagonistRules(bookRules: BookRules | null): string {
 }
 
 // ---------------------------------------------------------------------------
-// Book rules body (user-written markdown)
+// Compact provenance-labelled BookRules guidance. Raw Markdown is display-only.
 // ---------------------------------------------------------------------------
 
-function buildBookRulesBody(body: string): string {
-  if (!body) return "";
-  return `## 本书专属规则\n\n${body}`;
+function buildBookRulesGuidance(guidance: string): string {
+  if (!guidance) return "";
+  return `## Verified Book Rule Guidance\n\n${guidance}`;
 }
 
 // ---------------------------------------------------------------------------

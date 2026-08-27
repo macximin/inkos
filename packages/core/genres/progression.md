@@ -15,27 +15,27 @@ auditDimensions: [1,2,3,4,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ## Genre Prohibitions
 
 - Power loss without extraordinary justification — progress loss drives readers away faster than anything
-- Instant power-ups from found items or bloodline awakenings without buildup
-- Training montages only — readers want detailed training scenes showing struggle and epiphany
+- Power-ups whose source is illegible or contradicts canon; found items, bloodlines, luck, or inheritance may grant an immediate advantage when that is the premise
+- Training montages that hide the work's load-bearing progression beat; dramatize only the struggle, insight, or display that carries the stronger payoff
 - Arbitrary advancement blocks that feel like artificial gates rather than organic difficulty
 - Tier progression that contradicts established power hierarchy
 - Characters at different tiers competing directly without explanation
 
 ## Power System Rules
 
-- Progress must be quantifiable — even without explicit numbers, use measurable tiers (Stage 3 cultivator, Master swordsman)
+- Make progress legible in the way this work promises: measurable tiers are useful, while authority, technique, reputation, or demonstrated capability may carry non-numeric progression
 - Clear power tiers with meaningful differences between each (Color, Metal, Letter, or custom)
 - Each tier should represent meaningful power difference — not just cosmetic upgrades
-- Earned growth only — power gains connect to effort, sacrifice, or problem-solving
+- Give power gains a legible causal source: effort, sacrifice, problem-solving, inheritance, luck, patronage, or a deliberately clean advantage are all valid
 - Book-to-book comparison: Book 3 MC decisively defeats Book 1 version
-- Mix training montages (covering weeks) with 1-2 detailed breakthrough scenes per tier
+- Mix montage and detailed scenes according to payoff weight; do not impose a fixed number of breakthrough scenes per tier
 - Physical transformations can signal tier transitions: eye color, aura, physical presence
 
 ## Pacing Guidance
 
 - Possible chapter shape: training/learning -> application/testing -> a visible gain, setback, insight, aftermath, clean settlement, or natural next pressure. Do not force a breakthrough or cliffhanger every chapter
 - Maintain tension as MC grows: introduce enemies/challenges that scale differently or present new threat types
-- Internal struggle must escalate with power — new power unlocks pride, responsibility, temptation, enemies
+- Internal struggle may escalate with power when canon supports it; power may also simplify a problem or create an intentionally dominant run
 - Strongest threats need not be physical: political, magical, spiritual, temporal
-- Early: MC is underdog among peers. Mid: MC formidable but others advance too. Late: MC among strongest but faces tier-transcending threats
+- Underdog-to-dominance is one available arc, not a required phase template; choose rivals and threat scale to fit the book's actual promise
 - Rivalry with a peer who also progresses keeps tension alive across the full arc

@@ -5,6 +5,7 @@ describe("analyzeSensitiveWords", () => {
   it("returns no issues for clean text", () => {
     const content = "陈风一脚踩碎了脚下的石板。碎石飞溅，他握紧了手中的长剑，准备迎战。";
     const result = analyzeSensitiveWords(content);
+    expect(result.track).toBe("publication-compatibility");
     expect(result.issues).toHaveLength(0);
     expect(result.found).toHaveLength(0);
   });
@@ -16,10 +17,13 @@ describe("analyzeSensitiveWords", () => {
     const politicalMatches = result.found.filter((f) => f.severity === "block");
     expect(politicalMatches.length).toBeGreaterThan(0);
     expect(politicalMatches[0]!.word).toBe("法轮功");
-    // Issues should have critical severity for block words
-    const criticalIssues = result.issues.filter((i) => i.severity === "critical");
-    expect(criticalIssues.length).toBeGreaterThan(0);
-    expect(criticalIssues[0]!.category).toBe("敏感词");
+    const blockedIssues = result.issues.filter((i) => i.severity === "block");
+    expect(blockedIssues.length).toBeGreaterThan(0);
+    expect(blockedIssues[0]).toMatchObject({
+      track: "publication-compatibility",
+      category: "发布兼容性",
+    });
+    expect(blockedIssues[0]!.suggestion).toContain("正文不会被自动修改");
   });
 
   it("detects sexual terms as warn severity", () => {
@@ -28,9 +32,10 @@ describe("analyzeSensitiveWords", () => {
     expect(result.found.length).toBeGreaterThan(0);
     const warnMatches = result.found.filter((f) => f.severity === "warn");
     expect(warnMatches.length).toBeGreaterThan(0);
-    // Issues should have warning severity for warn words
-    const warningIssues = result.issues.filter((i) => i.severity === "warning");
+    const warningIssues = result.issues.filter((i) => i.severity === "warn");
     expect(warningIssues.length).toBeGreaterThan(0);
+    expect(warningIssues[0]!.track).toBe("publication-compatibility");
+    expect(warningIssues[0]!.suggestion).toContain("正文不会被自动修改");
   });
 
   it("detects extreme violence terms as warn severity", () => {

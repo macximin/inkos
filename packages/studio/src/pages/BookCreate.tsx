@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { BookCreationDraft } from "@actalk/inkos-core";
-import { BookPlus, CheckCircle2, RotateCcw, Sparkles } from "lucide-react";
+import { BookPlus, CheckCircle2, Plus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { fetchJson, useApi } from "../hooks/use-api";
 import type { Theme } from "../hooks/use-theme";
 import type { TFunction } from "../hooks/use-i18n";
@@ -28,6 +28,20 @@ export interface BookCreateFormState {
   readonly targetChapters: string;
   readonly chapterWordCount: string;
   readonly brief: string;
+  readonly hardRules: ReadonlyArray<BookCreateHardRuleForm>;
+}
+
+export type BookCreateHardRuleCollection =
+  | "protagonist.behavioralConstraints"
+  | "genreLock.forbidden"
+  | "prohibitions"
+  | "futureAdvantage.forbiddenShortcuts";
+
+export interface BookCreateHardRuleForm {
+  readonly id: string;
+  readonly collection: BookCreateHardRuleCollection;
+  readonly text: string;
+  readonly adopted: boolean;
 }
 
 export interface BookCreatePayload {
@@ -38,6 +52,12 @@ export interface BookCreatePayload {
   readonly targetChapters: number;
   readonly chapterWordCount: number;
   readonly blurb: string;
+  readonly hardRules?: ReadonlyArray<{
+    readonly collection: BookCreateHardRuleCollection;
+    readonly text: string;
+    readonly decision: "adopt";
+  }>;
+  readonly hardRulesConfirmed?: true;
 }
 
 export interface DraftSummaryRow {
@@ -93,6 +113,11 @@ interface PlatformCopy {
   readonly chapterWordCountLabel: string;
   readonly briefLabel: string;
   readonly briefPlaceholder: string;
+  readonly hardRulesHeading: string;
+  readonly hardRulesHint: string;
+  readonly hardRulePlaceholder: string;
+  readonly addHardRule: string;
+  readonly adoptHardRule: string;
   readonly createBook: string;
   readonly creatingBook: string;
   readonly creationStatus: string;
@@ -134,6 +159,30 @@ const PLATFORMS_KO: ReadonlyArray<PlatformOption> = [
   { value: "other", label: "한국 웹소설 플랫폼 / 기타" },
 ];
 
+const HARD_RULE_COLLECTION_LABELS: Record<
+  "zh" | "ko" | "en",
+  ReadonlyArray<{ readonly value: BookCreateHardRuleCollection; readonly label: string }>
+> = {
+  zh: [
+    { value: "prohibitions", label: "全书禁止事项" },
+    { value: "protagonist.behavioralConstraints", label: "主角行为约束" },
+    { value: "genreLock.forbidden", label: "题材禁止混入" },
+    { value: "futureAdvantage.forbiddenShortcuts", label: "未来先机禁用捷径" },
+  ],
+  ko: [
+    { value: "prohibitions", label: "작품 전체 금지 사항" },
+    { value: "protagonist.behavioralConstraints", label: "주인공 행동 제약" },
+    { value: "genreLock.forbidden", label: "장르 금지 요소" },
+    { value: "futureAdvantage.forbiddenShortcuts", label: "미래 선점 금지 지름길" },
+  ],
+  en: [
+    { value: "prohibitions", label: "Book-wide prohibition" },
+    { value: "protagonist.behavioralConstraints", label: "Protagonist constraint" },
+    { value: "genreLock.forbidden", label: "Genre exclusion" },
+    { value: "futureAdvantage.forbiddenShortcuts", label: "Future-advantage shortcut" },
+  ],
+};
+
 const PAGE_COPY: Record<"zh" | "ko" | "en", PlatformCopy> = {
   zh: {
     idleTitle: "从一句模糊想法开始",
@@ -149,6 +198,11 @@ const PAGE_COPY: Record<"zh" | "ko" | "en", PlatformCopy> = {
     chapterWordCountLabel: "每章字数",
     briefLabel: "故事简介 / 核心设定",
     briefPlaceholder: "写清世界观、主角、目标、核心冲突和第一阶段方向。例如：近未来港口城，主角是水货账房，想洗白却被旧账拖回港口旧案。",
+    hardRulesHeading: "明确采用的硬规则",
+    hardRulesHint: "仅勾选后才会作为强制规则写入来源凭据。普通简介不会自动升级为硬规则。",
+    hardRulePlaceholder: "输入需要逐字执行的规则",
+    addHardRule: "添加硬规则",
+    adoptHardRule: "我明确采用此规则",
     createBook: "创建书籍",
     creatingBook: "创建中…",
     creationStatus: "正在创建书籍，完成后会自动进入工作台。",
@@ -185,6 +239,11 @@ const PAGE_COPY: Record<"zh" | "ko" | "en", PlatformCopy> = {
     chapterWordCountLabel: "회차당 글자 수",
     briefLabel: "작품 소개 / 핵심 설정",
     briefPlaceholder: "세계관, 주인공, 목표, 핵심 갈등과 첫 Arc의 방향을 적어 주세요.",
+    hardRulesHeading: "명시적으로 채택할 하드 규칙",
+    hardRulesHint: "체크한 항목만 출처 영수증이 있는 강제 규칙으로 적용됩니다. 일반 작품 소개는 자동 승격되지 않습니다.",
+    hardRulePlaceholder: "문구 그대로 강제할 규칙을 입력하세요",
+    addHardRule: "하드 규칙 추가",
+    adoptHardRule: "이 규칙을 명시적으로 채택합니다",
     createBook: "작품 생성",
     creatingBook: "생성 중…",
     creationStatus: "작품을 생성하고 있습니다. 완료되면 작업 공간으로 자동 이동합니다.",
@@ -221,6 +280,11 @@ const PAGE_COPY: Record<"zh" | "ko" | "en", PlatformCopy> = {
     chapterWordCountLabel: "Words per chapter",
     briefLabel: "Story brief / core premise",
     briefPlaceholder: "Include the world, protagonist, goal, core conflict, and first arc direction.",
+    hardRulesHeading: "Explicitly adopted hard rules",
+    hardRulesHint: "Only checked rows become enforceable rules with owner-adoption receipts. The ordinary brief is never promoted automatically.",
+    hardRulePlaceholder: "Enter the exact rule text to enforce",
+    addHardRule: "Add hard rule",
+    adoptHardRule: "I explicitly adopt this rule",
     createBook: "Create book",
     creatingBook: "Creating…",
     creationStatus: "Creating the book. The workspace will open automatically when it is ready.",
@@ -264,6 +328,7 @@ export function defaultBookCreateForm(language: "zh" | "ko" | "en"): BookCreateF
     targetChapters: "200",
     chapterWordCount: defaultChapterWordsForLanguage(language),
     brief: "",
+    hardRules: [],
   };
 }
 
@@ -295,6 +360,11 @@ export function buildBookCreatePayload(
   if (!targetChapters || !chapterWordCount || !isBookCreateFormReady(form)) {
     throw new Error(language === "ko" ? "작품 생성 양식을 먼저 채워 주세요." : language === "zh" ? "请先补齐建书表单。" : "Complete the book creation form first.");
   }
+  const hardRules = form.hardRules.flatMap((rule) => (
+    rule.adopted && rule.text.trim()
+      ? [{ collection: rule.collection, text: rule.text.trim(), decision: "adopt" as const }]
+      : []
+  ));
   return {
     title: form.title.trim(),
     genre: form.genre.trim(),
@@ -303,6 +373,7 @@ export function buildBookCreatePayload(
     targetChapters,
     chapterWordCount,
     blurb: form.brief.trim(),
+    ...(hardRules.length > 0 ? { hardRules, hardRulesConfirmed: true as const } : {}),
   };
 }
 
@@ -688,6 +759,30 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
     setForm((current) => ({ ...current, ...patch }));
   };
 
+  const addHardRule = () => {
+    updateForm({
+      hardRules: [
+        ...form.hardRules,
+        {
+          id: `hard-rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          collection: "prohibitions",
+          text: "",
+          adopted: false,
+        },
+      ],
+    });
+  };
+
+  const updateHardRule = (id: string, patch: Partial<BookCreateHardRuleForm>) => {
+    updateForm({
+      hardRules: form.hardRules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule),
+    });
+  };
+
+  const removeHardRule = (id: string) => {
+    updateForm({ hardRules: form.hardRules.filter((rule) => rule.id !== id) });
+  };
+
   const applyDraftToForm = () => {
     if (!draft) {
       return;
@@ -707,6 +802,7 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
       targetChapters: draft.targetChapters ? String(draft.targetChapters) : current.targetChapters,
       chapterWordCount: draft.chapterWordCount ? String(draft.chapterWordCount) : current.chapterWordCount,
       brief: draftBrief || current.brief,
+      hardRules: current.hardRules,
     }));
   };
 
@@ -966,6 +1062,61 @@ export function BookCreate({ nav, theme, t }: { nav: Nav; theme: Theme; t: TFunc
               placeholder={copy.briefPlaceholder}
             />
           </label>
+
+          <section className="space-y-3 rounded-md border border-border/60 bg-background/40 p-4">
+            <div className="space-y-1">
+              <div className="text-xs font-medium">{copy.hardRulesHeading}</div>
+              <p className="text-xs text-muted-foreground leading-5">{copy.hardRulesHint}</p>
+            </div>
+            {form.hardRules.map((rule) => (
+              <div key={rule.id} className="grid gap-2 rounded-md border border-border/60 p-3">
+                <div className="grid gap-2 sm:grid-cols-[minmax(180px,0.35fr)_minmax(0,1fr)_auto]">
+                  <select
+                    value={rule.collection}
+                    onChange={(event) => updateHardRule(rule.id, {
+                      collection: event.target.value as BookCreateHardRuleCollection,
+                    })}
+                    className={`w-full ${c.input} rounded-md px-3 py-2 text-sm bg-background`}
+                    aria-label="Hard rule collection"
+                  >
+                    {HARD_RULE_COLLECTION_LABELS[projectLang].map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={rule.text}
+                    onChange={(event) => updateHardRule(rule.id, { text: event.target.value })}
+                    className={`w-full ${c.input} rounded-md px-3 py-2 text-sm`}
+                    placeholder={copy.hardRulePlaceholder}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeHardRule(rule.id)}
+                    className={`inline-flex items-center justify-center rounded-md border px-3 ${c.btnSecondary}`}
+                    aria-label="Remove hard rule"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={rule.adopted}
+                    onChange={(event) => updateHardRule(rule.id, { adopted: event.target.checked })}
+                  />
+                  <span>{copy.adoptHardRule}</span>
+                </label>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={addHardRule}
+              className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${c.btnSecondary}`}
+            >
+              <Plus size={14} />
+              {copy.addHardRule}
+            </button>
+          </section>
 
           {creating && (
             <div className="grid gap-2 sm:grid-cols-3">

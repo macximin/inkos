@@ -57,6 +57,12 @@ export const auditCommand = new Command("audit")
             log(`    [${issue.severity}] ${issue.category}: ${issue.description}`);
           }
         }
+        if (result.publicationCompatibility?.found.length) {
+          log("  Publication compatibility (advisory; manuscript unchanged):");
+          for (const finding of result.publicationCompatibility.found) {
+            log(`    [${finding.severity}] ${finding.word} ×${finding.count}`);
+          }
+        }
       }
 
       // Unlike write commands, the pipeline sends no notification for

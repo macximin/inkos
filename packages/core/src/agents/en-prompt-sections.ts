@@ -24,8 +24,8 @@ export function buildEnglishCoreRules(_book: BookConfig): string {
 
 ### Logic / Consistency
 12. **World rules are law**: Once established, physics/magic/social rules cannot bend for plot convenience.
-13. **Cost matters**: Every power, ability, or advantage must have a cost or limitation that creates real trade-offs.
-14. **Consequences stick**: Actions have consequences. Characters can't escape repercussions through luck or author fiat.
+13. **Friction follows canon**: When a power, ability, or advantage needs tension, use an established limit, counterforce, scarce input, competing goal, or causal cost. Do not invent a price merely to punish success; already-established authority may produce a clean win.
+14. **Established consequences stick**: Preserve repercussions that actually follow from the world's law, other actors, or prior events. Do not manufacture moral punishment merely because an action is criminal or offensive.
 15. **No reset buttons**: The world must change permanently in response to major events.
 
 ### Reader Psychology

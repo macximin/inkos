@@ -76,6 +76,14 @@ writeCommand
           })) {
             log(line);
           }
+          if (result.publicationCompatibility?.found.length) {
+            const label = language === "ko"
+              ? "  공개 호환성 알림(원고 자동 수정 없음)"
+              : language === "en"
+                ? "  Publication compatibility advisory (manuscript unchanged)"
+                : "  发布兼容性提示（正文未自动修改）";
+            log(`${label}: ${result.publicationCompatibility.found.length}`);
+          }
           log("");
         }
 

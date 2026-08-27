@@ -2,7 +2,8 @@ import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { ContextPackage, RuleStack } from "../models/input-governance.js";
-import { readGenreProfile, readBookRules } from "./rules-reader.js";
+import { readGenreProfile } from "./rules-reader.js";
+import { readEffectiveBookRules } from "./effective-book-rules.js";
 import { parseWriterOutput, type ParsedWriterOutput } from "./writer-parser.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
 import {
@@ -64,9 +65,9 @@ export class ChapterAnalyzerAgent extends BaseAgent {
       readStoryFrame(bookDir, placeholder),
       readVolumeMap(bookDir, placeholder),
     ]);
-    const parsedBookRules = await readBookRules(bookDir);
-    const bookRulesBody = parsedBookRules?.body ?? "";
-    const bookRules = parsedBookRules?.rules;
+    const effectiveBookRules = await readEffectiveBookRules(bookDir, book.id);
+    const bookRulesGuidance = effectiveBookRules?.guidance ?? "";
+    const bookRules = effectiveBookRules?.automatic;
     const governedMode = Boolean(input.chapterIntent && input.contextPackage && input.ruleStack);
     const memorySelection = await retrieveMemorySelection({
       bookDir,
@@ -112,7 +113,7 @@ export class ChapterAnalyzerAgent extends BaseAgent {
       book,
       genreProfile,
       genreBody,
-      bookRulesBody,
+      bookRulesGuidance,
       resolvedLanguage,
     );
 
@@ -214,7 +215,7 @@ export class ChapterAnalyzerAgent extends BaseAgent {
     book: BookConfig,
     genreProfile: GenreProfile,
     genreBody: string,
-    bookRulesBody: string,
+    bookRulesGuidance: string,
     language: "zh" | "ko" | "en",
   ): string {
     if (language !== "zh") {
@@ -258,7 +259,7 @@ ${numericalBlock}
 
 ${genreBody}
 
-${bookRulesBody ? `## Book Rules\n\n${bookRulesBody}` : ""}
+${bookRulesGuidance ? `## Verified Book Rule Guidance\n\n${bookRulesGuidance}` : ""}
 
 ## Output Format
 
@@ -365,7 +366,7 @@ ${numericalBlock}
 
 ${genreBody}
 
-${bookRulesBody ? `## 本书规则\n\n${bookRulesBody}` : ""}
+${bookRulesGuidance ? `## 已验证本书规则指引\n\n${bookRulesGuidance}` : ""}
 
 ## 输出格式（必须严格遵循）
 

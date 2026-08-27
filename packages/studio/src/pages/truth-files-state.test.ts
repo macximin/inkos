@@ -20,14 +20,16 @@ describe("deriveFilePresentation", () => {
     expect(result.legacy).toBe(false);
   });
 
-  it("blocks editing and surfaces authoritative path when legacy: true", () => {
+  it("blocks raw editing for the provenance-managed authoritative BookRules file", () => {
     const result = deriveFilePresentation("book_rules.md", {
-      content: "# Legacy shim",
-      legacy: true,
+      content: "# Authoritative rules",
+      readonly: true,
+      readonlyReason: "book-rule-provenance",
     });
-    expect(result.legacy).toBe(true);
+    expect(result.legacy).toBe(false);
     expect(result.canEdit).toBe(false);
-    expect(result.authoritativePath).toBe("outline/story_frame.md");
+    expect(result.authoritativePath).toBeNull();
+    expect(result.readonlyReason).toBe("book-rule-provenance");
   });
 
   it("blocks editing for story_bible.md shim and links to story_frame.md", () => {
@@ -67,6 +69,6 @@ describe("deriveFilePresentation", () => {
 describe("SHIM_AUTHORITATIVE_PATH", () => {
   it("maps every shim file to its outline replacement", () => {
     expect(SHIM_AUTHORITATIVE_PATH["story_bible.md"]).toBe("outline/story_frame.md");
-    expect(SHIM_AUTHORITATIVE_PATH["book_rules.md"]).toBe("outline/story_frame.md");
+    expect(SHIM_AUTHORITATIVE_PATH["book_rules.md"]).toBeUndefined();
   });
 });

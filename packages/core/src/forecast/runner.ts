@@ -24,6 +24,15 @@ import { ActiveArcSchema, type ArcPacket } from "../arc/schema.js";
 import type { StoryRailPlan } from "../arc/rail-schema.js";
 import { StateManager } from "../state/manager.js";
 import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
+import {
+  FICTION_CONTENT_CONTRACT_ID,
+  beginFictionContentOperation,
+  runWithFictionContentOperation,
+  sealFictionContentOperationManifest,
+  verifyFictionContentInvocationReceipts,
+  verifyFictionContentOperationEvidence,
+  verifyFictionContentOperationManifest,
+} from "../production/fiction-content-contract.js";
 
 // The three v1 operations from RFC #342: create / get / select. All artifacts
 // stay under story/runtime/narrative-forecasts/<forecastId>/ — no operation
@@ -61,12 +70,27 @@ export async function createNarrativeForecast(
     options.horizon, FORECAST_DEFAULT_HORIZON, "horizon", FORECAST_MIN_HORIZON, FORECAST_MAX_HORIZON,
   );
   const bookDir = await resolveBookDir(options.projectRoot, bookId);
+  const releaseBookLock = await new StateManager(options.projectRoot).acquireBookLock(bookId);
+  try {
 
   options.onProgress?.("Reading canonical context...");
   const context = await buildForecastContext({ bookDir, bookId });
+  const fictionOperation = await beginFictionContentOperation({
+    projectRoot: options.projectRoot,
+    bookId,
+    operationKind: "narrative-forecast",
+    chapterNumber: Math.max(1, context.baseChapter + 1),
+    requiredStages: ["forecast"],
+  });
+  return await runWithFictionContentOperation(fictionOperation, async () => {
 
   options.onProgress?.(`Projecting ${branchCount} candidate branches...`);
-  const agent = new NarrativeForecastAgent(options.runtime);
+  const agent = new NarrativeForecastAgent({
+    ...options.runtime,
+    projectRoot: options.projectRoot,
+    bookId,
+    fictionContentStage: "forecast",
+  });
   const modelOutput = await agent.generateBranches({
     contextMarkdown: renderForecastContextMarkdown(context),
     divergence,
@@ -75,6 +99,31 @@ export async function createNarrativeForecast(
     baseChapter: context.baseChapter,
     language: context.language,
     futureAdvantageEnabled: context.futureAdvantageEnabled,
+  });
+  let operationInvocations: Awaited<ReturnType<typeof verifyFictionContentOperationEvidence>>;
+  try {
+    operationInvocations = await verifyFictionContentOperationEvidence(
+      options.projectRoot,
+      fictionOperation,
+    );
+  } catch (error) {
+    if (error instanceof Error && /no fiction-content invocation evidence/i.test(error.message)) {
+      throw new Error(
+        "Narrative forecast produced no contract-governed model invocation evidence; refusing to store it.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  const generationInvocationIds = currentCompletedForecastInvocationIds(operationInvocations);
+  const operationManifest = await sealFictionContentOperationManifest({
+    projectRoot: options.projectRoot,
+    operation: fictionOperation,
+  });
+  await verifyFictionContentOperationManifest({
+    projectRoot: options.projectRoot,
+    operation: fictionOperation,
+    expectedManifest: operationManifest,
   });
 
   const store = new ForecastStore(bookDir, options.determinism);
@@ -89,6 +138,11 @@ export async function createNarrativeForecast(
     baseChapter: context.baseChapter,
     contextFingerprint: context.contextFingerprint,
     status: "active",
+    generationEvidence: {
+      contractId: FICTION_CONTENT_CONTRACT_ID,
+      stage: "forecast",
+      invocationIds: [...generationInvocationIds],
+    },
     branches: modelOutput.branches.map((branch, index) => ({
       branchId: `branch-${index + 1}`,
       ...branch,
@@ -98,6 +152,10 @@ export async function createNarrativeForecast(
   options.onProgress?.("Writing forecast artifacts...");
   const paths = await store.save(forecast, renderForecastComparisonMarkdown(forecast));
   return { forecast, ...paths };
+  });
+  } finally {
+    await releaseBookLock();
+  }
 }
 
 export interface GetNarrativeForecastOptions {
@@ -171,6 +229,7 @@ export async function selectNarrativeBranch(
   const store = new ForecastStore(bookDir, options.determinism);
 
   const forecast = await store.load(options.forecastId);
+  await assertStoredForecastEvidence(options.projectRoot, bookId, forecast);
   const branch = forecast.branches.find((candidate) => candidate.branchId === options.branchId);
   if (!branch) {
     throw new Error(
@@ -326,4 +385,59 @@ function boundedInteger(value: number | undefined, fallback: number, name: strin
     throw new Error(`${name} must be an integer between ${min} and ${max}.`);
   }
   return parsed;
+}
+
+function currentCompletedForecastInvocationIds(
+  invocations: ReadonlyArray<{
+    readonly invocationId: string;
+    readonly stage: string;
+    readonly agentName: string;
+    readonly status: "completed";
+  }>,
+): ReadonlyArray<string> {
+  if (invocations.length === 0) {
+    throw new Error(
+      "Narrative forecast produced no contract-governed model invocation evidence; refusing to store it.",
+    );
+  }
+  const mismatched = invocations.filter((invocation) =>
+    invocation.stage !== "forecast" || invocation.agentName !== "narrative-forecast");
+  if (mismatched.length > 0) {
+    throw new Error(
+      `Narrative forecast operation contains mismatched model calls: ${mismatched.map((item) => item.invocationId).join(", ")}.`,
+    );
+  }
+  return invocations.map((invocation) => invocation.invocationId).sort();
+}
+
+async function assertStoredForecastEvidence(
+  projectRoot: string,
+  bookId: string,
+  forecast: NarrativeForecast,
+): Promise<void> {
+  const evidence = forecast.generationEvidence;
+  if (!evidence) {
+    throw new Error(
+      `Narrative forecast ${JSON.stringify(forecast.forecastId)} has no generation evidence and cannot be selected.`,
+    );
+  }
+  const audit = await verifyFictionContentInvocationReceipts(projectRoot, bookId);
+  const invocationById = new Map(audit.invocations.map((invocation) => [invocation.invocationId, invocation]));
+  const receiptIds = new Set(audit.receiptInvocationIds);
+  const outcomeIds = new Set(audit.outcomeInvocationIds);
+  for (const invocationId of evidence.invocationIds) {
+    const invocation = invocationById.get(invocationId);
+    if (
+      !invocation
+      || !receiptIds.has(invocationId)
+      || !outcomeIds.has(invocationId)
+      || invocation.status !== "completed"
+      || invocation.stage !== evidence.stage
+      || invocation.agentName !== "narrative-forecast"
+    ) {
+      throw new Error(
+        `Narrative forecast generation evidence is incomplete: ${invocationId} is missing, refused, or mismatched.`,
+      );
+    }
+  }
 }

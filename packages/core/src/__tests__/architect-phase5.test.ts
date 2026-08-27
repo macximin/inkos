@@ -147,7 +147,7 @@ const SAMPLE_RESPONSE = [
   "  primary: urban",
   "  forbidden: [玄幻色彩]",
   "prohibitions:",
-  "  - 不得美化体制暴力",
+  "  - 不得突然切换叙事视角",
   "chapterTypesOverride: []",
   "fatigueWordsOverride: []",
   "additionalAuditDimensions: []",

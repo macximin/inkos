@@ -72,6 +72,8 @@ import {
   normalizeSkillIdList as normalizeCoreSkillIdList,
   inferLanguage,
   defaultChapterLength,
+  BookRuleOwnerDecisionDraftSchema,
+  BookRuleOwnerDecisionInputSchema,
   readBookRules,
   ingestMaterial,
   listBookReferences,
@@ -88,6 +90,7 @@ import {
   type ActionSource,
   type AgentSkill,
   type BuiltinPrompt,
+  type BookRuleOwnerDecisionInput,
   createGenerateCoverTool,
   createInteractiveFilmCreationTool,
   createPlayStartTool,
@@ -3612,7 +3615,33 @@ export function createStudioServer(
       chapterWordCount?: number;
       targetChapters?: number;
       blurb?: string;
+      hardRules?: ReadonlyArray<unknown>;
+      hardRulesConfirmed?: boolean;
     }>();
+
+    let hardRules: BookRuleOwnerDecisionInput[] = [];
+    try {
+      const drafts = body.hardRules === undefined
+        ? []
+        : body.hardRules.map((value) => BookRuleOwnerDecisionDraftSchema.parse(value));
+      if (drafts.length > 100) {
+        return c.json({ error: "At most 100 hard BookRules may be adopted in one decision." }, 400);
+      }
+      if (drafts.length > 0 && body.hardRulesConfirmed !== true) {
+        return c.json({
+          error: "Hard BookRules require a separate explicit owner-adoption confirmation.",
+        }, 400);
+      }
+      hardRules = drafts.map((draft) => BookRuleOwnerDecisionInputSchema.parse({
+        ...draft,
+        decisionId: `studio-hil:${randomUUID()}`,
+        adoptedByActorId: "studio-local-owner",
+      }));
+    } catch (error) {
+      return c.json({
+        error: error instanceof Error ? error.message : "Invalid hardRules owner-decision payload.",
+      }, 400);
+    }
 
     const now = new Date().toISOString();
     const bookConfig = buildStudioBookConfig(body, now);
@@ -3642,6 +3671,7 @@ export function createStudioServer(
         chapterWordCount: body.chapterWordCount,
         targetChapters: body.targetChapters,
         blurb: body.blurb,
+        ...(hardRules.length > 0 ? { hardRules } : {}),
       },
       tools,
     }).then(
@@ -3780,10 +3810,10 @@ export function createStudioServer(
       ]);
       const language = book.language === "ko" ? "ko" : book.language === "en" ? "en" : "zh";
       const requestedBrief = typeof body.brief === "string" ? body.brief.trim() : "";
-      const response = await chatCompletion(
-        pipelineConfig.client,
-        pipelineConfig.model,
-        [
+      const response = await new PipelineRunner(pipelineConfig).completeBookBound(id, {
+        agentName: "studio-inspiration",
+        stage: "inspiration-card",
+        messages: [
           {
             role: "system",
             content: language === "ko"
@@ -3820,8 +3850,8 @@ export function createStudioServer(
             ].filter(Boolean).join("\n\n"),
           },
         ],
-        { temperature: 0.9, maxTokens: 600 },
-      );
+        options: { temperature: 0.9, maxTokens: 600 },
+      });
       const card = response.content.trim();
       if (!card) {
         throw new Error("The model returned an empty inspiration card");
@@ -3957,10 +3987,13 @@ export function createStudioServer(
     "outline/rhythm_principles.md",
   ];
 
-  // Pointer shims that the runtime no longer treats as authoritative. The
+  // Pointer shim that the runtime no longer treats as authoritative. The
   // GET handler tags them with `legacy: true` so the UI can surface that the
   // edits won't land where the user expects.
-  const LEGACY_SHIM_FILES = new Set(["story_bible.md", "book_rules.md"]);
+  const LEGACY_SHIM_FILES = new Set(["story_bible.md"]);
+  // book_rules.md is authoritative but must be updated together with its
+  // provenance sidecar/authority receipts, never through the raw text editor.
+  const PROVENANCE_MANAGED_FILES = new Set(["book_rules.md"]);
   const RUNTIME_DIAGNOSTIC_FILE_RE = /^runtime\/chapter-\d{4}\.(?:intent\.md|plan\.md|context\.json|rule-stack\.yaml|trace\.json)$/;
 
   /**
@@ -4042,6 +4075,9 @@ export function createStudioServer(
         content,
         ...structured,
         ...(legacy ? { legacy: true } : {}),
+        ...(PROVENANCE_MANAGED_FILES.has(file)
+          ? { readonly: true, readonlyReason: "book-rule-provenance" }
+          : {}),
         ...(runtimeDiagnostic ? { readonly: true, readonlyReason: "runtime-diagnostic" } : {}),
       });
     } catch {
@@ -4050,6 +4086,9 @@ export function createStudioServer(
         file,
         content: null,
         ...(legacy ? { legacy: true } : {}),
+        ...(PROVENANCE_MANAGED_FILES.has(file)
+          ? { readonly: true, readonlyReason: "book-rule-provenance" }
+          : {}),
         ...(runtimeDiagnostic ? { readonly: true, readonlyReason: "runtime-diagnostic" } : {}),
       });
     }
@@ -4218,6 +4257,8 @@ export function createStudioServer(
         client: pipelineConfig.client,
         model: pipelineConfig.model,
         projectRoot: root,
+        bookId: id,
+        fictionContentStage: "consolidate-summaries",
       });
       await state.loadBookConfig(id);
       const releaseLock = await state.acquireBookLock(id);
@@ -5210,11 +5251,14 @@ export function createStudioServer(
       try {
         const content = await readFile(join(storyDir, relPath), "utf-8");
         const isShim = LEGACY_SHIM_FILES.has(relPath) && newLayout;
+        const isProvenanceManaged = PROVENANCE_MANAGED_FILES.has(relPath);
         const isRuntimeDiagnostic = RUNTIME_DIAGNOSTIC_FILE_RE.test(relPath);
         const entry: { readonly name: string; readonly size: number; readonly preview: string; readonly legacy?: true; readonly readonly?: true; readonly readonlyReason?: string } =
           isShim
             ? { name: relPath, size: content.length, preview: content.slice(0, 200), legacy: true }
-            : isRuntimeDiagnostic
+            : isProvenanceManaged
+              ? { name: relPath, size: content.length, preview: content.slice(0, 200), readonly: true, readonlyReason: "book-rule-provenance" }
+              : isRuntimeDiagnostic
               ? { name: relPath, size: content.length, preview: content.slice(0, 200), readonly: true, readonlyReason: "runtime-diagnostic" }
               : { name: relPath, size: content.length, preview: content.slice(0, 200) };
         return entry;
@@ -6729,9 +6773,14 @@ export function createStudioServer(
     } catch {
       return c.json({ error: "Invalid truth file: symbolic-link targets are not writable" }, 400);
     }
-    // Legacy pointer shims are read-only in new-layout books: writing
-    // story_bible.md or book_rules.md does nothing at runtime (the pipeline
-    // reads outline/ instead). For pre-Phase-5 books these ARE authoritative.
+    if (PROVENANCE_MANAGED_FILES.has(file)) {
+      return c.json(
+        { error: "BookRules require a provenance-aware foundation revision" },
+        400,
+      );
+    }
+    // Legacy story_bible pointer shims are read-only in new-layout books.
+    // For pre-Phase-5 books story_bible.md remains authoritative prose.
     if (LEGACY_SHIM_FILES.has(file)) {
       const { isNewLayoutBook } = await import("@actalk/inkos-core");
       if (await isNewLayoutBook(bookDir)) {

@@ -2,6 +2,10 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { ForecastBranch, ForecastModelBranch, NarrativeForecast } from "../../forecast/schema.js";
 import type { FutureAdvantageMove } from "../../arc/schema.js";
+import {
+  prepareFictionContentInvocation,
+  writeFictionContentInvocationOutcome,
+} from "../../production/fiction-content-contract.js";
 
 export function makeFutureAdvantageMove(
   overrides: Partial<FutureAdvantageMove> = {},
@@ -75,6 +79,30 @@ export async function writeForecastFixtureBook(bookDir: string): Promise<void> {
   await writeFile(join(bookDir, "story", "outline", "story_frame.md"), "# 故事框架\n都市复仇", "utf-8");
 }
 
+/** Test-only stand-in for a successful NarrativeForecastAgent BaseAgent call. */
+export async function writeCompletedForecastInvocationEvidence(
+  projectRoot: string,
+  bookId = "demo-book",
+): Promise<string> {
+  const prepared = await prepareFictionContentInvocation({
+    projectRoot,
+    bookId,
+    agentName: "narrative-forecast",
+    stage: "forecast",
+    model: "fake",
+    messages: [
+      { role: "system", content: "Forecast test invocation." },
+      { role: "user", content: "Generate branches." },
+    ],
+  });
+  await writeFictionContentInvocationOutcome({
+    projectRoot,
+    prepared,
+    output: "{\"branches\":[]}",
+  });
+  return prepared.trace.invocationId;
+}
+
 /**
  * Snapshot every canonical file under bookDir (excluding the non-canonical
  * forecast output and editable Arc planning directories).
@@ -91,6 +119,7 @@ async function walk(root: string, dir: string, snapshot: Map<string, string>): P
     const path = join(dir, entry.name);
     const rel = relative(root, path);
     if (rel.startsWith(join("story", "runtime", "narrative-forecasts"))) continue;
+    if (rel.startsWith(join("story", "runtime", "fiction-content-neutral"))) continue;
     if (rel.startsWith(join("story", "arcs"))) continue;
     if (entry.isDirectory()) {
       await walk(root, path, snapshot);

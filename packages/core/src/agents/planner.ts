@@ -3,10 +3,8 @@ import { join } from "node:path";
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterArcProvenance } from "../models/chapter.js";
-import {
-  readBookRules as readAuthoritativeBookRules,
-  readGenreProfile,
-} from "./rules-reader.js";
+import { readGenreProfile } from "./rules-reader.js";
+import { readEffectiveBookRules } from "./effective-book-rules.js";
 import {
   ChapterIntentSchema,
   type ChapterIntent,
@@ -21,6 +19,12 @@ import {
   loadPlanningSeedMaterials,
 } from "../utils/planning-materials.js";
 import { parseMemo, PlannerParseError } from "../utils/chapter-memo-parser.js";
+import { sanitizeUnauthorizedMemoProhibitions } from "../utils/chapter-memo-authority.js";
+import {
+  findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence,
+  findUnauthorizedMandatoryMoralCorrectionsInText,
+  type ArchitectMoralAuthoritySource,
+} from "./architect.js";
 import {
   buildPlannerUserMessage,
   getPlannerMemoSystemPrompt,
@@ -34,7 +38,6 @@ import {
   extractRelevantThreads,
   formatRecentSummaries,
   formatRecyclableHooks,
-  readBookRules,
   readCharacterMatrix,
   readEmotionalArcs,
   readPendingHooks,
@@ -111,13 +114,30 @@ export class PlannerAgent extends BaseAgent {
       outlineNode,
       input.chapterNumber,
     );
-    // Phase hotfix 5: read structured rules through the Phase 5 authoritative
-    // loader. It prefers outline/story_frame.md frontmatter, falls back to
-    // legacy book_rules.md, and refuses to silently zero out rules when the
-    // legacy file is just a compat shim. Reading raw bookRulesRaw via
-    // parseBookRules() bypassed all of that.
-    const parsedRules = await readAuthoritativeBookRules(input.bookDir);
-    const prohibitions = parsedRules?.rules.prohibitions ?? [];
+    // Only host-verified hard prohibitions may become mustAvoid. Raw/display
+    // BookRules remain visible to the UI, but cannot silently steer planning.
+    const effectiveRules = await readEffectiveBookRules(input.bookDir, input.book.id);
+    const prohibitions = effectiveRules?.automatic.prohibitions ?? [];
+    const moralAuthoritySources: ArchitectMoralAuthoritySource[] = [
+      { kind: "owner-direction", text: input.externalContext ?? "" },
+      { kind: "owner-direction", text: seedMaterials.brief },
+      { kind: "owner-direction", text: seedMaterials.authorIntent },
+      { kind: "owner-direction", text: seedMaterials.currentFocus },
+      { kind: "persisted-book-canon", text: seedMaterials.storyBible },
+      { kind: "persisted-book-canon", text: seedMaterials.volumeOutline },
+      ...(effectiveRules?.hardEntries ?? []).map((entry) => ({
+        kind: "persisted-book-canon" as const,
+        text: entry.text,
+      })),
+    ];
+    this.assertPlanningInputsMoralAuthority([
+      seedMaterials.currentState,
+      input.arcContext,
+    ], moralAuthoritySources);
+    this.assertPlanningInputsMoralAuthority([
+      seedMaterials.chapterSummariesRaw,
+      seedMaterials.previousEndingExcerpt,
+    ], moralAuthoritySources, true);
     const mustKeep = this.collectMustKeep(seedMaterials.currentState, seedMaterials.storyBible);
     const mustAvoid = this.collectMustAvoid(seedMaterials.currentFocus, prohibitions);
     const styleEmphasis = this.collectStyleEmphasis(seedMaterials.authorIntent, seedMaterials.currentFocus);
@@ -169,6 +189,8 @@ export class PlannerAgent extends BaseAgent {
       brief: seedMaterials.brief,
       chapterContext: input.externalContext,
       arcContext: input.arcContext,
+      bookRulesRelevant: effectiveRules?.guidance ?? "",
+      moralAuthoritySources,
       recyclableHooks: memorySelection.recyclableHooks,
       genreFunContract,
       // Phase hotfix 4: thread book language through so the planner uses
@@ -219,17 +241,29 @@ export class PlannerAgent extends BaseAgent {
     readonly brief?: string;
     readonly chapterContext?: string;
     readonly arcContext?: string;
+    readonly bookRulesRelevant?: string;
+    readonly moralAuthoritySources?: ReadonlyArray<ArchitectMoralAuthoritySource>;
     readonly recyclableHooks?: ReadonlyArray<StoredHook>;
     readonly genreFunContract?: PlannerGenreFunContract;
     readonly language?: "zh" | "ko" | "en";
   }): Promise<ChapterMemo> {
-    const [characterMatrix, subplotBoard, emotionalArcs, pendingHooks, bookRulesRaw] = await Promise.all([
+    const [characterMatrix, subplotBoard, emotionalArcs, pendingHooks] = await Promise.all([
       readCharacterMatrix(input.storyDir),
       readSubplotBoard(input.storyDir),
       readEmotionalArcs(input.storyDir),
       readPendingHooks(input.storyDir),
-      readBookRules(input.storyDir),
     ]);
+    this.assertPlanningInputsMoralAuthority([
+      input.arcContext,
+      characterMatrix,
+      subplotBoard,
+      emotionalArcs,
+      pendingHooks,
+    ], input.moralAuthoritySources ?? []);
+    this.assertPlanningInputsMoralAuthority([
+      input.chapterSummariesRaw,
+      input.previousEndingExcerpt,
+    ], input.moralAuthoritySources ?? [], true);
 
     const language = input.language ?? "zh";
     const noPriorChapter = language === "ko"
@@ -270,7 +304,9 @@ export class PlannerAgent extends BaseAgent {
         language,
       ),
       isGoldenOpening: input.isGoldenOpening,
-      bookRulesRelevant: bookRulesRaw.trim().length > 0 ? bookRulesRaw.trim() : noBookRules,
+      bookRulesRelevant: input.bookRulesRelevant?.trim()
+        ? input.bookRulesRelevant.trim()
+        : noBookRules,
       brief: input.brief ?? "",
       chapterContext: input.chapterContext ?? "",
       arcContext: input.arcContext ?? "",
@@ -293,7 +329,12 @@ export class PlannerAgent extends BaseAgent {
       );
 
       try {
-        return parseMemo(response.content, input.chapterNumber, input.isGoldenOpening);
+        return this.parseAndValidateMemo(
+          response.content,
+          input.chapterNumber,
+          input.isGoldenOpening,
+          input.moralAuthoritySources ?? [],
+        );
       } catch (error) {
         if (!(error instanceof PlannerParseError)) {
           throw error;
@@ -306,7 +347,7 @@ export class PlannerAgent extends BaseAgent {
 
     const fallbackError = lastError ?? new PlannerParseError("memo planner exhausted retries without a specific error");
     this.log?.warn(`[planner] memo planner fell back after ${MEMO_RETRY_LIMIT} attempts: ${fallbackError.message}`);
-    return parseMemo(
+    return this.parseAndValidateMemo(
       this.buildFallbackMemoMarkdown({
         chapterNumber: input.chapterNumber,
         isGoldenOpening: input.isGoldenOpening,
@@ -316,7 +357,54 @@ export class PlannerAgent extends BaseAgent {
       }),
       input.chapterNumber,
       input.isGoldenOpening,
+      input.moralAuthoritySources ?? [],
     );
+  }
+
+  private parseAndValidateMemo(
+    raw: string,
+    chapterNumber: number,
+    isGoldenOpening: boolean,
+    moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+  ): ChapterMemo {
+    const parsedMemo = parseMemo(raw, chapterNumber, isGoldenOpening);
+    const { memo } = sanitizeUnauthorizedMemoProhibitions(
+      parsedMemo,
+      moralAuthoritySources,
+    );
+    const findings = findUnauthorizedMandatoryMoralCorrectionsInText(
+      `${memo.goal}\n${memo.body}`,
+      moralAuthoritySources,
+    );
+    if (findings.length > 0) {
+      throw new PlannerParseError(
+        `unauthorized mandatory moral-correction constraint: ${findings.join(" | ")}`,
+      );
+    }
+    return memo;
+  }
+
+  private assertPlanningInputsMoralAuthority(
+    surfaces: ReadonlyArray<string | undefined>,
+    moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
+    narrativeEvidence = false,
+  ): void {
+    const findings = new Set<string>();
+    for (const surface of surfaces) {
+      if (!surface) continue;
+      const detector = narrativeEvidence
+        ? findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence
+        : findUnauthorizedMandatoryMoralCorrectionsInText;
+      for (const finding of detector(
+        surface,
+        moralAuthoritySources,
+      )) findings.add(finding);
+    }
+    if (findings.size > 0) {
+      throw new PlannerParseError(
+        `persisted planning input contains an unauthorized mandatory moral-correction constraint; repair the source before continuing: ${[...findings].join(" | ")}`,
+      );
+    }
   }
 
   private buildFallbackMemoMarkdown(input: {

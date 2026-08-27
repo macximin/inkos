@@ -3,6 +3,7 @@ import { routeInteractionRequest } from "./request-router.js";
 import type { InteractionRequest } from "./intents.js";
 import type { ExecutionState, InteractionEvent } from "./events.js";
 import type { PendingDecision, InteractionSession } from "./session.js";
+import type { BookRuleOwnerDecisionInput } from "../models/book-rule-provenance.js";
 import {
   appendInteractionEvent,
   bindActiveBook,
@@ -34,6 +35,7 @@ export interface InteractionRuntimeTools {
     readonly constraints?: string;
     readonly authorIntent?: string;
     readonly currentFocus?: string;
+    readonly hardRules?: ReadonlyArray<BookRuleOwnerDecisionInput>;
   }) => Promise<unknown>;
   readonly exportBook?: (bookId: string, options: {
     readonly format?: "txt" | "md" | "epub";
@@ -431,6 +433,7 @@ async function handleDraftLifecycleRequest(params: {
         constraints: request.constraints ?? effectiveDraft?.constraints,
         authorIntent: request.authorIntent ?? effectiveDraft?.authorIntent,
         currentFocus: request.currentFocus ?? effectiveDraft?.currentFocus,
+        ...(request.hardRules?.length ? { hardRules: request.hardRules } : {}),
       });
       const metadata = extractToolMetadata(toolResult);
       const createdBookId = typeof toolResult === "object" && toolResult !== null && "bookId" in toolResult

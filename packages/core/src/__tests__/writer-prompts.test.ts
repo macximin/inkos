@@ -73,6 +73,38 @@ describe("buildWriterSystemPrompt", () => {
     expect(prompt).toContain("Play out the climax");
   });
 
+  it("keeps unprovenanced personalityLock as characterization advice, never a hard mandate", () => {
+    const rules = BookRulesSchema.parse({
+      protagonist: {
+        name: "Han",
+        personalityLock: ["범죄 뒤에는 반드시 속죄한다"],
+        behavioralConstraints: [],
+      },
+    });
+
+    const ko = buildWriterSystemPrompt(
+      { ...BOOK, language: "ko" },
+      { ...GENRE, language: "ko", name: "현대 판타지" },
+      rules, "", "", "", undefined, 6, "creative", undefined, "ko", "governed",
+    );
+    expect(ko).toContain("성격 참고(인물 형상화용, 자동 금지 아님)");
+    expect(ko).not.toContain("성격 고정점");
+
+    const en = buildWriterSystemPrompt(
+      { ...BOOK, language: "en" },
+      { ...GENRE, language: "en", name: "General" },
+      rules, "", "", "", undefined, 6, "creative", undefined, "en", "governed",
+    );
+    expect(en).toContain("Characterization reference (advisory, not a hard rule)");
+    expect(en).not.toContain("Protagonist lock");
+
+    const zh = buildWriterSystemPrompt(
+      BOOK, GENRE, rules, "", "", "", undefined, 6, "creative", undefined, "zh", "governed",
+    );
+    expect(zh).toContain("性格参考（仅供人物塑造，不是硬规则）");
+    expect(zh).not.toContain("性格锁定");
+  });
+
   it("keeps zh/en endings fun-first without hook quotas or forced cliffhangers", () => {
     for (const inputProfile of ["legacy", "governed"] as const) {
       const zh = buildWriterSystemPrompt(
@@ -168,14 +200,15 @@ describe("buildWriterSystemPrompt", () => {
     expect(zh).toContain("stale，不会自动变成本章场景义务");
   });
 
-  it("enforces narrative person only when the user explicitly set one (#290)", () => {
+  it("keeps an unprovenanced narrative-person field advisory (#290)", () => {
     const firstPerson = BookRulesSchema.parse({ narrativePerson: "first" });
     const promptFirst = buildWriterSystemPrompt(
       BOOK, GENRE, firstPerson, "# Book Rules", "# Genre Body", "# Style Guide",
       undefined, 3, "creative", undefined, "zh", "governed",
     );
-    expect(promptFirst).toContain("叙事人称（硬约束）");
+    expect(promptFirst).toContain("叙事人称参考（非自动硬规则）");
     expect(promptFirst).toContain("第一人称");
+    expect(promptFirst).toContain("不能成为自动修改理由");
 
     // Unset → no narrative-person section is imposed (the genre default applies).
     const noPerson = BookRulesSchema.parse({});
@@ -183,7 +216,7 @@ describe("buildWriterSystemPrompt", () => {
       BOOK, GENRE, noPerson, "# Book Rules", "# Genre Body", "# Style Guide",
       undefined, 3, "creative", undefined, "zh", "governed",
     );
-    expect(promptNone).not.toContain("叙事人称（硬约束）");
+    expect(promptNone).not.toContain("叙事人称参考");
   });
 
   it("tolerates a stray narrativePerson value (degrades to no constraint, fail-open)", () => {

@@ -19,7 +19,6 @@ interface TruthFile {
 // reads them.
 export const SHIM_AUTHORITATIVE_PATH: Readonly<Record<string, string>> = {
   "story_bible.md": "outline/story_frame.md",
-  "book_rules.md": "outline/story_frame.md",
 };
 
 /**
@@ -73,6 +72,7 @@ export function TruthFiles({ bookId, nav, theme, t }: { bookId: string; nav: Nav
   const presentation = deriveFilePresentation(selected, fileData);
   const isLegacyShim = presentation.legacy;
   const isRuntimeDiagnostic = presentation.readonlyReason === "runtime-diagnostic";
+  const isBookRuleProvenance = presentation.readonlyReason === "book-rule-provenance";
 
   const startEdit = () => {
     setEditText(fileData?.content ?? "");
@@ -161,6 +161,17 @@ export function TruthFiles({ bookId, nav, theme, t }: { bookId: string; nav: Nav
                   <div className="font-medium">运行时诊断文件 / Runtime diagnostic</div>
                   <div className="mt-1">
                     这里展示本章写作时的上下文选择、保护层、可压缩层和预算 trace。它只用于追溯系统看了什么，不作为可编辑设定。
+                  </div>
+                </div>
+              )}
+              {isBookRuleProvenance && (
+                <div
+                  data-testid="book-rule-provenance-warning"
+                  className="mb-3 px-3 py-2 rounded-md border border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300 text-xs leading-relaxed"
+                >
+                  <div className="font-medium">BookRules 출처 관리 / Provenance-managed</div>
+                  <div className="mt-1">
+                    이 정본은 규칙 원문·정확한 선택 범위·사용자 승인 영수증과 함께 갱신됩니다. 원문을 직접 편집하지 말고 작품 기반 수정 또는 명시적 규칙 채택 경로를 사용하세요.
                   </div>
                 </div>
               )}

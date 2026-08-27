@@ -50,7 +50,7 @@ describe("validatePostWrite", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("flags third-person prose in a first-person book (#290 adherence)", () => {
+  it("reports unprovenanced first-person drift as warning, not an automatic error (#290)", () => {
     const firstPersonRules = BookRulesSchema.parse({
       narrativePerson: "first",
       protagonist: { name: "陈烬" },
@@ -60,7 +60,7 @@ describe("validatePostWrite", () => {
     const result = validatePostWrite(thirdPersonProse, baseProfile, firstPersonRules);
     const violation = findRule(result, "叙事人称");
     expect(violation).toBeDefined();
-    expect(violation!.severity).toBe("error");
+    expect(violation!.severity).toBe("warning");
   });
 
   it("does not flag genuine first-person prose", () => {
@@ -93,7 +93,7 @@ describe("validatePostWrite", () => {
 
     const result = validatePostWrite(content, baseProfile, firstPersonRules);
 
-    expect(findRule(result, "叙事人称")).toBeDefined();
+    expect(findRule(result, "叙事人称")).toMatchObject({ severity: "warning" });
   });
 
   it("does not treat ordinary first-person observation of another person as POV drift", () => {

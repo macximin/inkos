@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantMessage, Model, Api } from "@mariozechner/pi-ai";
 import {
   __resetFixedTemperatureWarnings,
   chatCompletion,
+  ProviderRefusalError,
   type LLMClient,
 } from "../llm/provider.js";
 import { runWithAgentTrajectory } from "../llm/agent-trajectory.js";
+import {
+  prepareFictionContentInvocation,
+  writeFictionContentInvocationOutcome,
+} from "../production/fiction-content-contract.js";
 
 // ── Mock @mariozechner/pi-ai ──────────────────────────────────────────────────
 // We intercept streamSimple so tests don't hit the network.
@@ -359,7 +367,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "你好！" } }],
+        choices: [{ message: { content: "你好！" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
       }),
     });
@@ -412,7 +420,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "kkai ok" } }],
+        choices: [{ message: { content: "kkai ok" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
       }),
     });
@@ -465,7 +473,7 @@ describe("chatCompletion via pi-ai", () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: "recovered" } }],
+          choices: [{ message: { content: "recovered" }, finish_reason: "stop" }],
           usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
         }),
       });
@@ -530,7 +538,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "你好！" } }],
+        choices: [{ message: { content: "你好！" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
       }),
     });
@@ -560,7 +568,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "proxied" } }],
+        choices: [{ message: { content: "proxied" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
       }),
     });
@@ -592,7 +600,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { reasoning_content: "推理通道文本" } }],
+        choices: [{ message: { reasoning_content: "推理通道文本" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
       }),
     });
@@ -621,6 +629,7 @@ describe("chatCompletion via pi-ai", () => {
       "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"你\"}}]}\n\n",
       "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"好\"}}]}\n\n",
       "data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+      "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
       "data: [DONE]\n\n",
     ].join("");
     const fetchMock = vi.fn().mockResolvedValue({
@@ -663,7 +672,7 @@ describe("chatCompletion via pi-ai", () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: "ok" } }],
+          choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
           usage: { prompt_tokens: 9, completion_tokens: 1, total_tokens: 10 },
         }),
       });
@@ -728,7 +737,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "本地 Ollama 可用" } }],
+        choices: [{ message: { content: "本地 Ollama 可用" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
       }),
     });
@@ -760,7 +769,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "本地 LM Studio 可用" } }],
+        choices: [{ message: { content: "本地 LM Studio 可用" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
       }),
     });
@@ -792,7 +801,7 @@ describe("chatCompletion via pi-ai", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "本地自定义端点可用" } }],
+        choices: [{ message: { content: "本地自定义端点可用" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 5, completion_tokens: 6, total_tokens: 11 },
       }),
     });
@@ -824,6 +833,7 @@ describe("chatCompletion via pi-ai", () => {
       ok: true,
       json: async () => ({
         content: [{ type: "text", text: "你好，Anthropic!" }],
+        stop_reason: "end_turn",
         usage: { input_tokens: 5, output_tokens: 3 },
       }),
     });
@@ -862,7 +872,7 @@ describe("chatCompletion via pi-ai", () => {
       "event: content_block_delta\n",
       "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"好\"}}\n\n",
       "event: message_delta\n",
-      "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\n",
+      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n",
       "event: message_stop\n",
       "data: {\"type\":\"message_stop\"}\n\n",
     ].join("");
@@ -1241,5 +1251,819 @@ describe("stream interruption detection", () => {
 
     expect(result.content).toBe("第二次完整");
     expect(mockStreamSimple).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("non-complete provider terminal states", () => {
+  beforeEach(() => {
+    mockStreamSimple.mockReset();
+    mockCompleteSimple.mockReset();
+    mockComplete.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function sseResponse(sse: string) {
+    const encoder = new TextEncoder();
+    return {
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sse));
+          controller.close();
+        },
+      }),
+    };
+  }
+
+  function customClient(
+    provider: "openai" | "anthropic",
+    stream: boolean,
+    apiFormat: "chat" | "responses" = "chat",
+  ): LLMClient {
+    return makeClient(0.7, {
+      provider,
+      service: "custom",
+      configSource: "studio",
+      apiFormat,
+      stream,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider,
+        api: provider === "anthropic" ? "anthropic-messages" as Api : "openai-completions" as Api,
+        baseUrl: "https://gateway.example/v1",
+      },
+    });
+  }
+
+  const TRUNCATED_MARKER_RESPONSE = [
+    "=== CHAPTER_TITLE ===",
+    "Cut Off",
+    "=== CHAPTER_CONTENT ===",
+    "The chapter begins and cuts off mid-sen",
+  ].join("\n");
+
+  it("rejects OpenAI Chat non-stream text when finish_reason is omitted", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: TRUNCATED_MARKER_RESPONSE } }],
+        usage: { prompt_tokens: 4, completion_tokens: 8, total_tokens: 12 },
+      }),
+    }));
+
+    await expect(chatCompletion(
+      customClient("openai", false),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+  });
+
+  it("rejects Anthropic non-stream text when stop_reason is omitted", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: TRUNCATED_MARKER_RESPONSE }],
+        usage: { input_tokens: 4, output_tokens: 8 },
+      }),
+    }));
+
+    await expect(chatCompletion(
+      customClient("anthropic", false),
+      "claude-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+  });
+
+  it("rejects OpenAI Responses non-stream text when status is omitted", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        output: [{ type: "message", content: [{ type: "output_text", text: TRUNCATED_MARKER_RESPONSE }] }],
+        usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+      }),
+    }));
+
+    await expect(chatCompletion(
+      customClient("openai", false, "responses"),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+  });
+
+  it("rejects OpenAI Chat stream text followed only by the DONE sentinel", async () => {
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: TRUNCATED_MARKER_RESPONSE } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+    await expect(chatCompletion(
+      customClient("openai", true),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+  });
+
+  it("rejects Anthropic stream text with message_stop but no stop_reason", async () => {
+    const sse = [
+      `data: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: TRUNCATED_MARKER_RESPONSE } })}\n\n`,
+      "data: {\"type\":\"message_stop\"}\n\n",
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+    await expect(chatCompletion(
+      customClient("anthropic", true),
+      "claude-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+  });
+
+  it("rejects pi-ai non-stream and stream responses whose stopReason is omitted", async () => {
+    const missingStop = { ...makeAssistantMessage(TRUNCATED_MARKER_RESPONSE), stopReason: undefined } as unknown as AssistantMessage;
+    mockCompleteSimple.mockResolvedValueOnce(missingStop);
+    await expect(chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+
+    mockStreamSimple.mockReturnValue(makeEventStream([
+      { type: "text_delta", contentIndex: 0, delta: TRUNCATED_MARKER_RESPONSE, partial: missingStop },
+      { type: "done", reason: undefined, message: missingStop },
+    ]));
+    await expect(chatCompletion(
+      makeClient(),
+      "test-model",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/omitted its required terminal state/);
+  });
+
+  it("accepts explicit successful terminal states for every native protocol", async () => {
+    mockCompleteSimple.mockResolvedValue(makeAssistantMessage("pi complete"));
+    await expect(chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).resolves.toMatchObject({ content: "pi complete" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "chat complete" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 4, completion_tokens: 8, total_tokens: 12 },
+      }),
+    }));
+    await expect(chatCompletion(
+      customClient("openai", false),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).resolves.toMatchObject({ content: "chat complete" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: "anthropic complete" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 4, output_tokens: 8 },
+      }),
+    }));
+    await expect(chatCompletion(
+      customClient("anthropic", false),
+      "claude-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).resolves.toMatchObject({ content: "anthropic complete" });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "completed",
+        output: [{ type: "message", content: [{ type: "output_text", text: "responses complete" }] }],
+        usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+      }),
+    }));
+    await expect(chatCompletion(
+      customClient("openai", false, "responses"),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).resolves.toMatchObject({ content: "responses complete" });
+  });
+
+  it.each(["length", "error", "aborted"] as const)(
+    "rejects pi-ai non-stream stopReason=%s even when text is present",
+    async (stopReason) => {
+      mockCompleteSimple.mockResolvedValue({
+        ...makeAssistantMessage("partial text"),
+        stopReason,
+        ...(stopReason === "error" ? { errorMessage: undefined } : {}),
+      });
+
+      await expect(chatCompletion(
+        makeClient(0.7, { stream: false }),
+        "test-model",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(stopReason));
+    },
+  );
+
+  it.each(["length", "toolUse"] as const)(
+    "rejects a pi-ai stream done with stopReason=%s after partial text",
+    async (stopReason) => {
+      const message = { ...makeAssistantMessage("partial text"), stopReason };
+      mockStreamSimple.mockReturnValue(makeEventStream([
+        { type: "text_delta", contentIndex: 0, delta: "partial text", partial: message },
+        { type: "done", reason: stopReason, message },
+      ]));
+
+      await expect(chatCompletion(
+        makeClient(),
+        "test-model",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(stopReason));
+    },
+  );
+
+  it("rejects pi-ai toolUse as a non-complete terminal state", async () => {
+    mockCompleteSimple.mockResolvedValue({
+      ...makeAssistantMessage("tool handoff"),
+      stopReason: "toolUse",
+    });
+
+    await expect(chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "use tool" }],
+      { retry: false },
+    )).rejects.toThrow(/toolUse/);
+  });
+
+  it("rejects a pi-ai toolCall block even if stopReason is stop", async () => {
+    mockCompleteSimple.mockResolvedValue({
+      ...makeAssistantMessage("partial text"),
+      content: [
+        { type: "text", text: "partial text" },
+        { type: "toolCall", id: "call-1", name: "write_file", arguments: {} },
+      ],
+      stopReason: "stop",
+    } as AssistantMessage);
+
+    await expect(chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/toolUse/);
+  });
+
+  it.each(["max_tokens", "tool_use"] as const)(
+    "rejects Anthropic %s in non-stream responses with partial text",
+    async (stopReason) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: "partial text" }],
+          stop_reason: stopReason,
+          usage: { input_tokens: 4, output_tokens: 8 },
+        }),
+      }));
+
+      await expect(chatCompletion(
+        customClient("anthropic", false),
+        "claude-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(stopReason));
+    },
+  );
+
+  it.each(["max_tokens", "tool_use"] as const)(
+    "rejects Anthropic %s in streams with partial text",
+    async (stopReason) => {
+      const sse = [
+        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial text\"}}\n\n",
+        `data: {"type":"message_delta","delta":{"stop_reason":"${stopReason}"},"usage":{"output_tokens":8}}\n\n`,
+        "data: {\"type\":\"message_stop\"}\n\n",
+      ].join("");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+      await expect(chatCompletion(
+        customClient("anthropic", true),
+        "claude-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(stopReason));
+    },
+  );
+
+  it("rejects an Anthropic tool_use block even if stop_reason is end_turn", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [
+          { type: "text", text: "partial text" },
+          { type: "tool_use", id: "tool-1", name: "write_file", input: {} },
+        ],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 4, output_tokens: 8 },
+      }),
+    }));
+
+    await expect(chatCompletion(
+      customClient("anthropic", false),
+      "claude-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/tool_use/);
+  });
+
+  it.each(["incomplete", "failed", "cancelled"] as const)(
+    "rejects OpenAI Responses non-stream status=%s with partial text",
+    async (status) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status,
+          output: [{ content: [{ type: "output_text", text: "partial text" }] }],
+          incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : undefined,
+          error: status === "failed" ? { message: "provider failure" } : undefined,
+          usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+        }),
+      }));
+
+      await expect(chatCompletion(
+        customClient("openai", false, "responses"),
+        "gpt-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(status));
+    },
+  );
+
+  it("rejects an OpenAI Responses completed response that also contains a function call", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "completed",
+        output: [
+          { type: "message", content: [{ type: "output_text", text: "partial text" }] },
+          { type: "function_call", call_id: "call-1", name: "write_file", arguments: "{}" },
+        ],
+        usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+      }),
+    }));
+
+    await expect(chatCompletion(
+      customClient("openai", false, "responses"),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/function_call/);
+  });
+
+  it("rejects an OpenAI Responses stream that emits a tool call before completed", async () => {
+    const sse = [
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial text\"}\n\n",
+      "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"write_file\",\"arguments\":\"{}\"}}\n\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":8,\"total_tokens\":12}}}\n\n",
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+    await expect(chatCompletion(
+      customClient("openai", true, "responses"),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/function_call/);
+  });
+
+  it.each(["incomplete", "failed", "cancelled"] as const)(
+    "rejects OpenAI Responses stream terminal=%s with partial text",
+    async (status) => {
+      const terminal = JSON.stringify({
+        type: `response.${status}`,
+        response: {
+          status,
+          incomplete_details: status === "incomplete" ? { reason: "max_output_tokens" } : undefined,
+          error: status === "failed" ? { message: "provider failure" } : undefined,
+          usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+        },
+      });
+      const sse = [
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial text\"}\n\n",
+        `data: ${terminal}\n\n`,
+      ].join("");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+      await expect(chatCompletion(
+        customClient("openai", true, "responses"),
+        "gpt-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(status));
+    },
+  );
+
+  it.each(["length", "content_filter", "tool_calls", "function_call", "unexpected_reason"] as const)(
+    "rejects OpenAI Chat non-stream finish_reason=%s with partial text",
+    async (finishReason) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "partial text" }, finish_reason: finishReason }],
+          usage: { prompt_tokens: 4, completion_tokens: 8, total_tokens: 12 },
+        }),
+      }));
+
+      await expect(chatCompletion(
+        customClient("openai", false),
+        "gpt-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(finishReason));
+    },
+  );
+
+  it.each([
+    ["tool_calls", { tool_calls: [{ id: "call-1", type: "function", function: { name: "write_file", arguments: "{}" } }] }],
+    ["function_call", { function_call: { name: "write_file", arguments: "{}" } }],
+  ] as const)(
+    "rejects OpenAI Chat %s payloads even if finish_reason is stop",
+    async (callType, callPayload) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "partial text", ...callPayload }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 4, completion_tokens: 8, total_tokens: 12 },
+        }),
+      }));
+
+      await expect(chatCompletion(
+        customClient("openai", false),
+        "gpt-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(callType));
+    },
+  );
+
+  it.each(["length", "content_filter", "tool_calls", "function_call", "unexpected_reason"] as const)(
+    "rejects OpenAI Chat stream finish_reason=%s with partial text",
+    async (finishReason) => {
+      const sse = [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial text\"}}]}\n\n",
+        `data: {"choices":[{"delta":{},"finish_reason":"${finishReason}"}]}\n\n`,
+        "data: [DONE]\n\n",
+      ].join("");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+      await expect(chatCompletion(
+        customClient("openai", true),
+        "gpt-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      )).rejects.toThrow(new RegExp(finishReason));
+    },
+  );
+
+  it("rejects OpenAI Chat streamed tool_calls even if the final finish_reason is stop", async () => {
+    const sse = [
+      "data: {\"choices\":[{\"delta\":{\"content\":\"partial text\"}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{}\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+      "data: [DONE]\n\n",
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse(sse)));
+
+    await expect(chatCompletion(
+      customClient("openai", true),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    )).rejects.toThrow(/tool_calls/);
+  });
+});
+
+describe("explicit provider text refusal detection", () => {
+  const refusalTransports = ["pi-ai", "openai-chat", "anthropic", "openai-responses"] as const;
+
+  beforeEach(() => {
+    mockStreamSimple.mockReset();
+    mockCompleteSimple.mockReset();
+    mockComplete.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function markerChapter(body: string): string {
+    return [
+      "=== PRE_WRITE_CHECK ===",
+      "ready",
+      "=== CHAPTER_TITLE ===",
+      "Refusal",
+      "=== CHAPTER_CONTENT ===",
+      body,
+    ].join("\n");
+  }
+
+  function refusalCustomClient(
+    provider: "openai" | "anthropic",
+    apiFormat: "chat" | "responses" = "chat",
+  ): LLMClient {
+    return makeClient(0.7, {
+      provider,
+      service: "custom",
+      apiFormat,
+      stream: false,
+      _piModel: {
+        ...MOCK_PI_MODEL,
+        provider,
+        api: provider === "anthropic" ? "anthropic-messages" as Api : "openai-completions" as Api,
+        baseUrl: "https://gateway.example/v1",
+      },
+    });
+  }
+
+  async function invokeRefusalTransport(
+    transport: typeof refusalTransports[number],
+    content: string,
+  ): Promise<unknown> {
+    if (transport === "pi-ai") {
+      mockCompleteSimple.mockResolvedValue(makeAssistantMessage(content));
+      return chatCompletion(
+        makeClient(0.7, { stream: false }),
+        "test-model",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      );
+    }
+
+    if (transport === "anthropic") {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: content }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 4, output_tokens: 8 },
+        }),
+      }));
+      return chatCompletion(
+        refusalCustomClient("anthropic"),
+        "claude-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      );
+    }
+
+    if (transport === "openai-responses") {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: "completed",
+          output: [{ type: "message", content: [{ type: "output_text", text: content }] }],
+          usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+        }),
+      }));
+      return chatCompletion(
+        refusalCustomClient("openai", "responses"),
+        "gpt-test",
+        [{ role: "user", content: "write" }],
+        { retry: false },
+      );
+    }
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 4, completion_tokens: 8, total_tokens: 12 },
+      }),
+    }));
+    return chatCompletion(
+      refusalCustomClient("openai"),
+      "gpt-test",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    );
+  }
+
+  it.each([
+    "I'm sorry, but I cannot assist with that request. I cannot provide or generate the requested content. "
+      + "Please ask for a different task. ".repeat(12),
+    "죄송하지만, 저는 이 요청에 따라 해당 내용을 작성하거나 제공할 수 없습니다. 다른 작업을 요청해 주세요.",
+    "抱歉，我无法协助生成这类内容，也不能完成该请求。请提供其他任务。",
+  ])("raises ProviderRefusalError for explicit EN/KO/ZH first-person refusal boilerplate", async (content) => {
+    mockCompleteSimple.mockResolvedValue(makeAssistantMessage(content));
+
+    const error = await captureError(chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    ));
+
+    expect(error).toBeInstanceOf(ProviderRefusalError);
+    expect(error.name).toBe("ProviderRefusalError");
+  });
+
+  it.each([
+    "As an AI language model, I cannot help write this request because it violates safety policy.",
+    "As an AI assistant, I must decline to generate this content under the safety policy.",
+    "I must decline your request because it violates safety policy.",
+    "Sure — however, I cannot assist with this request because of content policy.",
+    "Unfortunately, I cannot help write this request due to safety policy.",
+    "AI 언어 모델로서 이 요청에 따른 내용을 작성해 드릴 수 없습니다. 안전 정책에 어긋납니다.",
+    "안타깝지만 요청하신 내용을 작성하거나 제공할 수 없습니다. 안전 정책 때문입니다.",
+    "이 요청은 도와드릴 수 없습니다. 콘텐츠 정책상 해당 내용을 생성할 수 없습니다.",
+    "作为一个AI语言模型，我无法协助生成这个请求的内容，因为这违反安全政策。",
+    "很抱歉，这个请求我不能帮助撰写，也无法提供相关内容，因为违反安全政策。",
+    "I'm afraid I cannot assist with this request because it violates safety guidelines.",
+    "Regrettably, I cannot help write this request under the content policy.",
+    "For safety reasons, I cannot provide the requested content.",
+    "죄송하지만 해당 요청은 처리해 드릴 수 없습니다. 안전 정책에 어긋납니다.",
+    "죄송하지만 이 요청에는 응할 수 없습니다. 콘텐츠 정책 때문입니다.",
+    "안전 정책상 해당 요청을 작성해 드릴 수 없습니다.",
+    "抱歉，这个请求无法协助完成，因为违反安全政策。",
+    "根据安全政策，我无法协助生成该请求的内容。",
+    "很遗憾，我不能帮助完成这个请求，因为违反内容政策。",
+    "This request can't be completed due to safety policy.",
+    "The requested content is unavailable under our safety guidelines.",
+    "Safety policy prevents assistance with this content.",
+    "I am not able to assist with this request under the safety policy.",
+    "콘텐츠 정책에 따라 이 요청은 처리가 불가능합니다.",
+    "안전 지침 때문에 요청하신 콘텐츠 지원이 불가합니다.",
+    "안타깝지만 정책 위반이라 이 작업에는 답변하지 않겠습니다.",
+    "정책 위반으로 해당 콘텐츠 생성을 지원하지 않습니다.",
+    "本请求因违反内容政策而无法处理。",
+    "安全准则禁止提供此类内容。",
+    "很遗憾，这项请求不予执行。",
+    "基于政策限制，无法回应这个提示。",
+    "이 요청은 안전 정책상 진행할 수 없습니다.",
+    "콘텐츠 지침 때문에 이 작업을 계속할 수 없습니다.",
+    "안전 정책상 이 프롬프트에 답할 수 없습니다.",
+    "根据安全政策，这个请求无法继续。",
+    "这个提示违反安全准则，因此不予继续。",
+  ])("rejects marker-conformant provider-preface refusal across every text transport: %s", async (body) => {
+    const content = markerChapter(body);
+    for (const transport of refusalTransports) {
+      const error = await captureError(invokeRefusalTransport(transport, content));
+      expect(error.name, `${transport} accepted provider refusal boilerplate`).toBe("ProviderRefusalError");
+    }
+  });
+
+  it.each([
+    "Mara said, \"I cannot help write that request,\" then refused to meet Taryn's eyes and pushed the letter away.",
+    "지훈은 \"저는 그 요청에 따라 내용을 작성할 수 없습니다\"라고 말한 뒤 계약서를 밀어냈다. 방 안의 누구도 그의 거절을 예상하지 못했다.",
+    "林川说：“我无法帮助完成这个请求。”随后他把供词推回桌面，拒绝替兄长写下谎言。",
+    "I refused the request to write his confession for him, then crossed the rain-soaked courtyard before the guards returned.",
+    "I cannot help write that request, I told him, because the confession belonged to his brother. "
+      + "Rain struck the shutters while he stared at the blank page and waited for me to change my mind. ".repeat(3),
+    "저는 그 요청대로 글을 작성할 수 없습니다, 하고 나는 말했다. "
+      + "그건 형의 자백이었고, 창밖의 비가 그칠 때까지 그는 빈 종이만 내려다보았다. ".repeat(4),
+    "我无法帮助完成这个请求，我对他说，因为那份供词属于他的兄长。"
+      + "窗外的雨敲着瓦片，他仍盯着空白纸页等我改变主意。".repeat(5),
+    [
+      "=== CHAPTER_TITLE ===",
+      "거절",
+      "",
+      "=== CHAPTER_CONTENT ===",
+      "죄송하지만, 저는 이 요청대로 내용을 작성할 수 없습니다. 인공지능의 정책 때문입니다, 라고 인물이 말했다.",
+    ].join("\n"),
+    [
+      "=== CHAPTER_TITLE ===",
+      "The Refusal",
+      "=== CHAPTER_CONTENT ===",
+      "I'm sorry, but I cannot assist with that request because of the policy, Mara said, pushing the forged letter back across the rain-soaked table.",
+    ].join("\n"),
+    [
+      "=== CHAPTER_TITLE ===",
+      "拒绝",
+      "=== CHAPTER_CONTENT ===",
+      "抱歉，我无法协助生成这个请求的内容，这是城邦的政策，林川说道，随后把伪造的供词推回雨水浸透的桌面。",
+    ].join("\n"),
+    markerChapter(
+      "As an AI language model, I cannot help write this request because it violates safety policy, Mara said, mocking the automaton before she tore up the warrant.",
+    ),
+    markerChapter(
+      "AI 언어 모델로서 이 요청에 따른 내용을 작성해 드릴 수 없습니다. 안전 정책 때문입니다, 라고 지훈이 말하며 위조 공문을 찢었다.",
+    ),
+    markerChapter(
+      "作为一个AI语言模型，我无法协助生成这个请求的内容，因为这违反安全政策，林川说道，随后撕碎了伪造的公文。",
+    ),
+    markerChapter(
+      "Mara said, \"I'm afraid I cannot assist with this request because it violates safety guidelines,\" then tore up the forged warrant.",
+    ),
+    markerChapter(
+      "죄송하지만 해당 요청은 처리해 드릴 수 없습니다. 안전 정책 때문입니다, 라고 지훈이 말하며 위조 공문을 찢었다.",
+    ),
+    markerChapter(
+      "林川说道：“抱歉，这个请求无法协助完成，因为违反安全政策。”随后他撕碎了伪造的公文。",
+    ),
+    markerChapter(
+      "The terminal displayed: \"This request can't be completed due to safety policy.\" Mara smashed the screen before the guards arrived.",
+    ),
+    markerChapter(
+      "\"Safety policy prevents assistance with this content,\" Mara read aloud, then slipped the forged memo into her coat.",
+    ),
+    markerChapter(
+      "단말 화면에는 \"콘텐츠 정책에 따라 이 요청은 처리가 불가능합니다\"라는 경고 문구가 떴다. 지훈은 망치로 화면을 깨뜨렸다.",
+    ),
+    markerChapter(
+      "지훈이 말했다: \"안전 지침 때문에 요청하신 콘텐츠 지원이 불가합니다.\" 그는 곧 위조 공문을 불태웠다.",
+    ),
+    markerChapter(
+      "终端显示：“本请求因违反内容政策而无法处理。”林川随即砸碎屏幕，躲开赶来的守卫。",
+    ),
+    markerChapter(
+      "“安全准则禁止提供此类内容。”林川朗读完告示，便把伪造的公文藏进外套。",
+    ),
+    markerChapter(
+      "The requested content was unavailable under the archive’s safety guidelines, so Mara bribed the night clerk and stole the sealed dossier.",
+    ),
+    markerChapter(
+      "Safety policy prevented assistance with the request. Mara tore the notice from the terminal and crossed the rain-soaked lobby.",
+    ),
+    markerChapter(
+      "The terminal displayed: This request cannot be completed due to safety policy. Mara smashed the screen with the forged warrant.",
+    ),
+    markerChapter(
+      "콘텐츠 정책에 따라 이 요청은 처리가 불가능했다. 지훈은 안내문을 찢고 봉인된 기록실로 들어갔다.",
+    ),
+    markerChapter(
+      "안전 지침 때문에 요청한 자료 지원이 불가했다. 그는 야간 직원을 매수했다.",
+    ),
+    markerChapter(
+      "단말기에는 안전 정책상 이 요청을 처리할 수 없다고 떴다. 지훈은 화면을 꺼 버렸다.",
+    ),
+    markerChapter(
+      "本请求因违反档案馆的内容政策而无法处理。林川撕下告示，闯进了封存室。",
+    ),
+    markerChapter(
+      "安全准则禁止提供此类内容。终端显示完这行字便熄灭，林川拔出了备用钥匙。",
+    ),
+    markerChapter(
+      "屏幕显示：基于政策限制，无法回应这个提示。她随即砸碎了终端。",
+    ),
+    markerChapter(
+      "이 요청은 안전 정책상 진행할 수 없었다. 지훈은 어깨를 으쓱했다.",
+    ),
+    markerChapter(
+      "根据安全政策，这个请求无法继续。林川笑了。",
+    ),
+  ])("preserves ordinary fictional narration and character dialogue containing refusal language %#", async (content) => {
+    mockCompleteSimple.mockResolvedValue(makeAssistantMessage(content));
+
+    const result = await chatCompletion(
+      makeClient(0.7, { stream: false }),
+      "test-model",
+      [{ role: "user", content: "write" }],
+      { retry: false },
+    );
+
+    expect(result.content).toBe(content);
+  });
+
+  it("records the dedicated refusal error as provider-refused with no output hash", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "inkos-provider-refusal-outcome-"));
+    try {
+      const prepared = await prepareFictionContentInvocation({
+        projectRoot,
+        bookId: "writer-refusal-book",
+        agentName: "writer",
+        stage: "writer-creative",
+        model: "test-model",
+        messages: [{ role: "user", content: "Write the chapter." }],
+      });
+
+      const outcome = await writeFictionContentInvocationOutcome({
+        projectRoot,
+        prepared,
+        error: new ProviderRefusalError(),
+      });
+
+      expect(outcome).toMatchObject({
+        status: "provider-refused",
+        outputSha256: null,
+        errorName: "ProviderRefusalError",
+      });
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
   });
 });

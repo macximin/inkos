@@ -79,8 +79,8 @@ describe("Phase 5 hotfix 2 — bookRules.body decoupling", () => {
 
     const parsed = await readBookRules(bookDir);
     expect(parsed?.rules.protagonist?.name).toBe("LegacyHero");
-    // Legacy body is preserved — this is critical for the reviser/continuity
-    // style_guide fallback chain.
+    // Legacy body remains available to the raw display-compatible reader;
+    // production agents no longer use it as prompt or style fallback.
     expect(parsed?.body).toBe(legacyBody);
   });
 
@@ -108,7 +108,7 @@ describe("Phase 5 hotfix 2 — bookRules.body decoupling", () => {
 
     const rendered = await readPlannerBookRules(storyDir);
     expect(rendered).toContain("林辞");
-    expect(rendered).toContain("不得神化主角");
+    expect(rendered).not.toContain("不得神化主角");
     // The story_frame prose must NOT be duplicated via book rules body.
     expect(rendered).not.toContain("独家的五段散文正文内容");
   });

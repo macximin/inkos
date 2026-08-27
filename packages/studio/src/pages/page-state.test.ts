@@ -57,6 +57,7 @@ describe("book create form", () => {
       targetChapters: "200",
       chapterWordCount: "3000",
       brief: "",
+      hardRules: [],
     });
   });
 
@@ -89,6 +90,7 @@ describe("book create form", () => {
       targetChapters: "120",
       chapterWordCount: "2600",
       brief: " 主角查账洗白，旧案回潮。 ",
+      hardRules: [],
     }, "zh")).toEqual({
       title: "夜港账本",
       genre: "都市悬疑",
@@ -108,12 +110,43 @@ describe("book create form", () => {
       targetChapters: "120",
       chapterWordCount: "5000",
       brief: " 내부 감사인이 비자금 장부를 추적한다. ",
+      hardRules: [],
     }, "ko")).toMatchObject({
       title: "감사의 밤",
       language: "ko",
       chapterWordCount: 5000,
       blurb: "내부 감사인이 비자금 장부를 추적한다.",
     });
+  });
+
+  it("sends only explicitly adopted typed hard rules with a separate confirmation", () => {
+    const payload = buildBookCreatePayload({
+      ...defaultBookCreateForm("ko"),
+      title: "감사의 밤",
+      genre: "현대 재벌물",
+      brief: "내부 감사인이 비자금 장부를 추적한다.",
+      hardRules: [
+        {
+          id: "selected",
+          collection: "prohibitions",
+          text: "주인공은 차명 지분을 포기하지 않는다.",
+          adopted: true,
+        },
+        {
+          id: "not-selected",
+          collection: "genreLock.forbidden",
+          text: "로맨스 중심으로 전환하지 않는다.",
+          adopted: false,
+        },
+      ],
+    }, "ko");
+
+    expect(payload.hardRulesConfirmed).toBe(true);
+    expect(payload.hardRules).toEqual([{
+      collection: "prohibitions",
+      text: "주인공은 차명 지분을 포기하지 않는다.",
+      decision: "adopt",
+    }]);
   });
 });
 

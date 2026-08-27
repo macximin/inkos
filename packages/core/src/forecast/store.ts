@@ -1,5 +1,6 @@
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
 import { NarrativeForecastSchema, type NarrativeForecast } from "./schema.js";
 
 // All forecast artifacts live under this directory inside a book. Nothing in
@@ -72,12 +73,27 @@ export class ForecastStore {
     // Validate before touching the filesystem so an invalid forecast never
     // leaves a half-written directory behind.
     const validated = NarrativeForecastSchema.parse(forecast);
-    const dir = this.forecastDir(validated.forecastId);
-    await mkdir(dir, { recursive: true });
     const forecastJsonPath = this.forecastJsonPath(validated.forecastId);
     const comparisonPath = this.comparisonPath(validated.forecastId);
-    await writeFile(forecastJsonPath, `${JSON.stringify(validated, null, 2)}\n`, "utf-8");
-    await writeFile(comparisonPath, `${comparisonMarkdown.trimEnd()}\n`, "utf-8");
+    const relativeForecastDir = join(
+      "story",
+      "runtime",
+      "narrative-forecasts",
+      validated.forecastId,
+    );
+    await commitAtomicFileSet({
+      rootDir: this.bookDir,
+      writes: [
+        {
+          relativePath: join(relativeForecastDir, "forecast.json"),
+          content: `${JSON.stringify(validated, null, 2)}\n`,
+        },
+        {
+          relativePath: join(relativeForecastDir, "comparison.md"),
+          content: `${comparisonMarkdown.trimEnd()}\n`,
+        },
+      ],
+    });
     return { forecastJsonPath, comparisonPath };
   }
 

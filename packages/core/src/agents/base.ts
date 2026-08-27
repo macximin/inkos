@@ -4,6 +4,11 @@ import { appendPromptPackGuidance } from "../prompts/prompt-pack.js";
 import { searchWeb, fetchUrl } from "../utils/web-search.js";
 import type { Logger } from "../utils/logger.js";
 import { CODEX_SERVICE_ID } from "../llm/codex-cli.js";
+import {
+  prepareFictionContentInvocation,
+  writeFictionContentInvocationOutcome,
+} from "../production/fiction-content-contract.js";
+import { isLlmStubEnabled } from "../agent/llm-stub.js";
 
 export interface AgentContext {
   readonly client: LLMClient;
@@ -13,6 +18,17 @@ export interface AgentContext {
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
   readonly signal?: AbortSignal;
+  readonly fictionContentStage?: string;
+  readonly reasoningEffort?: string;
+  /** Host-validated staging directory used only during atomic Book creation. */
+  readonly fictionContentEvidenceBookDir?: string;
+}
+
+interface AgentChatOptions {
+  readonly temperature?: number;
+  readonly maxTokens?: number;
+  readonly webSearch?: boolean;
+  readonly onTextDelta?: (text: string) => void;
 }
 
 export abstract class BaseAgent {
@@ -28,13 +44,79 @@ export abstract class BaseAgent {
 
   protected async chat(
     messages: ReadonlyArray<LLMMessage>,
-    options?: { readonly temperature?: number; readonly maxTokens?: number },
+    options?: AgentChatOptions,
   ): Promise<LLMResponse> {
-    return chatCompletion(this.ctx.client, this.ctx.model, messages, {
-      ...options,
-      onStreamProgress: this.ctx.onStreamProgress,
-      signal: this.ctx.signal,
-    });
+    return this.runChat(messages, options);
+  }
+
+  /**
+   * The single provider-call boundary for every BaseAgent invocation. A Book
+   * context is sufficient to turn governance on: callers cannot bypass the
+   * host contract merely by omitting an optional stage hint.
+   */
+  private async runChat(
+    messages: ReadonlyArray<LLMMessage>,
+    options?: AgentChatOptions,
+  ): Promise<LLMResponse> {
+    if (this.ctx.bookId && isLlmStubEnabled()) {
+      throw new Error(
+        "INKOS_AGENT_LLM_STUB cannot execute a Book-bound model call or satisfy production evidence.",
+      );
+    }
+    const agentName = this.name.trim();
+    if (!agentName) {
+      throw new Error("BaseAgent.name must be non-empty.");
+    }
+    const stage = this.ctx.bookId
+      ? this.ctx.fictionContentStage?.trim() || agentName
+      : undefined;
+    const prepared = stage && this.ctx.bookId
+      ? await prepareFictionContentInvocation({
+          projectRoot: this.ctx.projectRoot,
+          bookId: this.ctx.bookId,
+          agentName,
+          stage,
+          model: this.ctx.model,
+          reasoningEffort: this.ctx.reasoningEffort,
+          messages,
+          options: {
+            temperature: options?.temperature,
+            maxTokens: options?.maxTokens,
+            webSearch: options?.webSearch,
+          },
+          evidenceBookDir: this.ctx.fictionContentEvidenceBookDir,
+        })
+      : null;
+    let response: LLMResponse;
+    try {
+      response = await chatCompletion(
+        this.ctx.client,
+        this.ctx.model,
+        prepared?.messages ?? messages,
+        {
+          ...options,
+          onStreamProgress: this.ctx.onStreamProgress,
+          signal: this.ctx.signal,
+        },
+      );
+    } catch (error) {
+      if (prepared) {
+        await writeFictionContentInvocationOutcome({
+          projectRoot: this.ctx.projectRoot,
+          prepared,
+          error,
+        });
+      }
+      throw error;
+    }
+    if (prepared) {
+      await writeFictionContentInvocationOutcome({
+        projectRoot: this.ctx.projectRoot,
+        prepared,
+        output: response.content,
+      });
+    }
+    return response;
   }
 
   protected async withPromptPackGuidance(basePrompt: string, promptId: string): Promise<string> {
@@ -55,11 +137,9 @@ export abstract class BaseAgent {
   ): Promise<LLMResponse> {
     // OpenAI has native search — use it directly
     if (this.ctx.client.provider === "openai" && this.ctx.client.service !== CODEX_SERVICE_ID) {
-      return chatCompletion(this.ctx.client, this.ctx.model, messages, {
+      return this.runChat(messages, {
         ...options,
         webSearch: true,
-        onStreamProgress: this.ctx.onStreamProgress,
-        signal: this.ctx.signal,
       });
     }
 

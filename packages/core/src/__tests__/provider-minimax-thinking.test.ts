@@ -18,7 +18,7 @@ vi.mock("../utils/proxy-fetch.js", () => ({
     return {
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: "ok" } }],
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
     } as Response;
@@ -112,6 +112,7 @@ describe("MiniMax thinking leak prevention (issue #329)", () => {
           content: "第一章正文开始。",
           reasoning_content: "让我先推演一下剧情走向……",
         },
+        finish_reason: "stop",
       }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }));
@@ -132,6 +133,7 @@ describe("MiniMax thinking leak prevention (issue #329)", () => {
         message: {
           content: "<think>这里是模型的内心推理，不该出现在章节里</think>\n\n第一章正文开始。",
         },
+        finish_reason: "stop",
       }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }));

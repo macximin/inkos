@@ -1,7 +1,18 @@
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AuditIssue, AuditResult } from "../agents/continuity.js";
 import type { ChapterArcProvenance, ChapterMeta } from "../models/chapter.js";
-import { persistChapterArtifacts } from "../pipeline/chapter-persistence.js";
+import {
+  persistChapterArtifacts,
+  runChapterPersistenceTransaction,
+} from "../pipeline/chapter-persistence.js";
+import {
+  beginChapterPersistenceJournal,
+  recoverChapterPersistenceTransactions,
+} from "../state/chapter-persistence-journal.js";
+import { StateManager } from "../state/manager.js";
 
 const ZERO_USAGE = {
   promptTokens: 0,
@@ -75,7 +86,12 @@ describe("persistChapterArtifacts", () => {
         issues: [
           createIssue({ severity: "info", description: "ignore me" }),
           createIssue({ severity: "warning", description: "keep me" }),
-          createIssue({ severity: "critical", description: "keep me too" }),
+          createIssue({ severity: "critical", description: "diagnostic only" }),
+          createIssue({
+            severity: "critical",
+            description: "trusted deterministic failure",
+            automaticRevisionEligible: true,
+          }),
         ],
       }),
       finalWordCount: 888,
@@ -106,7 +122,8 @@ describe("persistChapterArtifacts", () => {
         auditIssues: [
           "[info] ignore me",
           "[warning] keep me",
-          "[critical] keep me too",
+          "[critical] diagnostic only",
+          "[critical] trusted deterministic failure",
         ],
         reviewNote: undefined,
         arcProvenance: ARC_PROVENANCE,
@@ -115,7 +132,11 @@ describe("persistChapterArtifacts", () => {
     ]);
     expect(markBookActiveIfNeeded).toHaveBeenCalledTimes(1);
     expect(persistAuditDriftGuidance).toHaveBeenCalledWith([
-      expect.objectContaining({ severity: "critical", description: "keep me too" }),
+      expect.objectContaining({
+        severity: "critical",
+        description: "trusted deterministic failure",
+        automaticRevisionEligible: true,
+      }),
     ]);
     expect(logSnapshotStage).toHaveBeenCalledTimes(1);
     expect(snapshotState).toHaveBeenCalledTimes(1);
@@ -252,5 +273,153 @@ describe("persistChapterArtifacts", () => {
     // Must preserve original createdAt
     expect(savedIndex[0].createdAt).toBe("2026-01-01T00:00:00.000Z");
     expect(savedIndex[0].updatedAt).toBe("2026-04-01T00:00:00.000Z");
+  });
+});
+
+describe("runChapterPersistenceTransaction", () => {
+  it("rolls back chapter, truth, index, status, snapshot, metadata, memory, and revision files after a late failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-chapter-persistence-"));
+    const bookDir = join(root, "book-a");
+    const original = new Map<string, string | Uint8Array>([
+      ["book.json", "{\"status\":\"outlining\"}"],
+      [join("chapters", "index.json"), "[{\"number\":1,\"status\":\"drafted\"}]"],
+      [join("chapters", "0001_Old.md"), "# Chapter 1: Old\n\nold body"],
+      [join("chapters", ".current-metadata", "0001.json"), "{\"title\":\"Old\"}"],
+      [join("chapters", ".versions", "0001", "existing.md"), "old archive"],
+      [join("story", "current_state.md"), "old state"],
+      [join("story", "state", "manifest.json"), "{\"chapter\":0}"],
+      [join("story", "snapshots", "1", "current_state.md"), "old snapshot"],
+      [join("story", "runtime", "chapter-0001.truth-receipt.json"), "old receipt"],
+      [join("story", "memory.db"), new Uint8Array([1, 2, 3, 4])],
+    ]);
+
+    try {
+      await Promise.all([...original.entries()].map(async ([relativePath, content]) => {
+        const path = join(bookDir, relativePath);
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, content);
+      }));
+
+      await expect(runChapterPersistenceTransaction({
+        bookDir,
+        chapterNumber: 1,
+        persist: async () => {
+          await rm(join(bookDir, "chapters", "0001_Old.md"));
+          await writeFile(join(bookDir, "chapters", "0001_New.md"), "new body");
+          await writeFile(join(bookDir, "story", "current_state.md"), "new state");
+          await writeFile(join(bookDir, "story", "subplot_board.md"), "new subplot");
+          await writeFile(join(bookDir, "story", "state", "manifest.json"), "{\"chapter\":1}");
+          await writeFile(join(bookDir, "story", "snapshots", "1", "current_state.md"), "new snapshot");
+          await writeFile(join(bookDir, "story", "runtime", "chapter-0001.truth-receipt.json"), "new receipt");
+          await writeFile(join(bookDir, "story", "memory.db"), new Uint8Array([9, 9, 9]));
+          await writeFile(join(bookDir, "chapters", "index.json"), "new index");
+          await writeFile(join(bookDir, "chapters", ".current-metadata", "0001.json"), "new metadata");
+          await writeFile(join(bookDir, "chapters", ".versions", "0001", "new.md"), "new archive");
+          await writeFile(join(bookDir, "book.json"), "{\"status\":\"active\"}");
+          throw new Error("injected late persistence failure");
+        },
+      })).rejects.toThrow("injected late persistence failure");
+
+      for (const [relativePath, content] of original) {
+        const restored = await readFile(join(bookDir, relativePath));
+        expect(restored).toEqual(Buffer.from(content));
+      }
+      await expect(readFile(join(bookDir, "chapters", "0001_New.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(bookDir, "story", "subplot_board.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readdir(join(bookDir, "chapters", ".versions", "0001"))).toEqual(["existing.md"]);
+      expect((await readdir(bookDir)).filter((name) => name.startsWith(".inkos-chapter-"))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the committed state when the persistence callback succeeds", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-chapter-persistence-"));
+    const bookDir = join(root, "book-a");
+    try {
+      await mkdir(bookDir, { recursive: true });
+      await writeFile(join(bookDir, "book.json"), "before");
+
+      const result = await runChapterPersistenceTransaction({
+        bookDir,
+        chapterNumber: 1,
+        persist: async () => {
+          await writeFile(join(bookDir, "book.json"), "after");
+          return "committed";
+        },
+      });
+
+      expect(result).toBe("committed");
+      await expect(readFile(join(bookDir, "book.json"), "utf-8")).resolves.toBe("after");
+      expect((await readdir(bookDir)).filter((name) => name.startsWith(".inkos-chapter-"))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers an abandoned prepared journal before a new Book lock is returned", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-chapter-recovery-"));
+    const bookDir = join(root, "books", "book-a");
+    try {
+      await mkdir(join(bookDir, "chapters"), { recursive: true });
+      await writeFile(join(bookDir, "book.json"), "before");
+      await writeFile(join(bookDir, "chapters", "0001_Old.md"), "old chapter");
+
+      await beginChapterPersistenceJournal(bookDir, 1);
+      await writeFile(join(bookDir, "book.json"), "after-crash");
+      await rm(join(bookDir, "chapters", "0001_Old.md"));
+      await writeFile(join(bookDir, "chapters", "0001_New.md"), "new chapter");
+
+      const release = await new StateManager(root).acquireBookLock("book-a");
+      try {
+        await expect(readFile(join(bookDir, "book.json"), "utf8")).resolves.toBe("before");
+        await expect(readFile(join(bookDir, "chapters", "0001_Old.md"), "utf8"))
+          .resolves.toBe("old chapter");
+        await expect(readFile(join(bookDir, "chapters", "0001_New.md")))
+          .rejects.toMatchObject({ code: "ENOENT" });
+        expect((await readdir(bookDir)).filter((name) => name.startsWith(".inkos-chapter-"))).toEqual([]);
+      } finally {
+        await release();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps post-operation bytes when recovery finds a durable committed marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-chapter-recovery-"));
+    const bookDir = join(root, "book-a");
+    try {
+      await mkdir(bookDir, { recursive: true });
+      await writeFile(join(bookDir, "book.json"), "before");
+      const journal = await beginChapterPersistenceJournal(bookDir, 1);
+      await writeFile(join(bookDir, "book.json"), "after");
+      await writeFile(join(journal.journalDir, "phase"), "committed\n");
+
+      await recoverChapterPersistenceTransactions(bookDir);
+
+      await expect(readFile(join(bookDir, "book.json"), "utf8")).resolves.toBe("after");
+      expect((await readdir(bookDir)).filter((name) => name.startsWith(".inkos-chapter-"))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed and preserves evidence for an unknown journal phase", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-chapter-recovery-"));
+    const bookDir = join(root, "book-a");
+    try {
+      await mkdir(bookDir, { recursive: true });
+      await writeFile(join(bookDir, "book.json"), "before");
+      const journal = await beginChapterPersistenceJournal(bookDir, 1);
+      await writeFile(join(journal.journalDir, "phase"), "mystery\n");
+
+      await expect(recoverChapterPersistenceTransactions(bookDir))
+        .rejects.toThrow("could not be recovered");
+      await expect(readFile(join(journal.journalDir, "manifest.json"), "utf8"))
+        .resolves.toContain('"chapterNumber": 1');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

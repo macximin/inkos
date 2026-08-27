@@ -19,7 +19,7 @@ auditDimensions: [1,2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,24,25,26]
 - System arrival with no in-world explanation (even a vague one)
 - Ignoring real-world geography and consequences when set on Earth
 - Factions that are binary good/evil — competing interests, not cartoon villainy
-- MC becoming unstoppable too fast — power fantasy must be earned through survival
+- An unstoppable MC accidentally erasing the promised survival experience; rapid dominance is valid when it is the intended power fantasy and its system cause is legible
 - Tech usage without addressing fuel, ammo, and infrastructure collapse
 
 ## World Rules

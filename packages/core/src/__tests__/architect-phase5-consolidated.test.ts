@@ -160,7 +160,7 @@ const CONSOLIDATED_RESPONSE = [
   "- 行为约束：不对长辈失礼",
   "",
   "## 禁止事项",
-  "- 不得美化体制暴力",
+  "- 不得突然切换叙事视角",
   "",
   "=== SECTION: pending_hooks ===",
   "| hook_id | 起始章节 | 类型 | 状态 | 最近推进 | 预期回收 | 回收节奏 | 上游依赖 | 回收卷 | 核心 | 半衰期 | 备注 |",
@@ -215,6 +215,9 @@ describe("Phase 5 consolidation — 7→5 sections, prompt contract", () => {
     // genres, omit entirely for others. NOT a separate current_state section.
     expect(system).toContain("年代文");
     expect(system).not.toContain("只写在 current_state");
+    expect(system).toContain("\"无额外代价\"和\"内在立场不变\"都是合法结果");
+    expect(system).toContain("不要因为犯罪、不道德或令人不适就自动添加惩罚、反省、改过或赎罪");
+    expect(system).toContain("不得自行添加道德、安全或性别规范");
   });
 
   it("the prompt carries explicit per-section char budget markers (NO current_state budget)", async () => {
@@ -426,7 +429,7 @@ describe("Phase 5 consolidation — parser accepts 5-section output (current_sta
       "## 主角",
       "- 名字：林辞",
       "## 禁止事项",
-      "- 不得美化体制暴力",
+      "- 不得突然切换叙事视角",
       "",
       "## 叙事视角",
       "第三人称（legacy prose body — parser accepts but it no longer drives anything）",

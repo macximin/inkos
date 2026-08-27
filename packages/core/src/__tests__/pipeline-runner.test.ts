@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { buildImportFoundationSource, PipelineRunner } from "../pipeline/runner.js";
 import { savePersistedPlan } from "../pipeline/persisted-governed-plan.js";
 import * as llmProvider from "../llm/provider.js";
@@ -16,13 +16,19 @@ import { loadOptionalActiveArcContext, resolveArcChapterContext } from "../arc/f
 import { ArchitectAgent } from "../agents/architect.js";
 import { PlannerAgent } from "../agents/planner.js";
 import * as ComposerModule from "../agents/composer.js";
-import { WriterAgent, type WriteChapterOutput } from "../agents/writer.js";
+import {
+  UnauthorizedProductionContextMoralCorrectionError,
+  WriterAgent,
+  type WriteChapterOutput,
+} from "../agents/writer.js";
 import { LengthNormalizerAgent } from "../agents/length-normalizer.js";
 import { ContinuityAuditor, type AuditIssue, type AuditResult } from "../agents/continuity.js";
 import { ReviserAgent, type ReviseOutput } from "../agents/reviser.js";
 import { ChapterAnalyzerAgent } from "../agents/chapter-analyzer.js";
 import { StateValidatorAgent } from "../agents/state-validator.js";
 import { FoundationReviewerAgent } from "../agents/foundation-reviewer.js";
+import { FanficCanonImporter } from "../agents/fanfic-canon-importer.js";
+import { BookBoundCompletionAgent } from "../agents/book-bound-completion.js";
 import { PolisherAgent } from "../agents/polisher.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
@@ -35,6 +41,12 @@ import {
   readChapterVersion,
   saveChapterUserBrief,
 } from "../state/chapter-workspace.js";
+import { writeCompletedOperationEvidenceFixture } from "./helpers/fiction-content-evidence.js";
+import {
+  prepareFictionContentInvocation,
+  verifyFictionContentInvocationReceipts,
+  writeFictionContentInvocationOutcome,
+} from "../production/fiction-content-contract.js";
 
 const require = createRequire(import.meta.url);
 const hasNodeSqlite = (() => {
@@ -88,6 +100,9 @@ const CRITICAL_ISSUE: AuditIssue = {
   category: "continuity",
   description: "Fix the chapter state",
   suggestion: "Repair the contradiction",
+  // Test double for a host-trusted deterministic failure. Real LLM audit
+  // output is normalized to automaticRevisionEligible=false.
+  automaticRevisionEligible: true,
 };
 
 function createAuditResult(overrides: Partial<AuditResult>): AuditResult {
@@ -342,10 +357,61 @@ async function createRunnerFixture(
     } as ConstructorParameters<typeof PipelineRunner>[0]["client"],
     model: "test-model",
     projectRoot: root,
+    testOnlyFictionContentEvidenceWriter: writeCompletedOperationEvidenceFixture,
     ...configOverrides,
   });
 
   return { root, runner, state, bookId };
+}
+
+async function locateQuarantinedBook(root: string, bookId: string): Promise<string> {
+  const booksDir = join(root, "books");
+  const failedRoot = join(booksDir, ".failed-book-creations");
+  const failedEntries = (await readdir(failedRoot))
+    .filter((entry) => entry.startsWith(`.tmp-book-create-${bookId}-`));
+  expect(failedEntries).toHaveLength(1);
+  expect((await readdir(booksDir)).filter(
+    (entry) => entry.startsWith(`.tmp-book-create-${bookId}-`),
+  )).toEqual([]);
+  return join(failedRoot, failedEntries[0]!);
+}
+
+async function makeBookDiscoverable(state: StateManager, bookId: string): Promise<void> {
+  const bookDir = state.bookDir(bookId);
+  const storyDir = join(bookDir, "story");
+  const outlineDir = join(storyDir, "outline");
+  const chaptersDir = join(bookDir, "chapters");
+  await Promise.all([
+    mkdir(outlineDir, { recursive: true }),
+    mkdir(chaptersDir, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(storyDir, "book_rules.md"), "# Book Rules\n", "utf-8"),
+    writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+    writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    writeFile(join(outlineDir, "story_frame.md"), "# Story Frame\n", "utf-8"),
+    writeFile(join(outlineDir, "volume_map.md"), "# Volume Map\n", "utf-8"),
+    writeFile(join(chaptersDir, "index.json"), "[]\n", "utf-8"),
+  ]);
+}
+
+async function loadOperationManifests(
+  root: string,
+  bookId: string,
+): Promise<ReadonlyArray<{ operationKind: string; chapterNumber: number }>> {
+  const operationsDir = join(
+    root,
+    "books",
+    bookId,
+    "story",
+    "runtime",
+    "fiction-content-neutral",
+    "operations",
+  );
+  const files = (await readdir(operationsDir)).filter((file) => file.endsWith(".json")).sort();
+  return Promise.all(files.map(async (file) => JSON.parse(
+    await readFile(join(operationsDir, file), "utf8"),
+  ) as { operationKind: string; chapterNumber: number }));
 }
 
 describe("PipelineRunner", () => {
@@ -427,6 +493,64 @@ describe("PipelineRunner", () => {
           wordCount: chapterContent.length,
         }),
     );
+  });
+
+  it("keeps unprovenanced BookRules out of post-write and truth-validation gates", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const diagnosticRule = "BANNED_DIAGNOSTIC_TOKEN";
+    await writeFile(join(storyDir, "book_rules.md"), [
+      "---",
+      "prohibitions:",
+      `  - ${diagnosticRule}`,
+      "---",
+      "RAW_BOOK_RULES_VALIDATOR_MARKER",
+    ].join("\n"), "utf8");
+
+    const chapterContent = `The witness records ${diagnosticRule} as an exhibit label, then closes the ledger.`;
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        content: chapterContent,
+        wordCount: countChapterLength(chapterContent, "zh_chars"),
+      }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "clean" }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        content: chapterContent,
+        wordCount: countChapterLength(chapterContent, "zh_chars"),
+      }),
+    );
+    const validateSpy = vi.spyOn(StateValidatorAgent.prototype, "validate")
+      .mockImplementation(async (
+        _chapterContent,
+        _chapterNumber,
+        _oldState,
+        _newState,
+        _oldHooks,
+        _newHooks,
+        _language,
+        authorityContext,
+      ) => {
+        expect(authorityContext?.bookRules).toBe("");
+        expect(authorityContext?.bookRules).not.toContain("RAW_BOOK_RULES_VALIDATOR_MARKER");
+        expect(authorityContext?.bookRules).not.toContain(diagnosticRule);
+        return { warnings: [], passed: true };
+      });
+
+    try {
+      const result = await runner.writeNextChapter(bookId);
+      expect(result.status).toBe("ready-for-review");
+      expect(validateSpy).toHaveBeenCalled();
+      expect(result.auditResult.issues.some((issue) => issue.description.includes(diagnosticRule))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   afterEach(() => {
@@ -793,12 +917,38 @@ describe("PipelineRunner", () => {
       externalContext: brief,
     });
 
-    vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockResolvedValue({
-      storyBible: "# Story Bible\n",
-      volumeOutline: "# Volume Outline\n",
-      bookRules: "---\nversion: \"1.0\"\n---\n\n# Book Rules\n",
-      currentState: "# Current State\n",
-      pendingHooks: "# Pending Hooks\n",
+    vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockImplementation(async function (
+      this: ArchitectAgent,
+    ) {
+      const ctx = (this as unknown as {
+        ctx: {
+          projectRoot: string;
+          bookId?: string;
+          fictionContentEvidenceBookDir?: string;
+        };
+      }).ctx;
+      expect(ctx.fictionContentEvidenceBookDir).toContain(`.tmp-book-create-${bookId}-`);
+      const prepared = await prepareFictionContentInvocation({
+        projectRoot: ctx.projectRoot,
+        bookId: ctx.bookId!,
+        agentName: "architect",
+        stage: "architect",
+        model: "test-model",
+        messages: [{ role: "system", content: "Staged initBook evidence fixture." }],
+        evidenceBookDir: ctx.fictionContentEvidenceBookDir,
+      });
+      await writeFictionContentInvocationOutcome({
+        projectRoot: ctx.projectRoot,
+        prepared,
+        output: "foundation fixture complete",
+      });
+      return {
+        storyBible: "# Story Bible\n",
+        volumeOutline: "# Volume Outline\n",
+        bookRules: "---\nversion: \"1.0\"\n---\n\n# Book Rules\n",
+        currentState: "# Current State\n",
+        pendingHooks: "# Pending Hooks\n",
+      };
     });
 
     try {
@@ -808,10 +958,17 @@ describe("PipelineRunner", () => {
       const authorIntent = await readFile(join(storyDir, "author_intent.md"), "utf-8");
       const currentFocus = await readFile(join(storyDir, "current_focus.md"), "utf-8");
       const runtimeDir = await stat(join(storyDir, "runtime"));
+      const evidence = await verifyFictionContentInvocationReceipts(root, bookId);
+      const stagingEntries = (await readdir(join(root, "books")))
+        .filter((entry) => entry.startsWith(`.tmp-book-create-${bookId}-`));
 
       expect(authorIntent).toContain("mentor conflict");
       expect(currentFocus).toContain("当前聚焦");
       expect(runtimeDir.isDirectory()).toBe(true);
+      expect(evidence.invocations).toEqual([
+        expect.objectContaining({ agentName: "architect", stage: "architect", status: "completed" }),
+      ]);
+      expect(stagingEntries).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -859,12 +1016,28 @@ describe("PipelineRunner", () => {
         externalContext: "世界观重点：近未来港口城，账本与旧案牵出多方势力。",
         authorIntent: "# 作者意图\n\n写成冷硬、克制、利益驱动的商战悬疑。\n",
         currentFocus: "# 当前聚焦\n\n先把旧账线和港口势力网立住。\n",
+        bookRuleAuthoritySources: [{
+          source: "user-explicit",
+          authorityOrigin: "authenticated-owner-instruction",
+          intent: "authorize-rule",
+          decisionId: "owner-init-override-1",
+          authorizedByActorId: "inkos-owner-init-input",
+          artifactContent: "世界观重点：近未来港口城，账本与旧案牵出多方势力。",
+        }],
       });
 
       expect(generateFoundationSpy).toHaveBeenCalledWith(
         book,
         expect.stringContaining("近未来港口城"),
         undefined,
+        expect.objectContaining({
+          bookRuleAuthoritySources: [
+            expect.objectContaining({
+              source: "user-explicit",
+              artifactContent: expect.stringContaining("近未来港口城"),
+            }),
+          ],
+        }),
       );
 
       const storyDir = join(root, "books", bookId, "story");
@@ -915,11 +1088,13 @@ describe("PipelineRunner", () => {
             name: "核心冲突",
             score: 58,
             feedback: "核心冲突不够集中，主线悬念没有站稳。",
+            gating: true,
           },
           {
             name: "开篇节奏",
             score: 76,
             feedback: "前五章起势偏慢，爆点不够前置。",
+            gating: true,
           },
         ],
         overallFeedback: "请把冲突收紧，并在更早的位置建立爆点。",
@@ -1051,7 +1226,7 @@ describe("PipelineRunner", () => {
     }
   }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
 
-  it("cleans staged files when initBook fails before foundation is complete", async () => {
+  it("does not expose a canonical book when initBook fails before staging files exist", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-init-rollback-"));
     const runner = new PipelineRunner({
       client: {
@@ -1091,6 +1266,443 @@ describe("PipelineRunner", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("quarantines fanfic initialization with provider-refusal evidence outside the canonical Book", async () => {
+    const { root, runner, state } = await createRunnerFixture();
+    const bookId = "fanfic-init-refused";
+    const now = "2026-08-27T12:00:00.000Z";
+    const book: BookConfig = {
+      id: bookId,
+      title: "Fanfic Init Refused",
+      platform: "tomato",
+      genre: "xuanhuan",
+      status: "outlining",
+      targetChapters: 10,
+      chapterWordCount: 3000,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let invocationId = "";
+    let evidenceBookDir = "";
+    vi.spyOn(FanficCanonImporter.prototype, "importFromText").mockImplementation(async function (
+      this: FanficCanonImporter,
+    ) {
+      const ctx = (this as unknown as {
+        ctx: {
+          projectRoot: string;
+          bookId?: string;
+          model: string;
+          fictionContentStage?: string;
+          fictionContentEvidenceBookDir?: string;
+        };
+      }).ctx;
+      evidenceBookDir = ctx.fictionContentEvidenceBookDir!;
+      expect(basename(evidenceBookDir)).toMatch(new RegExp(`^\\.tmp-book-create-${bookId}-`));
+      const prepared = await prepareFictionContentInvocation({
+        projectRoot: ctx.projectRoot,
+        bookId: ctx.bookId!,
+        agentName: "fanfic-canon-importer",
+        stage: ctx.fictionContentStage ?? "fanfic-canon-importer",
+        model: ctx.model,
+        messages: [{ role: "system", content: "Fanfic initialization refusal fixture." }],
+        evidenceBookDir,
+      });
+      invocationId = prepared.trace.invocationId;
+      const error = new Error("request refused by provider content policy");
+      await writeFictionContentInvocationOutcome({
+        projectRoot: ctx.projectRoot,
+        prepared,
+        error,
+      });
+      throw error;
+    });
+
+    try {
+      await expect(
+        runner.initFanficBook(book, "A".repeat(600), "canon.txt", "canon"),
+      ).rejects.toThrow("request refused by provider content policy");
+      await expect(stat(state.bookDir(bookId))).rejects.toThrow();
+
+      const failedDir = await locateQuarantinedBook(root, bookId);
+      expect(basename(evidenceBookDir)).toBe(basename(failedDir));
+      await expect(readFile(join(failedDir, "book.json"), "utf8")).resolves.toContain(bookId);
+      const outcome = JSON.parse(await readFile(
+        join(failedDir, "story", "runtime", "fiction-content-neutral", "outcomes", `${invocationId}.json`),
+        "utf8",
+      )) as { status: string };
+      expect(outcome.status).toBe("provider-refused");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines spinoff initialization and binds canon-import evidence to staging", async () => {
+    const { root, runner, state, bookId: parentBookId } = await createRunnerFixture();
+    await makeBookDiscoverable(state, parentBookId);
+    const bookId = "spinoff-init-refused";
+    const now = "2026-08-27T12:05:00.000Z";
+    const book: BookConfig = {
+      id: bookId,
+      title: "Spinoff Init Refused",
+      platform: "tomato",
+      genre: "xuanhuan",
+      status: "outlining",
+      targetChapters: 10,
+      chapterWordCount: 3000,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let invocationId = "";
+    let evidenceBookDir = "";
+    vi.spyOn(BookBoundCompletionAgent.prototype, "complete").mockImplementation(async function (
+      this: BookBoundCompletionAgent,
+    ) {
+      const ctx = (this as unknown as {
+        ctx: {
+          projectRoot: string;
+          bookId?: string;
+          model: string;
+          fictionContentStage?: string;
+          fictionContentEvidenceBookDir?: string;
+        };
+      }).ctx;
+      evidenceBookDir = ctx.fictionContentEvidenceBookDir!;
+      expect(basename(evidenceBookDir)).toMatch(new RegExp(`^\\.tmp-book-create-${bookId}-`));
+      const prepared = await prepareFictionContentInvocation({
+        projectRoot: ctx.projectRoot,
+        bookId: ctx.bookId!,
+        agentName: "canon-importer",
+        stage: ctx.fictionContentStage ?? "canon-importer",
+        model: ctx.model,
+        messages: [{ role: "system", content: "Spinoff canon refusal fixture." }],
+        evidenceBookDir,
+      });
+      invocationId = prepared.trace.invocationId;
+      const error = new Error("request refused by provider content policy");
+      await writeFictionContentInvocationOutcome({
+        projectRoot: ctx.projectRoot,
+        prepared,
+        error,
+      });
+      throw error;
+    });
+
+    try {
+      await expect(
+        runner.initSpinoffBook(book, parentBookId, "Tell the archivist's side story."),
+      ).rejects.toThrow("request refused by provider content policy");
+      await expect(stat(state.bookDir(bookId))).rejects.toThrow();
+
+      const failedDir = await locateQuarantinedBook(root, bookId);
+      expect(basename(evidenceBookDir)).toBe(basename(failedDir));
+      await expect(readFile(join(failedDir, "book.json"), "utf8")).resolves.toContain(bookId);
+      const outcome = JSON.parse(await readFile(
+        join(failedDir, "story", "runtime", "fiction-content-neutral", "outcomes", `${invocationId}.json`),
+        "utf8",
+      )) as { status: string };
+      expect(outcome.status).toBe("provider-refused");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps generic spinoff direction as creative context without auto-granting BookRules authority", async () => {
+    const { root, runner, state, bookId: parentBookId } = await createRunnerFixture();
+    await makeBookDiscoverable(state, parentBookId);
+    const bookId = "spinoff-context-only";
+    const now = "2026-08-27T12:07:00.000Z";
+    const book: BookConfig = {
+      id: bookId,
+      title: "Spinoff Context Only",
+      platform: "tomato",
+      genre: "xuanhuan",
+      status: "outlining",
+      targetChapters: 10,
+      chapterWordCount: 3000,
+      createdAt: now,
+      updatedAt: now,
+    };
+    vi.spyOn(BookBoundCompletionAgent.prototype, "complete").mockResolvedValue({
+      content: "# Parent Canon\n",
+      usage: ZERO_USAGE,
+    });
+    const generateFoundation = vi.spyOn(
+      ArchitectAgent.prototype,
+      "generateFoundation",
+    ).mockResolvedValue({
+      storyBible: "# Story Bible\n",
+      volumeOutline: "# Volume Outline\n",
+      bookRules: "---\nversion: \"1.0\"\n---\n\n# Book Rules\n",
+      currentState: "# Current State\n",
+      pendingHooks: "# Pending Hooks\n",
+    });
+
+    try {
+      await runner.initSpinoffBook(
+        book,
+        parentBookId,
+        "Tell the archivist's side story and make the archive fireproof.",
+      );
+
+      expect(generateFoundation).toHaveBeenCalledWith(
+        book,
+        expect.stringContaining("archive fireproof"),
+        undefined,
+        { bookRuleAuthoritySources: [] },
+      );
+      await expect(readFile(join(state.bookDir(bookId), "book.json"), "utf8"))
+        .resolves.toContain(bookId);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines a fully staged imitation Book when mandatory style input fails", async () => {
+    const { root, runner, state } = await createRunnerFixture();
+    const bookId = "imitation-init-invalid-style";
+    const now = "2026-08-27T12:10:00.000Z";
+    const book: BookConfig = {
+      id: bookId,
+      title: "Imitation Init Invalid Style",
+      platform: "tomato",
+      genre: "xuanhuan",
+      status: "outlining",
+      targetChapters: 10,
+      chapterWordCount: 3000,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let invocationId = "";
+    let evidenceBookDir = "";
+    vi.spyOn(ArchitectAgent.prototype, "generateFoundation").mockImplementation(async function (
+      this: ArchitectAgent,
+    ) {
+      const ctx = (this as unknown as {
+        ctx: {
+          projectRoot: string;
+          bookId?: string;
+          model: string;
+          fictionContentStage?: string;
+          fictionContentEvidenceBookDir?: string;
+        };
+      }).ctx;
+      evidenceBookDir = ctx.fictionContentEvidenceBookDir!;
+      expect(basename(evidenceBookDir)).toMatch(new RegExp(`^\\.tmp-book-create-${bookId}-`));
+      const prepared = await prepareFictionContentInvocation({
+        projectRoot: ctx.projectRoot,
+        bookId: ctx.bookId!,
+        agentName: "architect",
+        stage: ctx.fictionContentStage ?? "architect",
+        model: ctx.model,
+        messages: [{ role: "system", content: "Imitation foundation fixture." }],
+        evidenceBookDir,
+      });
+      invocationId = prepared.trace.invocationId;
+      await writeFictionContentInvocationOutcome({
+        projectRoot: ctx.projectRoot,
+        prepared,
+        output: "imitation foundation completed",
+      });
+      return {
+        storyBible: "# Story Bible\n",
+        volumeOutline: "# Volume Outline\n",
+        bookRules: "---\nversion: \"1.0\"\n---\n\n# Book Rules\n",
+        currentState: "# Current State\n",
+        pendingHooks: "# Pending Hooks\n",
+      };
+    });
+
+    try {
+      await expect(
+        runner.initImitationBook(book, "   ", "An original harbor succession story."),
+      ).rejects.toThrow("Reference text is required for style extraction");
+      await expect(stat(state.bookDir(bookId))).rejects.toThrow();
+
+      const failedDir = await locateQuarantinedBook(root, bookId);
+      expect(basename(evidenceBookDir)).toBe(basename(failedDir));
+      await expect(readFile(join(failedDir, "book.json"), "utf8")).resolves.toContain(bookId);
+      await expect(readFile(join(failedDir, "story", "story_bible.md"), "utf8"))
+        .resolves.toContain("Story Bible");
+      const outcome = JSON.parse(await readFile(
+        join(failedDir, "story", "runtime", "fiction-content-neutral", "outcomes", `${invocationId}.json`),
+        "utf8",
+      )) as { status: string };
+      expect(outcome.status).toBe("completed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the exact sanitized chapter path committed by Writer.saveChapter", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        title: "Bad / Title:*?",
+        content: "The committed draft body.",
+        wordCount: "The committed draft body.".length,
+      }),
+    );
+
+    try {
+      const result = await runner.writeDraft(bookId);
+      const expectedPath = join(state.bookDir(bookId), "chapters", "0001_Bad_Title.md");
+
+      expect(result.filePath).toBe(expectedPath);
+      await expect(readFile(result.filePath, "utf8")).resolves.toContain("The committed draft body.");
+      expect((await readdir(join(state.bookDir(bookId), "chapters"))).filter(
+        (file) => file.endsWith(".md"),
+      )).toEqual(["0001_Bad_Title.md"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not prewrite a chapter before Writer.saveChapter succeeds", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        title: "Must Not Leak",
+        content: "This body must not appear before the atomic writer commit.",
+        wordCount: "This body must not appear before the atomic writer commit.".length,
+      }),
+    );
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockRejectedValue(
+      new Error("atomic chapter commit failed"),
+    );
+
+    try {
+      await expect(runner.writeDraft(bookId)).rejects.toThrow("atomic chapter commit failed");
+      expect((await readdir(join(state.bookDir(bookId), "chapters"))).filter(
+        (file) => file.endsWith(".md"),
+      )).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back draft chapter, truth, index, and book status when activation fails after persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const book = await state.loadBookConfig(bookId);
+    const originalState = "# Current State\n\nBefore the draft.\n";
+    const originalHooks = "# Pending Hooks\n\nBefore the draft.\n";
+    await Promise.all([
+      state.saveBookConfig(bookId, { ...book, status: "outlining" }),
+      writeFile(join(storyDir, "current_state.md"), originalState, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), originalHooks, "utf-8"),
+    ]);
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        title: "Must Roll Back",
+        content: "This draft must not survive the late failure.",
+        wordCount: "This draft must not survive the late failure.".length,
+        updatedState: "mutated state",
+        updatedHooks: "mutated hooks",
+      }),
+    );
+    vi.spyOn(StateManager.prototype, "saveBookConfig").mockRejectedValueOnce(
+      new Error("injected activation failure"),
+    );
+
+    try {
+      await expect(runner.writeDraft(bookId)).rejects.toThrow("injected activation failure");
+
+      expect((await readdir(join(bookDir, "chapters"))).filter((file) => file.endsWith(".md"))).toEqual([]);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(originalState);
+      await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe(originalHooks);
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([]);
+      await expect(state.loadBookConfig(bookId)).resolves.toMatchObject({ status: "outlining" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back a revised body, live truth, index, and revision archive when index persistence fails", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "The old chapter body stays canonical.";
+    const revisedBody = "The revised chapter body must be rolled back.";
+    const originalState = "# Current State\n\nOld canonical state.\n";
+    const originalHooks = "# Pending Hooks\n\nOld canonical hook.\n";
+    const chapterPath = join(chaptersDir, "0001_Test_Chapter.md");
+    const lengthSpec = buildLengthSpec(revisedBody.length, "zh");
+    const originalEntry: ChapterMeta = {
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: ["[critical] old issue"],
+      lengthWarnings: [],
+      lengthTelemetry: {
+        target: lengthSpec.target,
+        softMin: lengthSpec.softMin,
+        softMax: lengthSpec.softMax,
+        hardMin: lengthSpec.hardMin,
+        hardMax: lengthSpec.hardMax,
+        countingMode: lengthSpec.countingMode,
+        writerCount: originalBody.length,
+        postWriterNormalizeCount: originalBody.length,
+        postReviseCount: 0,
+        finalCount: originalBody.length,
+        normalizeApplied: false,
+        lengthWarning: false,
+      },
+    };
+    await Promise.all([
+      writeFile(chapterPath, `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), originalState, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), originalHooks, "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [originalEntry]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValueOnce(createAuditResult({
+        passed: false,
+        issues: [CRITICAL_ISSUE],
+        summary: "needs revision",
+      }))
+      .mockResolvedValueOnce(createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }));
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: "mutated state",
+        updatedHooks: "mutated hooks",
+      }),
+    );
+    vi.spyOn(StateManager.prototype, "saveChapterIndex").mockRejectedValueOnce(
+      new Error("injected revision index failure"),
+    );
+
+    try {
+      await expect(runner.reviseDraft(bookId, 1)).rejects.toThrow("injected revision index failure");
+
+      await expect(readFile(chapterPath, "utf-8"))
+        .resolves.toBe(`# 第1章 Test Chapter\n\n${originalBody}`);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(originalState);
+      await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe(originalHooks);
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([originalEntry]);
+      await expect(listChapterVersions(bookDir, 1)).resolves.toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
 
   it("routes writeDraft through planner and composer in v2 mode", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
@@ -1822,6 +2434,62 @@ describe("PipelineRunner", () => {
         chapter: 1,
       }));
       expect(writeInput?.contextPackage?.selectedContext.length).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves pending_hooks bytes unchanged when final operation sealing fails", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const pendingHooksPath = join(state.bookDir(bookId), "story", "pending_hooks.md");
+    const summariesPath = join(state.bookDir(bookId), "story", "chapter_summaries.md");
+    const pendingHooksBefore = [
+      "| hook_id | start_chapter | type | status | last_advanced | expected_payoff | payoff_timing | depends_on | pays_off_in_arc | core_hook | half_life | promoted | notes |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| hook-seal | 1 | mystery | open | 2 | Reveal the ledger | mid-arc | none |  | false | 30 | false | Must not mutate before seal |",
+      "",
+    ].join("\n");
+    await Promise.all([
+      writeFile(pendingHooksPath, pendingHooksBefore, "utf8"),
+      writeFile(summariesPath, [
+        "| chapter | title | characters | events | stateChanges | hookActivity | mood | chapterType |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 1 | One | Lin | Event | State | hook-seal advanced | tense | setup |",
+        "| 2 | Two | Lin | Event | State | hook-seal advanced | tense | setup |",
+        "",
+      ].join("\n"), "utf8"),
+    ]);
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(createWriterOutput({
+      chapterNumber: 1,
+      content: "Operation sealing must finish before truth changes.",
+      wordCount: 51,
+      updatedHooks: pendingHooksBefore,
+    }));
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "clean" }),
+    );
+    vi.spyOn(StateValidatorAgent.prototype, "validate").mockImplementation(async () => {
+      const prepared = await prepareFictionContentInvocation({
+        projectRoot: root,
+        bookId,
+        agentName: "late-state-validator",
+        stage: "auditor",
+        model: "test-model",
+        messages: [{ role: "system", content: "Late validation fixture." }],
+      });
+      await writeFictionContentInvocationOutcome({
+        projectRoot: root,
+        prepared,
+        error: new Error("request refused by provider content policy"),
+      });
+      return { warnings: [], passed: true };
+    });
+
+    try {
+      await expect(runner.writeNextChapter(bookId)).rejects.toThrow(/provider-refused/i);
+      expect(await readFile(pendingHooksPath, "utf8")).toBe(pendingHooksBefore);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3666,8 +4334,85 @@ describe("PipelineRunner", () => {
     expect(savedIndex[0]?.status).toBe("ready-for-review");
     expect(savedIndex[0]?.auditIssues).toEqual([]);
     expect(savedIndex[0]?.reviewNote).toBeUndefined();
+    await expect(loadOperationManifests(root, bookId)).resolves.toEqual([
+      expect.objectContaining({
+        operationKind: "repair-chapter-state",
+        chapterNumber: 1,
+      }),
+    ]);
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("rolls back repaired chapter truth, index, and snapshot when repair index persistence fails", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chapterPath = join(bookDir, "chapters", "0001_Broken_Persistence.md");
+    const originalBody = "# 第1章 Broken Persistence\n\nOriginal canonical body.";
+    const originalState = "stable state";
+    const originalHooks = "stable hooks";
+    const originalLedger = "stable ledger";
+    const originalEntry: ChapterMeta = {
+      number: 1,
+      title: "Broken Persistence",
+      status: "state-degraded",
+      wordCount: 23,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: ["[warning] settlement failed"],
+      lengthWarnings: [],
+      reviewNote: JSON.stringify({
+        kind: "state-degraded",
+        baseStatus: "ready-for-review",
+        injectedIssues: ["[warning] settlement failed"],
+      }),
+    };
+    await Promise.all([
+      writeFile(chapterPath, originalBody, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), originalState, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), originalHooks, "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      state.saveChapterIndex(bookId, [originalEntry]),
+    ]);
+    vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    ).mockResolvedValue(createWriterOutput({
+      chapterNumber: 1,
+      title: "Broken Persistence",
+      content: "Mutated body must roll back.",
+      updatedState: "mutated state",
+      updatedHooks: "mutated hooks",
+      updatedLedger: "mutated ledger",
+    }));
+    vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({
+      passed: true,
+      warnings: [],
+    });
+    vi.spyOn(StateManager.prototype, "saveChapterIndex").mockRejectedValueOnce(
+      new Error("injected repair index failure"),
+    );
+
+    try {
+      await expect(runner.repairChapterState(bookId, 1))
+        .rejects.toThrow("injected repair index failure");
+      await expect(readFile(chapterPath, "utf-8")).resolves.toBe(originalBody);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(originalState);
+      await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe(originalHooks);
+      await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).resolves.toBe(originalLedger);
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([originalEntry]);
+      await expect(stat(join(storyDir, "snapshots", "1", "current_state.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(join(storyDir, "snapshots", "1", "state", "manifest.json")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("syncs the latest edited chapter body back into truth files without requiring state-degraded status", async () => {
@@ -3784,6 +4529,12 @@ describe("PipelineRunner", () => {
       }
     ).resyncChapterArtifacts(bookId, 1);
     const savedIndex = await state.loadChapterIndex(bookId);
+    await expect(loadOperationManifests(root, bookId)).resolves.toEqual([
+      expect.objectContaining({
+        operationKind: "resync-chapter-artifacts",
+        chapterNumber: 1,
+      }),
+    ]);
 
     const expectedWordCount = countChapterLength(editedBody, "zh_chars");
     expect(result.status).toBe("drafted");
@@ -3842,6 +4593,72 @@ describe("PipelineRunner", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("rolls back resynced chapter truth, index, and snapshot when resync index persistence fails", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chapterPath = join(bookDir, "chapters", "0001_Manual_Edit.md");
+    const originalBody = "# 第1章 Manual Edit\n\nOwner-edited canonical body.";
+    const originalState = "stable state";
+    const originalHooks = "stable hooks";
+    const originalLedger = "stable ledger";
+    const originalEntry: ChapterMeta = {
+      number: 1,
+      title: "Manual Edit",
+      status: "approved",
+      wordCount: 21,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    };
+    await Promise.all([
+      writeFile(chapterPath, originalBody, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), originalState, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), originalHooks, "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      state.saveChapterIndex(bookId, [originalEntry]),
+    ]);
+    vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    ).mockResolvedValue(createWriterOutput({
+      chapterNumber: 1,
+      title: "Manual Edit",
+      content: "Mutated resync body must roll back.",
+      updatedState: "resynced state",
+      updatedHooks: "resynced hooks",
+      updatedLedger: "resynced ledger",
+    }));
+    vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({
+      passed: true,
+      warnings: [],
+    });
+    vi.spyOn(StateManager.prototype, "saveChapterIndex").mockRejectedValueOnce(
+      new Error("injected resync index failure"),
+    );
+
+    try {
+      await expect(runner.resyncChapterArtifacts(bookId, 1))
+        .rejects.toThrow("injected resync index failure");
+      await expect(readFile(chapterPath, "utf-8")).resolves.toBe(originalBody);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(originalState);
+      await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe(originalHooks);
+      await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).resolves.toBe(originalLedger);
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([originalEntry]);
+      await expect(stat(join(storyDir, "snapshots", "1", "current_state.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(join(storyDir, "snapshots", "1", "state", "manifest.json")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("still persists the chapter when the state validator appends markdown after a valid JSON verdict", async () => {
@@ -4030,6 +4847,78 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("rolls back one resumed import chapter when a late fact-history write fails", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const book = await state.loadBookConfig(bookId);
+    const originalState = "# Current State\n\nBefore resumed import.\n";
+    const originalHooks = "# Pending Hooks\n\nBefore resumed import.\n";
+    const originalLedger = "# Particle Ledger\n\nBefore resumed import.\n";
+    const originalEntry: ChapterMeta = {
+      number: 1,
+      title: "Existing",
+      status: "imported",
+      wordCount: 2,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    };
+    await makeBookDiscoverable(state, bookId);
+    await Promise.all([
+      state.saveBookConfig(bookId, { ...book, status: "outlining" }),
+      state.saveChapterIndex(bookId, [originalEntry]),
+      writeFile(join(bookDir, "chapters", "0001_Existing.md"), "# Chapter 1\n\nExisting body.", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), originalState, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), originalHooks, "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+    ]);
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        chapterNumber: 2,
+        title: "Must Roll Back",
+        content: "Second imported body.",
+        wordCount: "Second imported body.".length,
+        updatedState: "mutated import state",
+        updatedHooks: "mutated import hooks",
+        updatedLedger: "mutated import ledger",
+      }),
+    );
+    vi.spyOn(
+      runner as unknown as {
+        syncCurrentStateFactHistory: (bookId: string, chapterNumber: number) => Promise<void>;
+      },
+      "syncCurrentStateFactHistory",
+    ).mockRejectedValueOnce(new Error("injected import fact-history failure"));
+
+    try {
+      await expect(runner.importChapters({
+        bookId,
+        resumeFrom: 2,
+        chapters: [
+          { title: "Existing", content: "Existing body." },
+          { title: "Must Roll Back", content: "Second imported body." },
+        ],
+      })).rejects.toThrow("injected import fact-history failure");
+      expect((await readdir(join(bookDir, "chapters"))).filter((file) => file.startsWith("0002")))
+        .toEqual([]);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(originalState);
+      await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe(originalHooks);
+      await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).resolves.toBe(originalLedger);
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual([originalEntry]);
+      await expect(state.loadBookConfig(bookId)).resolves.toMatchObject({ status: "outlining" });
+      await expect(stat(join(storyDir, "snapshots", "2", "current_state.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(join(storyDir, "snapshots", "2", "state", "manifest.json")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("stops a resumed import at the active Arc endpoint and leaves closeout evidence", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
@@ -4166,6 +5055,12 @@ describe("PipelineRunner", () => {
     expect(chapterFiles).not.toContain("0002_旧标题.md");
     expect(savedIndex[1]?.wordCount).toBe(expectedCount);
     expect(savedIndex[1]?.title).toBe("河灯还亮着");
+    await expect(loadOperationManifests(root, bookId)).resolves.toEqual([
+      expect.objectContaining({
+        operationKind: "import-chapter",
+        chapterNumber: 2,
+      }),
+    ]);
 
     await rm(root, { recursive: true, force: true });
   });
@@ -4186,11 +5081,13 @@ describe("PipelineRunner", () => {
       updatedAt: now,
     };
 
-    vi.spyOn(runner, "importFanficCanon").mockImplementation(async (targetBookId) => {
-      const storyDir = join(state.bookDir(targetBookId), "story");
-      await mkdir(storyDir, { recursive: true });
-      await writeFile(join(storyDir, "fanfic_canon.md"), "# Fanfic Canon\n", "utf-8");
-      return "# Fanfic Canon\n";
+    vi.spyOn(FanficCanonImporter.prototype, "importFromText").mockResolvedValue({
+      worldRules: "",
+      characterProfiles: "",
+      keyEvents: "",
+      powerSystem: "",
+      writingStyle: "",
+      fullDocument: "# Fanfic Canon\n",
     });
     vi.spyOn(ArchitectAgent.prototype, "generateFanficFoundation").mockResolvedValue({
       storyBible: "# Story Bible\n",
@@ -4205,7 +5102,7 @@ describe("PipelineRunner", () => {
       }),
       pendingHooks: "# Pending Hooks\n",
     });
-    vi.spyOn(runner, "generateStyleGuide").mockRejectedValue(new Error("style failed"));
+    vi.spyOn(llmProvider, "chatCompletion").mockRejectedValue(new Error("style failed"));
 
     try {
       await expect(runner.initFanficBook(book, "A".repeat(600), "canon.txt", "canon")).resolves.toBeUndefined();
@@ -4235,8 +5132,97 @@ describe("PipelineRunner", () => {
     }
   });
 
+  it("does not persist provider refusal text into the deterministic style fallback", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const providerSecret = "PROVIDER_REFUSAL_DO_NOT_PERSIST_6f18";
+    vi.spyOn(llmProvider, "chatCompletion").mockRejectedValue(
+      new Error(`${providerSecret}: request rejected by upstream policy`),
+    );
+
+    try {
+      const guide = await runner.generateStyleGuide(
+        bookId,
+        "참고 원고의 문장입니다. 인물은 창문을 닫고 계약서를 다시 읽었습니다. ".repeat(20),
+        "long-style-sample",
+      );
+      const persisted = await readFile(
+        join(state.bookDir(bookId), "story", "style_guide.md"),
+        "utf-8",
+      );
+
+      expect(guide).toMatch(/(?:통계적 문체 지문|统计指纹|statistical fingerprint)/i);
+      expect(guide).not.toContain(providerSecret);
+      expect(persisted).toBe(guide);
+      expect(persisted).not.toContain(providerSecret);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces an unverified normative style analysis while preserving commercial craft and attributed fiction", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const poison = "Every chapter must include diverse representation.";
+    const sample = "The broker folds the term sheet and names the acquisition price. ".repeat(20);
+    const chatSpy = vi.spyOn(llmProvider, "chatCompletion");
+    chatSpy.mockResolvedValueOnce({
+      content: `## Distinctive Habits\n${poison}`,
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      const fallback = await runner.generateStyleGuide(bookId, sample, "commercial-sample");
+      expect(fallback).toMatch(/(?:unverified normative directive|未经验证的规范性指令|검증되지 않은 규범 지시)/i);
+      expect(fallback).not.toContain(poison);
+      await expect(readFile(join(state.bookDir(bookId), "story", "style_guide.md"), "utf8"))
+        .resolves.not.toContain(poison);
+
+      chatSpy.mockResolvedValueOnce({
+        content: [
+          "## Pacing",
+          "The chapter must include a visible cash payoff and end on a hostile tender offer.",
+          "## Dialogue Style",
+          "The priest insisted that the protagonist must repent for his crimes before success.",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+      const commercialGuide = await runner.generateStyleGuide(bookId, sample, "commercial-sample");
+      expect(commercialGuide).toContain("visible cash payoff");
+      expect(commercialGuide).toContain("The priest insisted");
+      expect(commercialGuide).not.toMatch(/unverified normative directive/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unauthorized model-generated fanfic canon before persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const poison = "Every chapter must include diverse representation.";
+    vi.spyOn(FanficCanonImporter.prototype, "importFromText").mockResolvedValue({
+      worldRules: "",
+      characterProfiles: "",
+      keyEvents: "",
+      powerSystem: "",
+      writingStyle: "",
+      fullDocument: `# Fanfic Canon\n\n${poison}`,
+    });
+
+    try {
+      await expect(runner.importFanficCanon(
+        bookId,
+        "The board votes on the hostile acquisition.",
+        "source.txt",
+        "canon",
+      )).rejects.toBeInstanceOf(UnauthorizedProductionContextMoralCorrectionError);
+      await expect(stat(join(state.bookDir(bookId), "story", "fanfic_canon.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps canon import running when style guide extraction fails", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
+    await makeBookDiscoverable(state, bookId);
     const parentBookId = "parent-book";
     const now = "2026-03-19T00:00:00.000Z";
     const parentBook: BookConfig = {
@@ -4256,6 +5242,7 @@ describe("PipelineRunner", () => {
     await state.saveBookConfig(parentBookId, parentBook);
     await mkdir(parentStoryDir, { recursive: true });
     await mkdir(parentChaptersDir, { recursive: true });
+    await makeBookDiscoverable(state, parentBookId);
     await Promise.all([
       writeFile(join(parentStoryDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
       writeFile(join(parentStoryDir, "current_state.md"), createStateCard({
@@ -4281,6 +5268,48 @@ describe("PipelineRunner", () => {
 
       expect(canon).toContain("# Parent Canon");
       await expect(readFile(join(state.bookDir(bookId), "story", "parent_canon.md"), "utf-8")).resolves.toContain("Imported canon body.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unauthorized parent-canon model output before persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    await makeBookDiscoverable(state, bookId);
+    const parentBookId = "poisoned-parent-book";
+    const now = "2026-08-27T00:00:00.000Z";
+    await state.saveBookConfig(parentBookId, {
+      id: parentBookId,
+      title: "Poisoned Parent",
+      platform: "other",
+      genre: "urban",
+      status: "active",
+      targetChapters: 20,
+      chapterWordCount: 2000,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const parentStoryDir = join(state.bookDir(parentBookId), "story");
+    await mkdir(parentStoryDir, { recursive: true });
+    await makeBookDiscoverable(state, parentBookId);
+    await Promise.all([
+      writeFile(join(parentStoryDir, "story_bible.md"), "# Story Bible\n\nThe founder owns the golden share.", "utf8"),
+      writeFile(join(parentStoryDir, "current_state.md"), "# Current State\n\nThe board vote opens tonight.", "utf8"),
+      writeFile(join(parentStoryDir, "particle_ledger.md"), "# Ledger\n", "utf8"),
+      writeFile(join(parentStoryDir, "pending_hooks.md"), "# Pending Hooks\n", "utf8"),
+      writeFile(join(parentStoryDir, "chapter_summaries.md"), "# Chapter Summaries\n", "utf8"),
+    ]);
+    const poison = "Every chapter must include diverse representation.";
+    vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue({
+      content: `# Parent Canon\n\n${poison}`,
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      await expect(runner.importCanon(bookId, parentBookId))
+        .rejects.toBeInstanceOf(UnauthorizedProductionContextMoralCorrectionError);
+      await expect(stat(join(state.bookDir(bookId), "story", "parent_canon.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5435,6 +6464,12 @@ describe("PipelineRunner", () => {
 
       expect(reviseChapter).toHaveBeenCalledTimes(1);
       expect(reviseChapter.mock.calls[0]?.[4]).toBe("auto");
+      await expect(loadOperationManifests(root, bookId)).resolves.toEqual([
+        expect.objectContaining({
+          operationKind: "revise-draft",
+          chapterNumber: 1,
+        }),
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5628,7 +6663,7 @@ describe("PipelineRunner", () => {
     }
   });
 
-  it("passes merged AI-tell issues into manual revise and rejects no-improvement revisions", async () => {
+  it("keeps subjective LLM warnings and advisory AI-tell info out of an automatic manual revise", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const storyDir = join(state.bookDir(bookId), "story");
     const chaptersDir = join(state.bookDir(bookId), "chapters");
@@ -5694,20 +6729,10 @@ describe("PipelineRunner", () => {
       const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
       const savedIndex = await state.loadChapterIndex(bookId);
 
-      expect(reviseChapter).toHaveBeenCalledTimes(1);
-      expect(reviseChapter.mock.calls[0]?.[3]).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ category: "节奏" }),
-        ]),
-      );
-      expect(reviseChapter.mock.calls[0]?.[3]).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ category: "列表式结构", severity: "info" }),
-        ]),
-      );
+      expect(reviseChapter).not.toHaveBeenCalled();
       expect(result.applied).toBe(false);
       expect(result.status).toBe("unchanged");
-      expect(result.skippedReason).toContain("Manual revision kept original chapter");
+      expect(result.skippedReason).toContain("No creative critical issue requires revision");
       expect(savedChapter).toContain(originalBody);
       expect(savedChapter).not.toContain("修订后收束更利落");
       expect(savedIndex[0]?.status).toBe("ready-for-review");
@@ -5797,7 +6822,7 @@ describe("PipelineRunner", () => {
     );
 
     try {
-      const result = await runner.reviseDraft(bookId, 1);
+      const result = await runner.reviseDraft(bookId, 1, "rework");
       const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
       const savedIndex = await state.loadChapterIndex(bookId);
 
@@ -6026,7 +7051,7 @@ describe("PipelineRunner", () => {
       .mockResolvedValueOnce(createAuditResult({ passed: false, issues: [GATE_WARNING_ISSUE], summary: "still weak" }));
 
     try {
-      const result = await runner.reviseDraft(bookId, 1);
+      const result = await runner.reviseDraft(bookId, 1, "rework");
       const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
 
       expect(result.applied).toBe(true);
@@ -6049,7 +7074,7 @@ describe("PipelineRunner", () => {
       }));
 
     try {
-      const result = await runner.reviseDraft(bookId, 1);
+      const result = await runner.reviseDraft(bookId, 1, "rework");
       const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
 
       expect(result.applied).toBe(false);
@@ -6074,7 +7099,7 @@ describe("PipelineRunner", () => {
       }));
 
     try {
-      const result = await runner.reviseDraft(bookId, 1);
+      const result = await runner.reviseDraft(bookId, 1, "rework");
       const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
       const savedIndex = await state.loadChapterIndex(bookId);
 
@@ -6410,7 +7435,7 @@ describe("PipelineRunner", () => {
     );
 
     try {
-      const result = await runner.reviseDraft(bookId, 2);
+      const result = await runner.reviseDraft(bookId, 2, "rework");
       const savedIndex = await state.loadChapterIndex(bookId);
 
       expect(auditChapter).toHaveBeenCalledTimes(2);
@@ -6422,6 +7447,76 @@ describe("PipelineRunner", () => {
       await rm(root, { recursive: true, force: true });
     }
   }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
+
+  it("separates publication compatibility from manual creative and revision gates", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      inputGovernanceMode: "legacy",
+    });
+    const bookDir = state.bookDir(bookId);
+    const chaptersDir = join(bookDir, "chapters");
+    const chapterContent = "旧报纸提到法轮功，卷宗记着强奸与肢解，但林越只把编号抄进自己的账本。";
+    const now = "2026-08-27T10:00:00.000Z";
+
+    await Promise.all([
+      writeFile(
+        join(chaptersDir, "0001_旧报.md"),
+        `# 第1章 旧报\n\n${chapterContent}`,
+        "utf-8",
+      ),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "旧报",
+        status: "drafted",
+        wordCount: chapterContent.length,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      }]),
+    ]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        creativePassed: true,
+        issues: [],
+        summary: "commercially effective scene",
+        overallScore: 94,
+      }),
+    );
+    const reviseChapter = vi.spyOn(ReviserAgent.prototype, "reviseChapter");
+    reviseChapter.mockClear();
+
+    try {
+      const revision = await runner.reviseDraft(bookId, 1);
+      const result = await runner.auditDraft(bookId, 1);
+      const [savedChapter] = await state.loadChapterIndex(bookId);
+      const savedContent = await readFile(join(chaptersDir, "0001_旧报.md"), "utf-8");
+
+      expect(revision).toMatchObject({ applied: false, status: "unchanged" });
+      expect(reviseChapter).not.toHaveBeenCalled();
+      expect(savedContent).toContain(chapterContent);
+      expect(result.passed).toBe(true);
+      expect(result.creativePassed).toBe(true);
+      expect(result.overallScore).toBe(94);
+      expect(result.issues).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ category: "发布兼容性" }),
+      ]));
+      expect(result.publicationCompatibility).toMatchObject({
+        track: "publication-compatibility",
+        found: expect.arrayContaining([
+          expect.objectContaining({ word: "法轮功", severity: "block" }),
+          expect.objectContaining({ word: "强奸", severity: "warn" }),
+          expect.objectContaining({ word: "肢解", severity: "warn" }),
+        ]),
+      });
+      expect(savedChapter?.status).toBe("ready-for-review");
+      expect(savedChapter?.auditIssues).not.toEqual(expect.arrayContaining([
+        expect.stringContaining("发布兼容性"),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it("excludes pure sequence-level fatigue from revision blocker counts", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
@@ -6480,7 +7575,7 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("keeps chapter-level blockers even when sequence-level fatigue shares the same category label", async () => {
+  it("keeps a subjective chapter warning visible without turning it into a blocker", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const bookDir = state.bookDir(bookId);
     const storyDir = join(bookDir, "story");
@@ -6536,7 +7631,7 @@ describe("PipelineRunner", () => {
     });
 
     expect(result.auditResult.issues.filter((issue) => issue.category === "节奏单调")).toHaveLength(2);
-    expect(result.blockingCount).toBe(1);
+    expect(result.blockingCount).toBe(0);
     expect(result.criticalCount).toBe(0);
 
     await rm(root, { recursive: true, force: true });

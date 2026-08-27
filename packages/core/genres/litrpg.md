@@ -15,20 +15,20 @@ auditDimensions: [1,2,3,4,5,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 ## Genre Prohibitions
 
 - System rules changing arbitrarily after being established — readers track every number
-- Unexplained power jumps — growth must follow established system logic
+- Power jumps that contradict established system logic; a clean grant, inheritance, or starting advantage is valid when the system and premise support it
 - "Blue Box Madness" — stat dumps every chapter or pages-long stat sheets
-- Instant mastery — acquiring a skill and immediately excelling at it
-- Overpowered MC from the start — removes all tension
+- Accidental instant mastery that erases the promised play pattern; immediate excellence is valid when it is the intended power fantasy and the system explains it
+- An overpowered start presented as an underdog story by mistake; dominant play is valid when status, optimization, discovery, or spectacle carries the appeal
 - System message overload interrupting action scenes
-- Female characters reduced to "perfect girlfriend" or "sickly daughter" tropes
+- Side characters discard established goals, knowledge, or competence only to hand the protagonist a win, reward, or exposition
 
 ## System Design Rules
 
 - Once stats, skills, and system rules are established, they cannot be contradicted
 - Stat blocks punctuate achievement moments, not routine actions
 - Derivative stats (HP, Mana) must depend logically on primary stats
-- Skill unlocks must feel earned — tied to risk, sacrifice, or problem-solving
-- Same-type resource absorption must show diminishing returns, not flat gains
+- Skill unlocks need a legible system cause: risk, effort, problem-solving, inheritance, purchase, discovery, or an explicitly clean grant can all work
+- Same-type resource absorption follows the established rule; do not invent diminishing returns merely to tax a successful strategy
 - System UI (blue boxes) appears after action/revelation, never mid-combat
 - Give the system a consistent voice/personality — formal, archaic, playful, or clinical
 
@@ -37,7 +37,7 @@ auditDimensions: [1,2,3,4,5,6,7,8,9,10,13,14,15,16,17,18,19,24,25,26]
 - Chapter length sweet spot: 2.8k-3.5k words depending on stat density
 - Possible chapter shape: action/exploration -> meaningful system interaction -> visible result, aftermath, clean settlement, or natural next pressure. Do not force every chapter through this sequence
 - Early diagnostic: readers should recognize meaningful progress or usable system value often enough to trust the premise, but every chapter need not level up
-- Mid-story diagnostic: gains may take longer and should feel harder-earned; other visible payoffs can carry chapters between advances
-- Late story: tier/rank transitions are rare and climactic
-- Test pacing: Book 3 MC decisively defeats Book 1 version, but challenges never feel trivial
+- Mid-story diagnostic: gains may take longer when scale or canon earns that shift; other visible payoffs can carry chapters between advances
+- Late story: tier/rank transitions can be rare and climactic, or remain fast when speed is the work's core commercial promise
+- Test progression against the work's promise: a later MC should display the intended advantage over the earlier version; challenges may become trivial when domination is itself the payoff
 - Describe stats in narration first (audiobook-friendly), then include stat sheet for detail readers
