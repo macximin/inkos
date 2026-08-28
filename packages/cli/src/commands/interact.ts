@@ -1,4 +1,6 @@
 import { Command } from "commander";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
   PipelineRunner,
   runAgentSession,
@@ -7,6 +9,7 @@ import { buildPipelineConfig, createClient, findProjectRoot, loadConfig } from "
 
 export interface InteractCommandHooks {
   readonly readInput?: () => Promise<string>;
+  readonly readContextFile?: (path: string) => Promise<string>;
 }
 
 async function readInteractionInput(
@@ -52,6 +55,7 @@ export function createInteractCommand(hooks: InteractCommandHooks = {}): Command
     .option("--message <text>", "Explicit natural-language message")
     .option("--book <bookId>", "Bind a specific active book for this interaction")
     .option("--session <sessionId>", "Reuse an agent session id")
+    .option("--context-file <path>", "Read exact owner guidance for a confirmed /write turn")
     .option("--json", "Emit structured JSON for external agents")
     .action(async (messageArgs: ReadonlyArray<string>, opts) => {
       const input = await readInteractionInput(messageArgs, opts.message, hooks.readInput);
@@ -66,6 +70,15 @@ export function createInteractCommand(hooks: InteractCommandHooks = {}): Command
         : !bookId && trimmed === "/create"
           ? "create_book"
           : undefined;
+      const ownerDirectionText = typeof opts.contextFile === "string"
+        ? await (hooks.readContextFile ?? ((path: string) => readFile(resolve(path), "utf8")))(opts.contextFile)
+        : undefined;
+      if (ownerDirectionText !== undefined && !ownerDirectionText.trim()) {
+        throw new Error("--context-file must contain non-empty owner guidance.");
+      }
+      if (ownerDirectionText !== undefined && requestedIntent !== "write_next") {
+        throw new Error("--context-file is only valid with a Book-bound /write interaction.");
+      }
       const sessionKind = bookId
         ? "book"
         : requestedIntent === "create_book"
@@ -84,6 +97,7 @@ export function createInteractCommand(hooks: InteractCommandHooks = {}): Command
         sessionKind,
         actionSource,
         requestedIntent,
+        ownerDirectionText,
         language: config.language ?? "zh",
         pipeline,
         projectRoot,

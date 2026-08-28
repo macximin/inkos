@@ -17,19 +17,21 @@ export const agentCommand = new Command("agent")
       const client = createClient(config);
       const root = findProjectRoot();
       const context = await resolveContext(opts);
-
-      const fullInstruction = context
-        ? `${instruction}\n\n补充信息：${context}`
-        : instruction;
+      if (opts.contextFile && !context?.trim()) {
+        throw new Error("--context-file must contain non-empty owner guidance.");
+      }
 
       const bookId = opts.book ? await resolveBookId(opts.book, root) : null;
-      const trimmed = fullInstruction.trim();
+      const trimmed = instruction.trim();
       const actionSource = trimmed.startsWith("/") ? "slash" : "free-text";
       const requestedIntent = bookId && trimmed === "/write"
         ? "write_next"
         : !bookId && trimmed === "/create"
           ? "create_book"
           : undefined;
+      const fullInstruction = context && requestedIntent !== "write_next"
+        ? `${instruction}\n\n补充信息：${context}`
+        : instruction;
       const sessionKind = bookId
         ? "book"
         : requestedIntent === "create_book"
@@ -48,6 +50,7 @@ export const agentCommand = new Command("agent")
           sessionKind,
           actionSource,
           requestedIntent,
+          ownerDirectionText: requestedIntent === "write_next" ? context : undefined,
           language: config.language ?? "zh",
           pipeline,
           projectRoot: root,

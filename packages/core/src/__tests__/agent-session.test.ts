@@ -254,7 +254,7 @@ vi.mock("@mariozechner/pi-ai", async () => {
                 text: "## 第2章 修改指令\n\n目标：把这一章从润色改成重写，先删掉原来的寒暄，再让主角主动发现账页异常。\n\n执行：保留冷库线索，重写对话，补足动机。".repeat(30),
               },
             ], timestamp)
-        : prompt === "write next" || allUserText.includes("write next")
+        : prompt === "write next" || prompt === "/write" || allUserText.includes("write next")
           ? assistant([
               {
                 type: "toolCall",
@@ -1268,6 +1268,41 @@ describe("runAgentSession cache — bookId switch", () => {
         expect.objectContaining({ role: "toolResult", toolName: "sub_agent" }),
       ]),
     );
+  });
+
+  it("keeps an exact owner direction separate from a visible slash command", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {
+      writeNextChapter: vi.fn(async () => ({
+        chapterNumber: 1,
+        title: "第一章",
+        wordCount: 1200,
+        status: "audit-failed",
+      })),
+    } as any;
+
+    await runAgentSession(
+      {
+        sessionId: "book-separated-owner-direction-session",
+        bookId: "book-a",
+        sessionKind: "book",
+        actionSource: "slash",
+        requestedIntent: "write_next",
+        ownerDirectionText: "  상업 지급을 전면에 둔다.\n",
+        language: "zh",
+        pipeline,
+        projectRoot,
+        model,
+      },
+      "/write",
+    );
+
+    expect((pipeline.writeNextChapter as any).mock.calls[0]?.[3]).toMatchObject({
+      ownerDirection: {
+        source: "owner-confirmed",
+        text: "  상업 지급을 전면에 둔다.\n",
+      },
+    });
   });
 
   it("treats narrative forecast cards as terminal tool answers", () => {

@@ -111,6 +111,46 @@ describe("interact command", () => {
     }));
   });
 
+  it("keeps file-backed owner guidance separate from the slash command", async () => {
+    const command = createInteractCommand({
+      readInput: async () => "",
+      readContextFile: async () => "상업 지급을 전면에 둔다.",
+    });
+
+    await command.parseAsync(["/write", "--book", "harbor", "--context-file", "guidance.md"], { from: "user" });
+
+    expect(runAgentSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookId: "harbor",
+        requestedIntent: "write_next",
+        ownerDirectionText: "상업 지급을 전면에 둔다.",
+      }),
+      "/write",
+    );
+  });
+
+  it("rejects file-backed owner guidance outside a confirmed Book write", async () => {
+    const command = createInteractCommand({
+      readInput: async () => "",
+      readContextFile: async () => "지시",
+    });
+
+    await expect(command.parseAsync(["chat", "--context-file", "guidance.md"], { from: "user" }))
+      .rejects.toThrow("only valid");
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty owner guidance file", async () => {
+    const command = createInteractCommand({
+      readInput: async () => "",
+      readContextFile: async () => "  ",
+    });
+
+    await expect(command.parseAsync(["/write", "--book", "harbor", "--context-file", "empty.md"], { from: "user" }))
+      .rejects.toThrow("non-empty");
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
   it("reads input from the injected stdin helper", async () => {
     const command = createInteractCommand({ readInput: async () => "why did it stop?" });
 

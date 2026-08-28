@@ -120,6 +120,8 @@ export interface AgentSessionConfig {
   requestedIntent?: RequestedIntent;
   /** Structured execution arguments confirmed by the UI/command surface. */
   actionPayload?: ActionPayload;
+  /** Exact owner direction kept separate from the visible slash command. */
+  ownerDirectionText?: string;
   /** User/UI-forced Agent Skills for this turn, e.g. @open-world-play. */
   requestedSkills?: ReadonlyArray<string>;
   /** Agent Skills explicitly disabled for this turn. */
@@ -1710,12 +1712,13 @@ async function runAgentSessionUnlocked(
   }));
   let ownerDirection: OwnerDirectionReference | undefined;
   try {
+    const detachedDirectionText = config.ownerDirectionText ?? userMessage.trim();
     ownerDirection = actionPayload?.writeNext?.ownerDirection
-      ?? (isGovernedBookSession(bookId, sessionKind) && userMessage.trim()
+      ?? (isGovernedBookSession(bookId, sessionKind) && detachedDirectionText.trim()
         ? await createDetachedOwnerDirectionLease({
             projectRoot,
             receiptId: requestId,
-            text: userMessage,
+            text: detachedDirectionText,
           })
         : undefined);
   } catch (error) {
