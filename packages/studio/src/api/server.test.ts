@@ -47,6 +47,7 @@ const playRunnerStepMock = vi.fn();
 const playRunnerCtorArgs: unknown[] = [];
 const generatePlayImageMock = vi.fn();
 const createAndPersistBookSessionMock = vi.fn();
+const loadActiveBookSoulSessionBindingMock = vi.fn();
 const loadBookSessionMock = vi.fn();
 const persistBookSessionMock = vi.fn();
 const appendBookSessionMessageMock = vi.fn();
@@ -536,6 +537,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     createDetachedOwnerDirectionLease: actual.createDetachedOwnerDirectionLease,
     resolveDetachedOwnerDirectionLease: actual.resolveDetachedOwnerDirectionLease,
     assertChapterApprovalReady: actual.assertChapterApprovalReady,
+    loadActiveBookSoulSessionBinding: loadActiveBookSoulSessionBindingMock,
+    sessionSoulBindingsEqual: actual.sessionSoulBindingsEqual,
     isUsablePlayInitialScene: actual.isUsablePlayInitialScene,
     chatCompletion: chatCompletionMock,
     loadProjectConfig: loadProjectConfigMock,
@@ -931,6 +934,8 @@ describe("createStudioServer daemon lifecycle", () => {
       mutation: { eventId: "evt-1", turn: 1, actionKind: "look", summary: "发现常用地址统计。" },
     });
     createAndPersistBookSessionMock.mockReset();
+    loadActiveBookSoulSessionBindingMock.mockReset();
+    loadActiveBookSoulSessionBindingMock.mockResolvedValue(null);
     loadBookSessionMock.mockReset();
     persistBookSessionMock.mockReset();
     appendBookSessionMessageMock.mockReset();
@@ -4362,6 +4367,58 @@ futureAdvantage:
     await expect(response.json()).resolves.toMatchObject({
       session: { sessionId: "fresh-session", bookId: "demo-book", title: null },
     });
+  });
+
+  it("binds a fresh Studio session to the active Soul and rejects a stale session before model use", async () => {
+    const soulBinding = {
+      soulId: "male-modern-fantasy-ko",
+      soulVersion: "v1",
+      bindingSha256: "a".repeat(64),
+    };
+    loadActiveBookSoulSessionBindingMock.mockResolvedValue(soulBinding);
+    createAndPersistBookSessionMock.mockResolvedValueOnce({
+      sessionId: "soul-session",
+      bookId: "demo-book",
+      sessionKind: "book",
+      soulBinding,
+      title: null,
+      messages: [],
+      events: [],
+      draftRounds: [],
+      createdAt: 10,
+      updatedAt: 10,
+    });
+
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const created = await app.request("http://localhost/api/v1/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookId: "demo-book" }),
+    });
+    expect(created.status).toBe(200);
+    expect(createAndPersistBookSessionMock).toHaveBeenCalledWith(
+      root,
+      "demo-book",
+      undefined,
+      "book",
+      { soulBinding },
+    );
+
+    const stale = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "상태 확인",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+      }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      error: { code: "SESSION_SOUL_BINDING_MISMATCH" },
+    });
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it("renames a session through PUT /api/v1/sessions/:sessionId", async () => {

@@ -71,16 +71,8 @@
         "sha256": "d52d7656c87c7e99e50e33bd311f4d85af443466403f98747fa667d4bff5c186"
       },
       {
-        "path": "packages/core/src/skills/builtin-loader.ts",
-        "sha256": "6ecea5918727009c64afa9e6ee546fbc1a5880fea3cb030c67830514b0434e58"
-      },
-      {
         "path": "packages/core/src/agents/length-normalizer.ts",
         "sha256": "80820aacbc542ce922e88da434c4d7b1b97ddab3bb83f8e092c55f4c77f2d339"
-      },
-      {
-        "path": "packages/core/skills/inkos-long-writing/SKILL.md",
-        "sha256": "d674b987b23b64e70b73f8921c857a0e6e71f0715deec64f388902bf8143640f"
       }
     ],
     "deferredUpstreamPaths": [

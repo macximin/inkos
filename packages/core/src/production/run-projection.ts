@@ -175,6 +175,16 @@ function validateRunCorrelation(value: RunCorrelation, ctx: z.RefinementCtx): vo
   ) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["context"], message: "execution context is not bound to this command and attempt" });
   }
+  if (value.context.productionInputs) {
+    const receipt = value.context.productionInputs;
+    if (
+      receipt.externalContextSha256 !== value.command.args.ownerDirectionTextSha256
+      || hashCanonicalJson(value.context.activatedSkills) !== hashCanonicalJson(receipt.skills.map((skill) => skill.id))
+      || hashCanonicalJson(value.command.binding.soulBinding ?? null) !== hashCanonicalJson(receipt.soul?.binding ?? null)
+    ) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["context", "productionInputs"], message: "production input receipt is not bound to this command" });
+    }
+  }
 }
 
 function sha256(bytes: Uint8Array | string): string {

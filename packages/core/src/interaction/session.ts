@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AutomationModeSchema, type AutomationMode } from "./modes.js";
 import { ExecutionStateSchema, InteractionEventSchema, type InteractionEvent } from "./events.js";
 import { assertSafeBookId, isSafeBookId } from "../utils/book-id.js";
+import { SessionSoulBindingSchema, type SessionSoulBinding } from "../production/soul-schema.js";
 
 export const SessionKindSchema = z.enum(["chat", "book-create", "book", "short", "play", "script", "storyboard", "interactive-film", "edit", "interactive-film-authoring", "pitch-slate", "pitch-review"]);
 export type SessionKind = z.infer<typeof SessionKindSchema>;
@@ -112,6 +113,7 @@ export const BookSessionSchema = z.object({
   bookId: z.string().refine(isSafeBookId, "Invalid bookId").nullable(),
   sessionKind: SessionKindSchema.optional(),
   playMode: PlayModeSchema.optional(),
+  soulBinding: SessionSoulBindingSchema.optional(),
   title: z.string().nullable().default(null),
   messages: z.array(InteractionMessageSchema).default([]),
   creationDraft: BookCreationDraftSchema.optional(),
@@ -137,7 +139,7 @@ export function createBookSession(
   bookId: string | null,
   sessionId?: string,
   sessionKind?: SessionKind,
-  options?: { readonly playMode?: PlayMode },
+  options?: { readonly playMode?: PlayMode; readonly soulBinding?: SessionSoulBinding },
 ): BookSession {
   const now = Date.now();
   const safeBookId = bookId === null ? null : assertSafeBookId(bookId);
@@ -146,6 +148,7 @@ export function createBookSession(
     bookId: safeBookId,
     sessionKind,
     ...(options?.playMode ? { playMode: options.playMode } : {}),
+    ...(options?.soulBinding ? { soulBinding: SessionSoulBindingSchema.parse(options.soulBinding) } : {}),
     title: null,
     messages: [],
     draftRounds: [],

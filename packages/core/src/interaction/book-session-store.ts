@@ -1,6 +1,9 @@
 import { readdir, unlink } from "node:fs/promises";
 import { createBookSession } from "./session.js";
 import type { BookSession, PlayMode, SessionKind } from "./session.js";
+import { SessionSoulBindingSchema, type SessionSoulBinding } from "../production/soul-schema.js";
+import { hashCanonical } from "../production/production-input.js";
+import { loadActiveBookSoulSessionBinding } from "../production/book-soul-binding.js";
 import {
   appendTranscriptEvents,
   deriveTranscriptSessionBinding,
@@ -43,9 +46,9 @@ export class SessionAlreadyMigratedError extends Error {
 export class SessionBindingMismatchError extends Error {
   constructor(
     sessionId: string,
-    field: "bookId" | "sessionKind",
-    currentValue: string | null | undefined,
-    requestedValue: string | null | undefined,
+    field: "bookId" | "sessionKind" | "soulBinding",
+    currentValue: unknown,
+    requestedValue: unknown,
   ) {
     super(
       `Session "${sessionId}" ${field} is bound to ${JSON.stringify(currentValue)}, not ${JSON.stringify(requestedValue)}`,
@@ -91,6 +94,14 @@ async function appendSessionCreatedEvent(
           session.sessionKind,
         );
       }
+      if (hashCanonical(binding.soulBinding ?? null) !== hashCanonical(session.soulBinding ?? null)) {
+        throw new SessionBindingMismatchError(
+          session.sessionId,
+          "soulBinding",
+          binding.soulBinding,
+          session.soulBinding,
+        );
+      }
       if (
         (session.sessionKind && !binding.sessionKind)
         || (session.playMode && binding.playMode !== session.playMode)
@@ -117,6 +128,7 @@ async function appendSessionCreatedEvent(
       bookId: session.bookId,
       ...(session.sessionKind ? { sessionKind: session.sessionKind } : {}),
       ...(session.playMode ? { playMode: session.playMode } : {}),
+      ...(session.soulBinding ? { soulBinding: session.soulBinding } : {}),
       title: session.title,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
@@ -131,6 +143,7 @@ async function appendSessionMetadataUpdatedEvent(
     readonly bookId?: string | null;
     readonly sessionKind?: SessionKind;
     readonly playMode?: PlayMode;
+    readonly soulBinding?: SessionSoulBinding;
     readonly title?: string | null;
     readonly updatedAt: number;
   },
@@ -145,6 +158,7 @@ async function appendSessionMetadataUpdatedEvent(
     ...("bookId" in metadata ? { bookId: metadata.bookId } : {}),
     ...(metadata.sessionKind ? { sessionKind: metadata.sessionKind } : {}),
     ...(metadata.playMode ? { playMode: metadata.playMode } : {}),
+    ...(metadata.soulBinding ? { soulBinding: metadata.soulBinding } : {}),
     ...("title" in metadata ? { title: metadata.title } : {}),
   }]);
 }
@@ -182,6 +196,14 @@ export async function persistBookSession(
         session.sessionKind,
       );
     }
+    if (hashCanonical(binding.soulBinding ?? null) !== hashCanonical(session.soulBinding ?? null)) {
+      throw new SessionBindingMismatchError(
+        session.sessionId,
+        "soulBinding",
+        binding.soulBinding,
+        session.soulBinding,
+      );
+    }
     return [{
       type: "session_metadata_updated",
       version: 1,
@@ -201,6 +223,7 @@ export interface BookSessionSummary {
   readonly bookId: string | null;
   readonly sessionKind?: SessionKind;
   readonly playMode?: PlayMode;
+  readonly soulBinding?: SessionSoulBinding;
   readonly title: string | null;
   readonly messageCount: number;
   readonly createdAt: number;
@@ -239,6 +262,7 @@ export async function listBookSessions(
           bookId: session.bookId,
           sessionKind: session.sessionKind,
           playMode: session.playMode,
+          soulBinding: session.soulBinding,
           title: session.title,
           messageCount: session.messages.length,
           createdAt: session.createdAt,
@@ -314,8 +338,26 @@ export async function createAndPersistBookSession(
   bookId: string | null,
   sessionId?: string,
   sessionKind?: SessionKind,
-  options?: { readonly playMode?: PlayMode },
+  options?: { readonly playMode?: PlayMode; readonly soulBinding?: SessionSoulBinding },
 ): Promise<BookSession> {
+  const activeSoulBinding = bookId
+    ? await loadActiveBookSoulSessionBinding(projectRoot, bookId)
+    : null;
+  if (
+    options?.soulBinding
+    && hashCanonical(options.soulBinding) !== hashCanonical(activeSoulBinding)
+  ) {
+    throw new SessionBindingMismatchError(
+      sessionId ?? "new-session",
+      "soulBinding",
+      activeSoulBinding,
+      options.soulBinding,
+    );
+  }
+  const effectiveOptions = {
+    ...(options?.playMode ? { playMode: options.playMode } : {}),
+    ...(activeSoulBinding ? { soulBinding: activeSoulBinding } : {}),
+  };
   // 如果指定了 sessionId 且对应文件已存在，视为幂等操作直接返回（支持"用户发消息时才持久化 draft"流程）
   if (sessionId) {
     const existing = await loadBookSession(projectRoot, sessionId);
@@ -331,10 +373,21 @@ export async function createAndPersistBookSession(
           sessionKind,
         );
       }
-      if ((sessionKind && !existing.sessionKind) || (options?.playMode && existing.playMode !== options.playMode)) {
+      const requestedSoulBinding = activeSoulBinding
+        ? SessionSoulBindingSchema.parse(activeSoulBinding)
+        : undefined;
+      if (hashCanonical(existing.soulBinding ?? null) !== hashCanonical(requestedSoulBinding ?? null)) {
+        throw new SessionBindingMismatchError(
+          sessionId,
+          "soulBinding",
+          existing.soulBinding,
+          requestedSoulBinding,
+        );
+      }
+      if ((sessionKind && !existing.sessionKind) || (effectiveOptions.playMode && existing.playMode !== effectiveOptions.playMode)) {
         await appendSessionMetadataUpdatedEvent(projectRoot, sessionId, {
           ...(sessionKind ? { sessionKind } : {}),
-          ...(options?.playMode ? { playMode: options.playMode } : {}),
+          ...(effectiveOptions.playMode ? { playMode: effectiveOptions.playMode } : {}),
           updatedAt: Date.now(),
         });
         return await loadBookSession(projectRoot, sessionId) ?? existing;
@@ -342,7 +395,7 @@ export async function createAndPersistBookSession(
       return existing;
     }
   }
-  const session = createBookSession(bookId, sessionId, sessionKind, options);
+  const session = createBookSession(bookId, sessionId, sessionKind, effectiveOptions);
   await appendSessionCreatedEvent(projectRoot, session);
   return await loadBookSession(projectRoot, session.sessionId) ?? session;
 }

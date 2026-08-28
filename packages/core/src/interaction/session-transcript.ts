@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { TranscriptEventSchema, type TranscriptEvent } from "./session-transcript-schema.js";
 import type { PlayMode, SessionKind, TranscriptRole } from "./session-transcript-schema.js";
+import type { SessionSoulBinding } from "../production/soul-schema.js";
+import { hashCanonical } from "../production/production-input.js";
 
 const SESSIONS_DIR = ".inkos/sessions";
 const appendQueues = new Map<string, Promise<void>>();
@@ -23,6 +25,7 @@ export interface TranscriptSessionBinding {
   readonly bookId: string | null;
   readonly sessionKind?: SessionKind;
   readonly playMode?: PlayMode;
+  readonly soulBinding?: SessionSoulBinding;
 }
 
 export function sessionsDir(projectRoot: string): string {
@@ -79,6 +82,7 @@ export function deriveTranscriptSessionBinding(
   let bookId = created.bookId;
   let sessionKind = created.sessionKind;
   let playMode = created.playMode;
+  let soulBinding = created.soulBinding;
 
   for (const event of events) {
     if (event.type !== "session_metadata_updated") continue;
@@ -116,8 +120,24 @@ export function deriveTranscriptSessionBinding(
       );
     }
     if (event.playMode !== undefined) playMode = event.playMode;
+    if (event.soulBinding !== undefined && hashCanonical(event.soulBinding) !== hashCanonical(soulBinding)) {
+      if (!soulBinding && migratedToBook) {
+        soulBinding = event.soulBinding;
+      } else {
+        throw new TranscriptIntegrityError(
+          sessionId,
+          "binding-drift",
+          `soulBinding cannot change at seq ${event.seq}`,
+        );
+      }
+    }
   }
-  return { bookId, ...(sessionKind ? { sessionKind } : {}), ...(playMode ? { playMode } : {}) };
+  return {
+    bookId,
+    ...(sessionKind ? { sessionKind } : {}),
+    ...(playMode ? { playMode } : {}),
+    ...(soulBinding ? { soulBinding } : {}),
+  };
 }
 
 export function validateStrictTranscriptEvents(

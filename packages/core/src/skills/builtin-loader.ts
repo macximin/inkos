@@ -50,6 +50,6 @@ export async function loadBuiltinSkillResource(skillId: string, resourcePath: st
   return readFile(fullPath, "utf8");
 }
 
-function builtinSkillsRoot(): string {
+export function builtinSkillsRoot(): string {
   return fileURLToPath(new URL("../../skills", import.meta.url));
 }

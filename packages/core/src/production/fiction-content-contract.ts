@@ -9,6 +9,11 @@ import {
   verifyProductionAttemptIdentity,
   type ProductionAttemptIdentity,
 } from "./attempt-identity.js";
+import {
+  ProductionInputReceiptSchema,
+  appendProductionInput,
+  currentProductionInputBundle,
+} from "./production-input.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -155,6 +160,7 @@ const FictionContentInvocationReceiptSchema = z.object({
   contentIntensityAuthorityReceiptSha256: Sha256Schema.nullable(),
   model: z.string().min(1),
   reasoningEffort: z.string().min(1).nullable(),
+  productionInputs: ProductionInputReceiptSchema.optional(),
 }).strict().superRefine(assertPairedProductionCorrelation);
 
 const FictionContentInvocationOutcomeSchema = z.object({
@@ -541,7 +547,32 @@ export async function prepareFictionContentInvocation(
   const productionAttempt = input.productionAttempt
     ? verifyProductionAttemptIdentity(input.productionAttempt)
     : activeOperation?.productionAttempt;
-  const messages = appendFictionContentContract(input.messages, intensity);
+  const productionInput = currentProductionInputBundle();
+  if (productionInput) {
+    if (productionInput.bookId !== input.bookId) {
+      throw new Error("Production input bundle Book does not match the fiction-content invocation.");
+    }
+    if (!productionAttempt) {
+      throw new Error("Production input bundle requires a production attempt identity.");
+    }
+    if (
+      productionInput.productionOperationId !== productionAttempt.productionOperationId
+      || productionInput.attemptId !== productionAttempt.attemptId
+    ) {
+      throw new Error("Production input bundle attempt does not match the fiction-content invocation.");
+    }
+    if (
+      input.agentName === "writer"
+      && productionInput.externalContextText
+      && !input.messages.some((message) => message.content.includes(productionInput.externalContextText))
+    ) {
+      throw new Error("Writer request does not contain the exact receipt-bound external context bytes.");
+    }
+  }
+  const productionMessages = productionInput
+    ? appendProductionInput(input.messages, productionInput)
+    : input.messages;
+  const messages = appendFictionContentContract(productionMessages, intensity);
   const systemPrompt = messages.filter((message) => message.role === "system")
     .map((message) => message.content)
     .join("\n\n");
@@ -550,6 +581,12 @@ export async function prepareFictionContentInvocation(
     throw new Error(
       `Fiction content contract must occur exactly once for ${input.agentName}; found ${occurrenceCount}.`,
     );
+  }
+  if (
+    productionInput?.promptInjection
+    && countOccurrences(systemPrompt, productionInput.promptInjection) !== 1
+  ) {
+    throw new Error("Production Soul/Skill prompt injection must occur exactly once in the provider request.");
   }
 
   const logicalRequestPayloadSha256 = hashCanonicalJson(
@@ -593,6 +630,7 @@ export async function prepareFictionContentInvocation(
     contentIntensityAuthorityReceiptSha256: intensity.decisionReceiptSha256,
     model: input.model,
     reasoningEffort: input.reasoningEffort ?? null,
+    ...(productionInput ? { productionInputs: productionInput.receipt } : {}),
   });
 
   await writeInvocationPair(evidenceBookDir, trace, receipt);
@@ -1076,6 +1114,15 @@ function collectFictionContentOperationInvocations(
     if (outcomeEntry.value.status !== "completed") {
       throw new Error(
         `Current Book operation has an incomplete/refused model call ${invocationId} (${outcomeEntry.value.status}).`,
+      );
+    }
+    const productionInput = currentProductionInputBundle();
+    if (
+      productionInput
+      && hashCanonicalJson(receiptEntry.value.productionInputs ?? null) !== hashCanonicalJson(productionInput.receipt)
+    ) {
+      throw new Error(
+        `Current Book operation fiction call ${invocationId} does not contain the exact host-resolved Soul/Skill input receipt.`,
       );
     }
     return FictionContentOperationInvocationSchema.parse({

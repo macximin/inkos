@@ -71,9 +71,12 @@ import {
   normalizeSkillIdList as normalizeCoreSkillIdList,
   isProductionCommandActionAuthorized,
   createWriteNextProductionCommand,
+  loadActiveBookSoulSessionBinding,
+  sessionSoulBindingsEqual,
   type ProductionCommand,
   type ProductionCommandBinding,
   type ProductionKernelMode,
+  type SessionSoulBinding,
   inferLanguage,
   defaultChapterLength,
   BookRuleOwnerDecisionDraftSchema,
@@ -1834,6 +1837,9 @@ async function executeConfirmedProductionAction(args: {
   readonly actionSource: ActionSource;
   readonly actionPayload?: ActionPayload;
   readonly productionKernelMode: ProductionKernelMode;
+  readonly soulBinding?: SessionSoulBinding;
+  readonly requestedSkillIds?: ReadonlyArray<string>;
+  readonly disabledSkillIds?: ReadonlyArray<string>;
   readonly playMode?: PlayMode;
   readonly language?: StudioLanguage;
   readonly taskId: string;
@@ -1909,6 +1915,7 @@ async function executeConfirmedProductionAction(args: {
           sessionId: args.sessionId,
           requestId: args.sourceRequestId ?? args.taskId,
           workOrderId: args.sourceRequestId ?? args.taskId,
+          ...(args.soulBinding ? { soulBinding: args.soulBinding } : {}),
         }
       : undefined;
     const productionCommand = productionBinding
@@ -1918,9 +1925,8 @@ async function executeConfirmedProductionAction(args: {
           actionSource: args.actionSource,
           binding: productionBinding,
           ownerDirection,
-          // Phase 3 does not yet own production Skill resolution. Recording
-          // requested IDs as activated would create false execution evidence.
-          activatedSkills: [],
+          activatedSkills: args.requestedSkillIds,
+          disabledSkills: args.disabledSkillIds,
         })
       : undefined;
     tool = createWriteNextChapterTool(
@@ -5643,12 +5649,16 @@ export function createStudioServer(
     const sessionId = (body as { sessionId?: string }).sessionId;
     // sessionId 只允许 timestamp-random 格式；防止注入任意文件名
     const safeSessionId = sessionId && /^[0-9]+-[a-z0-9]+$/.test(sessionId) ? sessionId : undefined;
+    const soulBinding = bookId ? await loadActiveBookSoulSessionBinding(root, bookId) : null;
     const session = await createAndPersistBookSession(
       root,
       bookId,
       safeSessionId,
       sessionKind,
-      ...(playMode ? [{ playMode }] as const : []),
+      ...((playMode || soulBinding) ? [{
+        ...(playMode ? { playMode } : {}),
+        ...(soulBinding ? { soulBinding } : {}),
+      }] as const : []),
     );
     // 客户端可以用同一个 sessionId 重新创建会话：移除删除标记，
     // 让新会话的生产任务可以正常持久化快照。
@@ -5805,6 +5815,16 @@ export function createStudioServer(
         );
       }
       const agentBookId = requestedActiveBookId ?? persistedBookId;
+      const activeSoulBinding = agentBookId
+        ? await loadActiveBookSoulSessionBinding(root, agentBookId)
+        : null;
+      if (!sessionSoulBindingsEqual(bookSession.soulBinding, activeSoulBinding)) {
+        throw new ApiError(
+          409,
+          "SESSION_SOUL_BINDING_MISMATCH",
+          `Session ${bookSession.sessionId} does not match the active Soul binding; create a new Book session.`,
+        );
+      }
       const sessionKind = normalizeStudioSessionKind(
         reqSessionKind,
         bookSession.sessionKind ?? (agentBookId ? "book" : "chat"),
@@ -6102,6 +6122,9 @@ export function createStudioServer(
             actionSource,
             actionPayload,
             productionKernelMode: config.production?.kernel ?? "off",
+            ...(bookSession.soulBinding ? { soulBinding: bookSession.soulBinding } : {}),
+            requestedSkillIds: requestedSkills,
+            disabledSkillIds: disabledSkills,
             language: surfaceLanguage,
             taskId,
             sourceRequestId,

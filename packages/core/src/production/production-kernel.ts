@@ -20,6 +20,14 @@ import {
   type ProductionExecutionContext,
 } from "./execution-context.js";
 import { hashCanonicalJson } from "./fiction-content-contract.js";
+import { BookSoulStore } from "./book-soul-binding.js";
+import {
+  createProductionInputReceipt,
+  runWithProductionInputBundle,
+  sha256Bytes,
+  type ProductionInputReceipt,
+} from "./production-input.js";
+import { resolveWriteNextProductionSkills } from "./production-skill.js";
 import {
   ProductionCommandBindingSchema,
   parsePersistedProductionCommand,
@@ -85,6 +93,7 @@ function buildExecutionContext(
   command: ProductionCommand,
   productionAttempt: ProductionAttemptIdentity,
   startedAt: string,
+  productionInputs?: ProductionInputReceipt,
 ): ProductionExecutionContext {
   return ProductionExecutionContextSchema.parse({
     schemaVersion: "production-execution-context/v1",
@@ -98,7 +107,8 @@ function buildExecutionContext(
     source: command.source,
     actionSource: command.authorization.actionSource,
     binding: command.binding,
-    activatedSkills: command.activatedSkills,
+    activatedSkills: productionInputs?.skills.map((skill) => skill.id) ?? command.activatedSkills,
+    ...(productionInputs ? { productionInputs } : {}),
     startedAt,
   });
 }
@@ -218,10 +228,36 @@ export async function executeObserveOnlyWriteNext(input: {
       };
     }
 
+    const activeSoul = await new BookSoulStore(
+      input.projectRoot,
+      state.bookDir(command.binding.bookId),
+      command.binding.bookId,
+    ).resolveActiveInput();
+    const expectedSoulBinding = activeSoul?.sessionBinding;
+    if (hashCanonicalJson(command.binding.soulBinding ?? null) !== hashCanonicalJson(expectedSoulBinding ?? null)) {
+      throw new Error("Production command/session Soul binding does not match the active Book Soul.");
+    }
+    const resolvedSkills = await resolveWriteNextProductionSkills({
+      projectRoot: input.projectRoot,
+      requestedSkillIds: command.activatedSkills,
+      disabledSkillIds: command.disabledSkills,
+    });
+    const promptInjection = [
+      activeSoul?.promptInput,
+      ...resolvedSkills.promptInputs,
+    ].filter((value): value is string => Boolean(value)).join("\n\n");
+    const productionInputs = createProductionInputReceipt({
+      schemaVersion: "production-input-receipt/v1",
+      soul: activeSoul?.receipt ?? null,
+      skills: [...resolvedSkills.receipts],
+      externalContextSha256: command.authorization.ownerDirection.textSha256,
+      promptInjectionSha256: sha256Bytes(promptInjection),
+    });
+
     const nextChapterNumber = await state.getNextChapterNumber(command.binding.bookId);
     const productionAttempt = createProductionAttemptIdentity();
     const startedAt = now().toISOString();
-    const context = buildExecutionContext(command, productionAttempt, startedAt);
+    const context = buildExecutionContext(command, productionAttempt, startedAt, productionInputs);
     const canonicalBaseline = await captureChapterPersistenceFingerprint(
       state.bookDir(command.binding.bookId),
       nextChapterNumber,
@@ -276,12 +312,20 @@ export async function executeObserveOnlyWriteNext(input: {
       });
       const directionContext = verifyResolvedProductionDirectionContext({ ownerDirection });
 
-      const result = await runWithProductionExecutionContext(context, () => input.executeWithinBookLock({
+      const result = await runWithProductionExecutionContext(context, () => runWithProductionInputBundle({
         bookId: snapshot.command.binding.bookId,
-        wordCount: snapshot.command.args.targetLength?.count,
-        productionAttempt,
-        directionContext,
-      }));
+        commandId: snapshot.command.commandId,
+        productionOperationId: productionAttempt.productionOperationId,
+        attemptId: productionAttempt.attemptId,
+        promptInjection,
+        externalContextText: ownerDirection.text,
+        receipt: productionInputs,
+      }, () => input.executeWithinBookLock({
+          bookId: snapshot.command.binding.bookId,
+          wordCount: snapshot.command.args.targetLength?.count,
+          productionAttempt,
+          directionContext,
+        })));
       const returnedAttempt = ProductionAttemptIdentitySchema.parse(result.productionAttempt);
       if (hashCanonicalJson(returnedAttempt) !== hashCanonicalJson(productionAttempt)) {
         throw new Error("Legacy write-next returned a different production attempt identity.");

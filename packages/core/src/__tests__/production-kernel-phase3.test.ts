@@ -40,6 +40,7 @@ import {
 
 const roots: string[] = [];
 const NOW = new Date("2026-08-28T01:00:00.000Z");
+const OWNER_DIRECTION = "다음 화에서 인수전의 첫 승리를 보여 줘.";
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -75,7 +76,7 @@ async function fixture(suffix: string): Promise<{
   const ownerDirection = await createDetachedOwnerDirectionLease({
     projectRoot: root,
     receiptId: `request-${suffix}`,
-    text: "다음 화에서 인수전의 첫 승리를 보여 줘.",
+    text: OWNER_DIRECTION,
     now: NOW,
   });
   const binding: ProductionCommandBinding = {
@@ -117,7 +118,10 @@ async function persistCommittedChapter(input: {
     model: "test-model",
     operationId: operation.operationId,
     productionAttempt: input.productionAttempt,
-    messages: [{ role: "system", content: "write" }],
+    messages: [
+      { role: "system", content: "write" },
+      { role: "user", content: OWNER_DIRECTION },
+    ],
     now: () => NOW,
   });
   await writeFictionContentInvocationOutcome({
@@ -197,7 +201,7 @@ describe("Phase 3 production command authority", () => {
       now: NOW,
     })).toThrow(/proposal-only/i);
 
-    expect(() => createWriteNextProductionCommand({
+    const skillCommand = createWriteNextProductionCommand({
       idempotencyKey: "premature-skill",
       source: "test",
       actionSource: "quick-action",
@@ -205,7 +209,8 @@ describe("Phase 3 production command authority", () => {
       ownerDirection: f.command.authorization.ownerDirection,
       activatedSkills: ["inkos-long-writing"],
       now: NOW,
-    })).toThrow(/Phase-4 binding receipt/i);
+    });
+    expect(skillCommand.activatedSkills).toEqual(["inkos-long-writing"]);
 
     const tampered = structuredClone(f.command);
     tampered.args.ownerDirectionTextSha256 = "0".repeat(64);
@@ -284,6 +289,17 @@ describe("Phase 3 observe-only write-next kernel", () => {
       approvalStatus: "pending",
       projectionOrigin: "direct",
       chapter: { chapterNumber: 1, title: "첫 인수전" },
+      context: {
+        activatedSkills: ["inkos-long-writing"],
+        productionInputs: {
+          soul: null,
+          externalContextSha256: f.command.args.ownerDirectionTextSha256,
+          skills: [expect.objectContaining({
+            id: "inkos-long-writing",
+            namespace: "trusted-builtin",
+          })],
+        },
+      },
     });
     expect(first.reused).toBe(false);
     expect(first.run.evidence).toMatchObject({

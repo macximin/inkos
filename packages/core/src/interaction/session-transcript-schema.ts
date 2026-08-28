@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PlayModeSchema, SessionKindSchema, type PlayMode, type SessionKind } from "./session.js";
+import { SessionSoulBindingSchema } from "../production/soul-schema.js";
 export type { SessionKind };
 export type { PlayMode };
 
@@ -18,6 +19,7 @@ export const SessionCreatedEventSchema = BaseEventSchema.extend({
   bookId: z.string().nullable(),
   sessionKind: SessionKindSchema.optional(),
   playMode: PlayModeSchema.optional(),
+  soulBinding: SessionSoulBindingSchema.optional(),
   title: z.string().nullable().default(null),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
@@ -28,6 +30,7 @@ export const SessionMetadataUpdatedEventSchema = BaseEventSchema.extend({
   bookId: z.string().nullable().optional(),
   sessionKind: SessionKindSchema.optional(),
   playMode: PlayModeSchema.optional(),
+  soulBinding: SessionSoulBindingSchema.optional(),
   title: z.string().nullable().optional(),
   updatedAt: z.number().int().nonnegative(),
 });

@@ -7,6 +7,7 @@ import {
   ProductionCommandSourceSchema,
 } from "./production-command.js";
 import { Sha256HexSchema } from "./direction-context.js";
+import { ProductionInputReceiptSchema } from "./production-input.js";
 
 export const ProductionExecutionContextSchema = z.object({
   schemaVersion: z.literal("production-execution-context/v1"),
@@ -21,6 +22,7 @@ export const ProductionExecutionContextSchema = z.object({
   actionSource: ActionSourceSchema,
   binding: ProductionCommandBindingSchema,
   activatedSkills: z.array(z.string().trim().min(1).max(240)),
+  productionInputs: ProductionInputReceiptSchema.optional(),
   startedAt: z.string().datetime(),
 }).strict();
 export type ProductionExecutionContext = z.infer<typeof ProductionExecutionContextSchema>;

@@ -846,6 +846,7 @@ export async function deriveBookSessionFromTranscript(
   const bookId = binding.bookId;
   const sessionKind = binding.sessionKind;
   const playMode: PlayMode | undefined = binding.playMode;
+  const soulBinding = binding.soulBinding;
   let title = created?.type === "session_created" ? created.title : null;
   const createdAt = created?.type === "session_created"
     ? created.createdAt
@@ -878,6 +879,7 @@ export async function deriveBookSessionFromTranscript(
     bookId,
     sessionKind,
     playMode,
+    soulBinding,
     title,
     messages,
     draftRounds: [],

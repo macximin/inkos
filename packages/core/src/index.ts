@@ -952,6 +952,55 @@ export {
   ProductionExecutionTerminalError,
   type ProductionKernelWriteNextResult,
 } from "./production/production-kernel.js";
+export {
+  SoulLifecycleSchema,
+  SoulResourceRefSchema,
+  SoulPackageManifestSchema,
+  SoulBindingDecisionReceiptSchema,
+  BookSoulBindingSchema,
+  ActiveSoulPointerSchema,
+  SessionSoulBindingSchema,
+  type SoulLifecycle,
+  type SoulResourceRef,
+  type SoulPackageManifest,
+  type SoulBindingDecisionReceipt,
+  type BookSoulBinding,
+  type ActiveSoulPointer,
+  type SessionSoulBinding,
+} from "./production/soul-schema.js";
+export {
+  BookSoulStore,
+  bindBookSoul,
+  loadActiveBookSoulBinding,
+  loadActiveBookSoulSessionBinding,
+  sessionSoulBinding,
+  sessionSoulBindingsEqual,
+  type BindBookSoulInput,
+  type ResolvedBookSoulInput,
+} from "./production/book-soul-binding.js";
+export {
+  ProductionInputFileReceiptSchema,
+  ProductionSkillReceiptSchema,
+  ProductionSoulInputReceiptSchema,
+  ProductionInputReceiptSchema,
+  createProductionInputReceipt,
+  runWithProductionInputBundle,
+  currentProductionInputBundle,
+  appendProductionInput,
+  sha256Bytes,
+  type ProductionInputFileReceipt,
+  type ProductionSkillReceipt,
+  type ProductionSoulInputReceipt,
+  type ProductionInputReceipt,
+  type ProductionInputBundle,
+} from "./production/production-input.js";
+export {
+  WRITE_NEXT_PRODUCTION_SKILL_POLICY,
+  resolveWriteNextProductionSkills,
+  type ProductionSkillPolicy,
+  type ResolveProductionSkillsInput,
+  type ResolvedProductionSkills,
+} from "./production/production-skill.js";
 export type {
   OwnerDirectionReference,
   ModelMediatedTaskGuidanceReference,

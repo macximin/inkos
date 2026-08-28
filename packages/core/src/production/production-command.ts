@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ActionSourceSchema, RequestedIntentSchema, type ActionSource, type RequestedIntent } from "../interaction/action-envelope.js";
 import { hashCanonicalJson } from "./fiction-content-contract.js";
 import { OwnerDirectionReferenceSchema, Sha256HexSchema, type OwnerDirectionReference } from "./direction-context.js";
+import { SessionSoulBindingSchema } from "./soul-schema.js";
 
 export const ProductionCommandSourceSchema = z.enum([
   "studio",
@@ -26,10 +27,7 @@ export const ProductionCommandBindingSchema = z.object({
   sessionId: SafeAuthorityIdSchema,
   requestId: SafeAuthorityIdSchema,
   workOrderId: SafeAuthorityIdSchema.optional(),
-  soulBinding: z.object({
-    soulId: SafeAuthorityIdSchema,
-    bindingSha256: Sha256HexSchema,
-  }).strict().optional(),
+  soulBinding: SessionSoulBindingSchema.optional(),
 }).strict();
 export type ProductionCommandBinding = z.infer<typeof ProductionCommandBindingSchema>;
 
@@ -63,6 +61,7 @@ const ProductionCommandUnsignedSchema = z.object({
   authorization: ProductionCommandAuthorizationSchema,
   args: ProductionCommandArgsSchema,
   activatedSkills: z.array(SafeAuthorityIdSchema).default([]),
+  disabledSkills: z.array(SafeAuthorityIdSchema).optional(),
   issuedAt: z.string().datetime(),
 }).strict();
 
@@ -89,12 +88,13 @@ export const ProductionCommandSchema = ProductionCommandUnsignedSchema.extend({
   if ([...command.activatedSkills].sort().some((skill, index) => skill !== command.activatedSkills[index])) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["activatedSkills"], message: "activatedSkills must be sorted" });
   }
-  if (command.activatedSkills.length > 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["activatedSkills"],
-      message: "production Skill activation is unavailable before the Phase-4 binding receipt",
-    });
+  if (command.disabledSkills) {
+    if (new Set(command.disabledSkills).size !== command.disabledSkills.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["disabledSkills"], message: "disabledSkills must be unique" });
+    }
+    if ([...command.disabledSkills].sort().some((skill, index) => skill !== command.disabledSkills![index])) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["disabledSkills"], message: "disabledSkills must be sorted" });
+    }
   }
   if (productionIntentDigest(command) !== command.intentDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["intentDigest"], message: "intent digest mismatch" });
@@ -116,7 +116,7 @@ export function isProductionCommandActionAuthorized(input: {
 
 export function productionIntentDigest(input: Pick<
   ProductionCommand,
-  "capability" | "source" | "binding" | "authorization" | "args" | "activatedSkills"
+  "capability" | "source" | "binding" | "authorization" | "args" | "activatedSkills" | "disabledSkills"
 >): string {
   const { workOrderId: _workOrderId, ...stableBinding } = input.binding;
   return hashCanonicalJson({
@@ -131,6 +131,7 @@ export function productionIntentDigest(input: Pick<
     },
     args: input.args,
     activatedSkills: [...input.activatedSkills],
+    ...(input.disabledSkills ? { disabledSkills: [...input.disabledSkills] } : {}),
   });
 }
 
@@ -142,6 +143,7 @@ export function createWriteNextProductionCommand(input: {
   readonly ownerDirection: OwnerDirectionReference;
   readonly targetLength?: ProductionTargetLength;
   readonly activatedSkills?: ReadonlyArray<string>;
+  readonly disabledSkills?: ReadonlyArray<string>;
   readonly commandId?: string;
   readonly now?: Date;
 }): ProductionCommand {
@@ -167,6 +169,9 @@ export function createWriteNextProductionCommand(input: {
       ownerDirectionTextSha256: input.ownerDirection.textSha256,
     },
     activatedSkills: [...new Set(input.activatedSkills ?? [])].sort(),
+    ...(input.disabledSkills && input.disabledSkills.length > 0
+      ? { disabledSkills: [...new Set(input.disabledSkills)].sort() }
+      : {}),
     issuedAt: (input.now ?? new Date()).toISOString(),
   };
   const intentDigest = productionIntentDigest(unsignedWithoutIntent);
