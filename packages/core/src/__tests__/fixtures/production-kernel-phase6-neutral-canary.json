@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "production-kernel-phase6-neutral-canary/v1",
+  "fixture": "one deterministic Korean urban-fantasy Chapter from one identical pre-generation snapshot",
+  "fixedRuntime": {
+    "soulBinding": null,
+    "piWorker": "off",
+    "retrieval": "legacy",
+    "fts": "off",
+    "chapterReviewMode": "manual"
+  },
+  "lanes": [
+    { "id": "legacy-baseline", "kernel": "off", "surface": "legacy", "source": "direct" },
+    { "id": "observe-direct", "kernel": "observe", "surface": "kernel", "source": "cli" },
+    { "id": "enforce-direct", "kernel": "enforce", "surface": "kernel", "source": "cli" },
+    { "id": "enforce-agent", "kernel": "enforce", "surface": "kernel", "source": "agent" },
+    { "id": "enforce-hq", "kernel": "enforce", "surface": "kernel", "source": "hq" }
+  ],
+  "gates": {
+    "canonByteParity": true,
+    "modelCallCountParity": true,
+    "hilProjectionParity": true,
+    "singleCanonCall": true,
+    "commandAttemptReceiptCorrelation": true
+  }
+}
