@@ -44,6 +44,12 @@ import {
   runAsWorkflowTrajectory,
   runWithAgentTrajectoryRole,
 } from "../llm/agent-trajectory.js";
+import { resolveDetachedOwnerDirectionLease } from "../production/detached-payload-store.js";
+import {
+  directionTextSha256,
+  type OwnerDirectionReference,
+  type ResolvedProductionDirectionContext,
+} from "../production/direction-context.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -696,6 +702,11 @@ export function createSubAgentTool(
     readonly actionPayload?: ActionPayload;
     readonly architectCreateOnly?: boolean;
     readonly language?: "zh" | "ko" | "en";
+    readonly getProductionTurnContext?: () => {
+      readonly sessionId: string;
+      readonly requestId: string;
+      readonly ownerDirection?: OwnerDirectionReference;
+    } | undefined;
   } = {},
 ): AgentTool<any> {
   const surfaceLanguage = options.language ?? "en";
@@ -846,6 +857,37 @@ export function createSubAgentTool(
 
           case "writer": {
             const targetBookId = resolveToolBookId("writer", bookId, activeBookId);
+            const turnContext = options.getProductionTurnContext?.();
+            const ownerDirectionReference = options.actionPayload?.writeNext?.ownerDirection
+              ?? turnContext?.ownerDirection;
+            if (ownerDirectionReference && !projectRoot) {
+              throw new Error("Writer owner direction requires projectRoot to resolve its detached payload lease.");
+            }
+            const resolvedOwnerDirection = ownerDirectionReference && projectRoot
+              ? await resolveDetachedOwnerDirectionLease({
+                  projectRoot,
+                  reference: ownerDirectionReference,
+                })
+              : undefined;
+            const taskGuidance = instruction.trim() && turnContext
+              ? {
+                  source: "model-mediated" as const,
+                  transcriptRef: {
+                    sessionId: turnContext.sessionId,
+                    requestId: turnContext.requestId,
+                    toolCallId,
+                  },
+                  textSha256: directionTextSha256(instruction),
+                  text: instruction,
+                }
+              : undefined;
+            const directionContext: ResolvedProductionDirectionContext | undefined =
+              resolvedOwnerDirection || taskGuidance
+                ? {
+                    ...(resolvedOwnerDirection ? { ownerDirection: resolvedOwnerDirection } : {}),
+                    ...(taskGuidance ? { taskGuidance } : {}),
+                  }
+                : undefined;
             const requestedCount = chapterCount ?? 1;
             if (requestedCount > 1) {
               progress(copy(
@@ -858,6 +900,7 @@ export function createSubAgentTool(
                 _signal,
                 () => pipeline.writeChapters(targetBookId, requestedCount, {
                   wordCount: chapterWordCount,
+                  ...(directionContext ? { directionContext } : {}),
                   onChapterComplete(result, completedCount, totalCount) {
                     progress(copy(
                       `Writer 已完成“${targetBookId}”第 ${result.chapterNumber} 章（${completedCount}/${totalCount}）。`,
@@ -904,7 +947,14 @@ export function createSubAgentTool(
             const result = await runPipelineWithAbortSignal(
               pipeline,
               _signal,
-              () => pipeline.writeNextChapter(targetBookId, chapterWordCount),
+              () => directionContext
+                ? pipeline.writeNextChapter(
+                    targetBookId,
+                    chapterWordCount,
+                    undefined,
+                    directionContext,
+                  )
+                : pipeline.writeNextChapter(targetBookId, chapterWordCount),
             );
             progress(copy(
               `Writer 已完成“${targetBookId}”的章节。`,

@@ -529,6 +529,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     listBookReferences: actual.listBookReferences,
     inspectBookProductionReadiness: actual.inspectBookProductionReadiness,
     ReferenceTransformationHilStore: actual.ReferenceTransformationHilStore,
+    createDetachedOwnerDirectionLease: actual.createDetachedOwnerDirectionLease,
+    resolveDetachedOwnerDirectionLease: actual.resolveDetachedOwnerDirectionLease,
     assertChapterApprovalReady: actual.assertChapterApprovalReady,
     isUsablePlayInitialScene: actual.isUsablePlayInitialScene,
     chatCompletion: chatCompletionMock,
@@ -578,6 +580,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     deleteBookSession: deleteBookSessionMock,
     migrateBookSession: migrateBookSessionMock,
     SessionAlreadyMigratedError: MockSessionAlreadyMigratedError,
+    SessionBindingMismatchError: actual.SessionBindingMismatchError,
     resolveServicePreset: resolveServicePresetMock,
     resolveServiceProviderFamily: resolveServiceProviderFamilyMock,
     resolveServiceModelsBaseUrl: resolveServiceModelsBaseUrlMock,
@@ -5833,7 +5836,17 @@ futureAdvantage:
         activeBookId: "demo-book",
       },
     });
-    expect(writeNextChapterMock).toHaveBeenCalledWith("demo-book");
+    expect(writeNextChapterMock).toHaveBeenCalledWith(
+      "demo-book",
+      undefined,
+      undefined,
+      expect.objectContaining({
+        ownerDirection: expect.objectContaining({
+          source: "owner-confirmed",
+          text: "继续",
+        }),
+      }),
+    );
     expect(runAgentSessionMock).not.toHaveBeenCalled();
     // 任务开始时：指令作为 user 消息预写进 transcript。
     expect(appendManualSessionMessagesMock).toHaveBeenCalledWith(
@@ -5907,7 +5920,12 @@ futureAdvantage:
     expect(writeChaptersMock).toHaveBeenCalledWith(
       "demo-book",
       2,
-      expect.objectContaining({ onChapterComplete: expect.any(Function) }),
+      expect.objectContaining({
+        onChapterComplete: expect.any(Function),
+        directionContext: expect.objectContaining({
+          ownerDirection: expect.objectContaining({ text: "连续写两章" }),
+        }),
+      }),
     );
     expect(writeNextChapterMock).not.toHaveBeenCalled();
   }, 60_000);
@@ -6069,6 +6087,13 @@ futureAdvantage:
       const task = await loadStudioTaskSnapshot(root, "agent-session-1");
       expect(task?.execution.status).toBe("running");
     });
+    // Detached owner-direction lease resolution is a fail-closed preflight.
+    // Wait until the write scope has actually received the task signal before
+    // asserting propagation or manually rejecting the mocked write.
+    await vi.waitFor(() => {
+      expect(writeNextChapterMock).toHaveBeenCalledTimes(1);
+      expect(pipelineAbortSignals.at(-1)).toBeDefined();
+    }, { timeout: 5_000 });
 
     const abortResponse = await app.request("http://localhost/api/v1/sessions/agent-session-1/abort", {
       method: "POST",
@@ -6195,7 +6220,17 @@ futureAdvantage:
         activeBookId: "demo-book",
       },
     });
-    expect(writeNextChapterMock).toHaveBeenCalledWith("demo-book");
+    expect(writeNextChapterMock).toHaveBeenCalledWith(
+      "demo-book",
+      undefined,
+      undefined,
+      expect.objectContaining({
+        ownerDirection: expect.objectContaining({
+          source: "owner-confirmed",
+          text: "开始写第一章。写完后落盘，不要只在聊天里给我正文。",
+        }),
+      }),
+    );
     expect(runAgentSessionMock).not.toHaveBeenCalled();
   }, 60_000);
 
@@ -6854,6 +6889,35 @@ futureAdvantage:
     expect(response.status).toBe(409);
     const body = await response.json();
     expect(body.error.code).toBe("SESSION_BOOK_MISMATCH");
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when Core rejects persisted session kind drift", async () => {
+    const { SessionBindingMismatchError } = await import("@actalk/inkos-core");
+    createAndPersistBookSessionMock.mockRejectedValueOnce(
+      new SessionBindingMismatchError("agent-session-1", "sessionKind", "book", "edit"),
+    );
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "edit the current chapter",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        sessionKind: "edit",
+      }),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "SESSION_BINDING_MISMATCH",
+        message: "Session \"agent-session-1\" sessionKind is bound to \"book\", not \"edit\"",
+      },
+    });
     expect(runAgentSessionMock).not.toHaveBeenCalled();
   });
 

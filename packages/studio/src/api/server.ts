@@ -25,6 +25,7 @@ import {
   deleteBookSession,
   migrateBookSession,
   SessionAlreadyMigratedError,
+  SessionBindingMismatchError,
   abortAgentSession,
   runAgentSession,
   resolveServicePreset,
@@ -141,12 +142,15 @@ import {
   type StoryRailReflowApplyInput,
   type StoryRailReflowDiscardInput,
   type AgentSessionAttachment,
+  type OwnerDirectionReference,
   CODEX_SERVICE_ID,
   CODEX_DEFAULT_MODEL,
   probeCodexCli,
   safeNonSymlinkChildPath,
   inspectBookProductionReadiness,
   ReferenceTransformationHilStore,
+  createDetachedOwnerDirectionLease,
+  resolveDetachedOwnerDirectionLease,
   assertChapterApprovalReady,
 } from "@actalk/inkos-core";
 import { access, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -1640,6 +1644,7 @@ interface WriteNextChapterToolResult {
       readonly wordCount: number;
       readonly status?: string;
     }>;
+    readonly ownerDirection?: OwnerDirectionReference;
   };
 }
 
@@ -1679,9 +1684,11 @@ function buildWriteNextResponseText(
 // 中止信号传进写作流程（pipeline 在下一个检查点抛出中止错误）。
 function createWriteNextChapterTool(
   pipeline: PipelineRunner,
+  projectRoot: string,
   bookId: string,
   lang: StudioLanguage,
   chapterCount = 1,
+  ownerDirection?: OwnerDirectionReference,
 ): {
   readonly name: "sub_agent";
   readonly execute: (
@@ -1694,6 +1701,14 @@ function createWriteNextChapterTool(
   return {
     name: "sub_agent",
     async execute(_toolCallId, _params, signal, onUpdate) {
+      const directionContext = ownerDirection
+        ? {
+            ownerDirection: await resolveDetachedOwnerDirectionLease({
+              projectRoot,
+              reference: ownerDirection,
+            }),
+          }
+        : undefined;
       if (chapterCount > 1) {
         onUpdate?.({
           content: [{
@@ -1708,6 +1723,7 @@ function createWriteNextChapterTool(
         const results = await pipeline.runWithAbortSignal(
           signal,
           () => pipeline.writeChapters(bookId, chapterCount, {
+            ...(directionContext ? { directionContext } : {}),
             onChapterComplete(result, completedCount, requestedCount) {
               onUpdate?.({
                 content: [{
@@ -1750,6 +1766,7 @@ function createWriteNextChapterTool(
               status: result.status,
             })),
             ...(stoppedStatus ? { stoppedStatus } : {}),
+            ...(ownerDirection ? { ownerDirection } : {}),
           },
         };
       }
@@ -1759,7 +1776,10 @@ function createWriteNextChapterTool(
           text: pick(lang, `正在为 ${bookId} 写下一章…`, `Writing the next chapter for ${bookId}...`, `${bookId}의 다음 화를 집필하고 있습니다…`),
         }],
       });
-      const writeResult = await pipeline.runWithAbortSignal(signal, () => pipeline.writeNextChapter(bookId));
+      const writeResult = await pipeline.runWithAbortSignal(
+        signal,
+        () => pipeline.writeNextChapter(bookId, undefined, undefined, directionContext),
+      );
       const writeNeedsReview = Boolean(writeResult.status && writeResult.status !== "ready-for-review");
       return {
         ...(writeNeedsReview ? { isError: true } : {}),
@@ -1771,6 +1791,7 @@ function createWriteNextChapterTool(
           title: writeResult.title,
           wordCount: writeResult.wordCount,
           status: writeResult.status,
+          ...(ownerDirection ? { ownerDirection } : {}),
         },
       };
     },
@@ -1849,7 +1870,20 @@ async function executeConfirmedProductionAction(args: {
       throw new ApiError(400, "BOOK_ID_REQUIRED", pick(lang, "写下一章需要先打开一本书。", "Writing the next chapter requires an active book.", "다음 화를 쓰려면 먼저 작품을 열어 주세요."));
     }
     const chapterCount = actionPayload?.writeNext?.chapterCount ?? 1;
-    tool = createWriteNextChapterTool(args.pipeline, args.bookId, lang, chapterCount);
+    const ownerDirection = actionPayload?.writeNext?.ownerDirection
+      ?? await createDetachedOwnerDirectionLease({
+        projectRoot: args.root,
+        receiptId: args.sourceRequestId ?? args.taskId,
+        text: args.instruction,
+      });
+    tool = createWriteNextChapterTool(
+      args.pipeline,
+      args.root,
+      args.bookId,
+      lang,
+      chapterCount,
+      ownerDirection,
+    );
     agent = "writer";
     params = { agent: "writer", bookId: args.bookId };
   } else if (args.requestedIntent === "generate_cover") {
@@ -5732,14 +5766,21 @@ export function createStudioServer(
         bookSession.sessionKind ?? (agentBookId ? "book" : "chat"),
       );
       if (bookSession.sessionKind !== sessionKind || (playMode && bookSession.playMode !== playMode)) {
-        const updatedSession = await createAndPersistBookSession(
-          root,
-          bookSession.bookId,
-          bookSession.sessionId,
-          sessionKind,
-          ...(playMode ? [{ playMode }] as const : []),
-        );
-        bookSession = updatedSession;
+        try {
+          const updatedSession = await createAndPersistBookSession(
+            root,
+            bookSession.bookId,
+            bookSession.sessionId,
+            sessionKind,
+            ...(playMode ? [{ playMode }] as const : []),
+          );
+          bookSession = updatedSession;
+        } catch (error) {
+          if (error instanceof SessionBindingMismatchError) {
+            throw new ApiError(409, "SESSION_BINDING_MISMATCH", error.message);
+          }
+          throw error;
+        }
       }
       let activeBookConfig: { readonly language?: string } | null = null;
       if (agentBookId && sessionKind !== "interactive-film-authoring") {

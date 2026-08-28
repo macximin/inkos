@@ -21,6 +21,20 @@ const usage = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
+async function appendSessionHeader(projectRoot: string, sessionId = "s1"): Promise<void> {
+  await appendTranscriptEvent(projectRoot, {
+    type: "session_created",
+    version: 1,
+    sessionId,
+    seq: 0,
+    timestamp: 0,
+    bookId: null,
+    title: null,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+}
+
 describe("session transcript restore", () => {
   let projectRoot: string;
 
@@ -33,6 +47,7 @@ describe("session transcript restore", () => {
   });
 
   it("只恢复已 committed request 内的 message", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -91,6 +106,7 @@ describe("session transcript restore", () => {
   });
 
   it("恢复 agent 上下文时把 committed toolResult 折叠为历史摘要", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -173,6 +189,7 @@ describe("session transcript restore", () => {
   });
 
   it("恢复旧 transcript 时不会把 use_skill 正文带入后续回合", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -249,6 +266,7 @@ describe("session transcript restore", () => {
   });
 
   it("恢复 agent 上下文时把历史工具回合折叠为 system 摘要而不是继续回放工具消息", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -389,6 +407,7 @@ describe("session transcript restore", () => {
   });
 
   it("带 sessionKind 恢复旧 transcript 时保留自然对话但不恢复未知模式的工具结果", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -472,6 +491,7 @@ describe("session transcript restore", () => {
   });
 
   it("恢复 agent 上下文时只保留最近 12 条自然对话", async () => {
+    await appendSessionHeader(projectRoot);
     let seq = 1;
     for (let i = 1; i <= 15; i++) {
       const requestId = `r${i}`;
@@ -522,6 +542,7 @@ describe("session transcript restore", () => {
   });
 
   it("恢复 agent 上下文时只保留最近 8 条工具摘要", async () => {
+    await appendSessionHeader(projectRoot);
     let seq = 1;
     for (let i = 1; i <= 10; i++) {
       const requestId = `tool-${i}`;
@@ -602,6 +623,7 @@ describe("session transcript restore", () => {
   });
 
   it("恢复中断工具轮次时只保留历史摘要和后续自然输入", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
@@ -739,6 +761,7 @@ describe("session transcript restore", () => {
   });
 
   it("移除最后 assistant message 的 trailing thinking block", async () => {
+    await appendSessionHeader(projectRoot);
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,

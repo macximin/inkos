@@ -260,7 +260,7 @@ vi.mock("@mariozechner/pi-ai", async () => {
                 type: "toolCall",
                 id: "writer-1",
                 name: "sub_agent",
-                arguments: { agent: "writer", instruction: "write next" },
+                arguments: { agent: "writer", instruction: "model-mediated chapter arrangement" },
               },
             ], timestamp)
           : assistant([{ type: "text", text: "ok" }], timestamp);
@@ -396,7 +396,7 @@ describe("runAgentSession cache — bookId switch", () => {
     if (otherProjectRoot) await rm(otherProjectRoot, { recursive: true, force: true });
   });
 
-  it("rebuilds Agent when bookId changes for same sessionId", async () => {
+  it("rejects Book-to-Book rebinding before rebuilding the Agent", async () => {
     const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
     const pipeline = {} as any;
 
@@ -406,17 +406,12 @@ describe("runAgentSession cache — bookId switch", () => {
     );
     expect(agentInstances).toHaveLength(1);
 
-    await runAgentSession(
+    await expect(runAgentSession(
       { sessionId: "s1", bookId: "book-b", language: "zh", pipeline, projectRoot, model },
       "new question",
-    );
+    )).rejects.toThrow('is bound to book "book-a", not "book-b"');
 
-    expect(agentInstances).toHaveLength(2);
-
-    const body = JSON.stringify(streamCalls.at(-1)?.context.messages);
-    expect(body).toContain("书B 的真相");
-    expect(body).not.toContain("书A 的真相");
-    expect(body).toContain("earlier question about book A");
+    expect(agentInstances).toHaveLength(1);
   });
 
   it("routes Korean book sessions to Korean sub-agent and reference-management copy", async () => {
@@ -548,7 +543,7 @@ describe("runAgentSession cache — bookId switch", () => {
     }
   });
 
-  it("rebuilds Agent when bookId goes from null to a real book", async () => {
+  it("rejects implicit null-to-Book rebinding until the session is explicitly migrated", async () => {
     const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
     const pipeline = {} as any;
 
@@ -558,13 +553,12 @@ describe("runAgentSession cache — bookId switch", () => {
     );
     expect(agentInstances).toHaveLength(1);
 
-    await runAgentSession(
+    await expect(runAgentSession(
       { sessionId: "s1", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
       "hi",
-    );
+    )).rejects.toThrow('is bound to book null, not "book-a"');
 
-    expect(agentInstances).toHaveLength(2);
-    expect(JSON.stringify(streamCalls.at(-1)?.context.messages)).toContain("书A 的真相");
+    expect(agentInstances).toHaveLength(1);
   });
 
   it("rejects unsafe bookId before building the system prompt", async () => {
@@ -577,6 +571,30 @@ describe("runAgentSession cache — bookId switch", () => {
     )).rejects.toThrow("Invalid bookId");
 
     expect(agentInstances).toHaveLength(0);
+  });
+
+  it("rejects a malformed transcript before loading an Agent or calling the model", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+    const sessionsDir = join(projectRoot, ".inkos", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(join(sessionsDir, "malformed-session.jsonl"), "{bad-json\n", "utf8");
+
+    await expect(runAgentSession(
+      {
+        sessionId: "malformed-session",
+        bookId: "book-a",
+        sessionKind: "book",
+        language: "zh",
+        pipeline,
+        projectRoot,
+        model,
+      },
+      "write next",
+    )).rejects.toMatchObject({ name: "TranscriptIntegrityError", code: "malformed-line" });
+
+    expect(agentInstances).toHaveLength(0);
+    expect(streamCalls).toHaveLength(0);
   });
 
   it("treats undefined bookId as null (no spurious rebuild)", async () => {
@@ -1229,6 +1247,20 @@ describe("runAgentSession cache — bookId switch", () => {
     );
 
     expect(pipeline.writeNextChapter).toHaveBeenCalledTimes(1);
+    expect((pipeline.writeNextChapter as any).mock.calls[0]?.[3]).toMatchObject({
+      ownerDirection: {
+        source: "owner-confirmed",
+        text: "write next",
+      },
+      taskGuidance: {
+        source: "model-mediated",
+        transcriptRef: {
+          sessionId: "book-terminal-session",
+          toolCallId: "writer-1",
+        },
+        text: "model-mediated chapter arrangement",
+      },
+    });
     expect(result.responseText).toBe("");
     expect(streamCalls).toHaveLength(1);
     expect(result.messages).toEqual(
@@ -1644,6 +1676,19 @@ describe("runAgentSession cache — bookId switch", () => {
     const pipeline = {} as any;
 
     await appendTranscriptEvent(projectRoot, {
+      type: "session_created",
+      version: 1,
+      sessionId: "s1",
+      seq: 0,
+      timestamp: 0,
+      bookId: "book-a",
+      sessionKind: "book",
+      title: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,
       sessionId: "s1",
@@ -1732,6 +1777,18 @@ describe("runAgentSession cache — bookId switch", () => {
 
   it("切到 DeepSeek 时不 replay 其他模型的原生 toolCall/toolResult 历史", async () => {
     const pipeline = {} as any;
+    await appendTranscriptEvent(projectRoot, {
+      type: "session_created",
+      version: 1,
+      sessionId: "s1",
+      seq: 0,
+      timestamp: 0,
+      bookId: "book-a",
+      sessionKind: "book",
+      title: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
     await appendTranscriptEvent(projectRoot, {
       type: "request_started",
       version: 1,

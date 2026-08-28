@@ -71,6 +71,10 @@ import {
   renderChapterArcProvenance,
 } from "../arc/forecast.js";
 import { ReferencePackStore } from "../reference/store.js";
+import {
+  verifyResolvedProductionDirectionContext,
+  type ResolvedProductionDirectionContext,
+} from "../production/direction-context.js";
 
 const LEGACY_WRITER_CONTEXT_BUDGET = {
   storyBible: 14_000,
@@ -97,6 +101,11 @@ export interface WriteChapterInput {
   readonly bookDir: string;
   readonly chapterNumber: number;
   readonly externalContext?: string;
+  /**
+   * Provenance-preserving per-turn production direction. Owner bytes retain
+   * owner authority; model-mediated task guidance is prompt context only.
+   */
+  readonly directionContext?: ResolvedProductionDirectionContext;
   readonly chapterIntent?: string;
   readonly chapterMemo?: ChapterMemo;
   readonly chapterIntentData?: ChapterIntent;
@@ -305,6 +314,11 @@ export class WriterAgent extends BaseAgent {
 
   async writeChapter(input: WriteChapterInput): Promise<WriteChapterOutput> {
     const { book, bookDir, chapterNumber } = input;
+    const directionContext = input.directionContext
+      ? verifyResolvedProductionDirectionContext(input.directionContext)
+      : undefined;
+    const ownerExternalContext = directionContext?.ownerDirection?.text ?? input.externalContext;
+    const taskGuidance = directionContext?.taskGuidance?.text;
 
     const placeholder = "(文件尚未创建)";
     const [
@@ -347,7 +361,7 @@ export class WriterAgent extends BaseAgent {
       effectiveBookRules,
     );
     const moralAuthoritySources: ArchitectMoralAuthoritySource[] = [
-      { kind: "owner-direction", text: input.externalContext ?? "" },
+      { kind: "owner-direction", text: ownerExternalContext ?? "" },
       { kind: "owner-direction", text: creativeBrief },
       ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
         (entry.source === "story/author_intent.md" || entry.source === "story/current_focus.md")
@@ -443,7 +457,7 @@ export class WriterAgent extends BaseAgent {
       chapterNumber,
       arcId: arcChapterContext?.provenance.arcId,
     });
-    const externalContext = input.externalContext?.trim() || undefined;
+    const externalContext = ownerExternalContext?.trim() ? ownerExternalContext : undefined;
     const governedMemoryBlocks = input.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
       : undefined;
@@ -482,6 +496,7 @@ export class WriterAgent extends BaseAgent {
           contextPackage: input.contextPackage,
           ruleStack: verifiedRuleStack,
           externalContext,
+          taskGuidance,
           arcContext: arcChapterContext?.markdown,
           futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
           lengthSpec: resolvedLengthSpec,
@@ -515,6 +530,7 @@ export class WriterAgent extends BaseAgent {
             recentChapters,
             lengthSpec: resolvedLengthSpec,
             externalContext,
+            taskGuidance,
             arcContext: arcChapterContext?.markdown,
             futureAdvantageMove: arcChapterContext?.provenance.futureAdvantageMove,
             chapterSummaries: filteredSummaries,
@@ -1117,6 +1133,7 @@ export class WriterAgent extends BaseAgent {
     readonly recentChapters: string;
     readonly lengthSpec: LengthSpec;
     readonly externalContext?: string;
+    readonly taskGuidance?: string;
     readonly arcContext?: string;
     readonly futureAdvantageMove?: FutureAdvantageMove;
     readonly chapterSummaries: string;
@@ -1152,6 +1169,10 @@ export class WriterAgent extends BaseAgent {
         ? `\n## Per-chapter user instruction (highest priority)\n${params.externalContext}\n\nObey this direct instruction for the current chapter before optional planning guidance.\n`
         : `\n## 本章用户指令（最高优先级）\n${params.externalContext}\n\n这是用户对当前章节的直接指令，必须优先于可选规划提示。\n`
       : "";
+    const taskGuidanceBlock = this.buildModelTaskGuidanceBlock(
+      params.taskGuidance,
+      params.language ?? "zh",
+    );
     const arcGuidanceBlock = this.buildArcGuidanceBlock(
       params.arcContext,
       params.language ?? "zh",
@@ -1199,7 +1220,7 @@ ${parentCanon}\n`
 
     if (params.language !== "zh") {
       return `Write chapter ${params.chapterNumber}.
-${contextBlock}${arcGuidanceBlock}${futureAdvantageGuidanceBlock}
+${contextBlock}${taskGuidanceBlock}${arcGuidanceBlock}${futureAdvantageGuidanceBlock}
 ## Current State
 ${currentState}
 ${ledgerBlock}
@@ -1218,7 +1239,7 @@ ${lengthRequirementBlock}
     }
 
     return `请续写第${params.chapterNumber}章。
-${contextBlock}${arcGuidanceBlock}${futureAdvantageGuidanceBlock}
+${contextBlock}${taskGuidanceBlock}${arcGuidanceBlock}${futureAdvantageGuidanceBlock}
 ## 当前状态卡
 ${currentState}
 ${ledgerBlock}
@@ -1247,6 +1268,7 @@ ${lengthRequirementBlock}
     readonly contextPackage: ContextPackage;
     readonly ruleStack: RuleStack;
     readonly externalContext?: string;
+    readonly taskGuidance?: string;
     readonly arcContext?: string;
     readonly futureAdvantageMove?: FutureAdvantageMove;
     readonly lengthSpec: LengthSpec;
@@ -1284,6 +1306,7 @@ ${lengthRequirementBlock}
       ? `\n${sanitizeNarrativeEvidenceBlock(params.selectedEvidenceBlock, language)}\n`
       : "";
     const chapterContextBlock = this.buildChapterContextBlock(params.externalContext, language);
+    const taskGuidanceBlock = this.buildModelTaskGuidanceBlock(params.taskGuidance, language);
     const arcGuidanceBlock = this.buildArcGuidanceBlock(params.arcContext, language);
     const futureAdvantageGuidanceBlock = this.buildFutureAdvantageGuidanceBlock(
       params.futureAdvantageMove,
@@ -1296,6 +1319,7 @@ ${lengthRequirementBlock}
       return `Write chapter ${params.chapterNumber}.
 
 ${chapterContextBlock}
+${taskGuidanceBlock}
 ${arcGuidanceBlock}
 ${futureAdvantageGuidanceBlock}
 
@@ -1320,6 +1344,7 @@ ${lengthRequirementBlock}
     return `请续写第${params.chapterNumber}章。
 
 ${chapterContextBlock}
+${taskGuidanceBlock}
 ${arcGuidanceBlock}
 ${futureAdvantageGuidanceBlock}
 
@@ -1342,18 +1367,40 @@ ${lengthRequirementBlock}
   }
 
   private buildChapterContextBlock(externalContext: string | undefined, language: "zh" | "ko" | "en"): string {
-    const trimmed = externalContext?.trim();
-    if (!trimmed) return "";
+    if (!externalContext?.trim()) return "";
     if (language !== "zh") {
       return `## Per-chapter user instruction (highest priority)
-${trimmed}
+${externalContext}
 
 Obey this direct instruction for the current chapter. If it specifies a chapter title, use that title exactly in CHAPTER_TITLE. Keep continuity, but do not replace this instruction with the outline fallback.`;
     }
     return `## 本章用户指令（最高优先级）
-${trimmed}
+${externalContext}
 
 这是用户对当前章节的直接指令。若其中指定章节标题，CHAPTER_TITLE 必须原样使用该标题。保持连续性，但不要用卷纲兜底替换这条指令。`;
+  }
+
+  private buildModelTaskGuidanceBlock(
+    taskGuidance: string | undefined,
+    language: "zh" | "ko" | "en",
+  ): string {
+    if (!taskGuidance?.trim()) return "";
+    if (language === "ko") {
+      return `## 모델 매개 작업 지침 (하위 권한)
+${taskGuidance}
+
+이 블록은 현재 작업을 설명하는 모델의 해석입니다. 사용자 원문, Book 정본, BookRules 또는 확인된 작품 방향을 새로 만들거나 덮어쓸 권한이 없습니다.`;
+    }
+    if (language === "en") {
+      return `## Model-mediated task guidance (subordinate authority)
+${taskGuidance}
+
+This block is the model's interpretation of the current task. It cannot create or override owner direction, Book canon, BookRules, or any confirmed production authority.`;
+    }
+    return `## 模型转述的任务提示（从属权威）
+${taskGuidance}
+
+本区块只是模型对当前任务的解释，不能创建或覆盖用户原文、Book 正典、BookRules 或任何已确认的制作权威。`;
   }
 
   private buildArcGuidanceBlock(arcContext: string | undefined, language: "zh" | "ko" | "en"): string {

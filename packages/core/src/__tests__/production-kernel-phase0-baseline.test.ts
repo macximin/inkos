@@ -136,22 +136,22 @@ describe("Production Kernel Phase 0 baseline", () => {
         bookId: "book-a",
         updatedAt: 2,
       },
-      {
-        type: "session_metadata_updated",
-        version: 1,
-        sessionId,
-        seq: 3,
-        timestamp: 3,
-        bookId: "book-b",
-        updatedAt: 3,
-      },
     ]);
 
     expect(baseline.legacyTransitionBaseline.metadataAllowsNullToBook).toBe(true);
     expect(baseline.legacyTransitionBaseline.metadataCurrentlyAllowsBookToBook).toBe(true);
     expect(baseline.legacyTransitionBaseline.phase1TargetRejectsBookToBook).toBe(true);
-    await expect(deriveBookSessionFromTranscript(projectRoot, sessionId)).resolves.toMatchObject({
+    await expect(appendTranscriptEvents(projectRoot, sessionId, ({ nextSeq }) => [{
+      type: "session_metadata_updated",
+      version: 1,
+      sessionId,
+      seq: nextSeq,
+      timestamp: 3,
       bookId: "book-b",
+      updatedAt: 3,
+    }])).rejects.toThrow("bookId cannot transition");
+    await expect(deriveBookSessionFromTranscript(projectRoot, sessionId)).resolves.toMatchObject({
+      bookId: "book-a",
     });
   });
 

@@ -547,6 +547,7 @@ describe("WriterAgent", () => {
         readonly lengthSpec: ReturnType<typeof buildLengthSpec>;
         readonly language?: "zh" | "ko" | "en";
         readonly externalContext?: string;
+        readonly taskGuidance?: string;
       }): string;
     }).buildGovernedUserPrompt({
       chapterNumber: 7,
@@ -567,11 +568,15 @@ describe("WriterAgent", () => {
       lengthSpec: buildLengthSpec(1200, "zh"),
       language: "zh",
       externalContext: "本章标题：雨夜账本\n必须围绕账本失窃后的当面对质展开。",
+      taskGuidance: "把冲突组织成先否认、再亮证据、最后翻盘的三步。",
     });
 
     expect(prompt).toContain("本章用户指令");
     expect(prompt).toContain("本章标题：雨夜账本");
     expect(prompt).toContain("当面对质");
+    expect(prompt).toContain("模型转述的任务提示（从属权威）");
+    expect(prompt).toContain("先否认、再亮证据、最后翻盘");
+    expect(prompt).toContain("不能创建或覆盖用户原文");
   });
 
   it("caps oversized legacy truth files in creative prompts", () => {

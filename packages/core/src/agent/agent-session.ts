@@ -60,7 +60,8 @@ import {
 import { createBookContextTransform } from "./context-transform.js";
 import {
   appendTranscriptEvents,
-  readTranscriptEvents,
+  deriveTranscriptSessionBinding,
+  readTranscriptEventsStrict,
 } from "../interaction/session-transcript.js";
 import {
   TOOL_RESULT_BRIDGE_TEXT,
@@ -97,6 +98,8 @@ import {
   type FictionContentToolAuthorization,
   type PreparedFictionContentInvocation,
 } from "../production/fiction-content-contract.js";
+import { createDetachedOwnerDirectionLease } from "../production/detached-payload-store.js";
+import type { OwnerDirectionReference } from "../production/direction-context.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -202,6 +205,13 @@ interface CachedAgent {
   backgroundTaskContext: string | undefined;
   suppressProductionTools: boolean;
   codexRequestState: { calls: number };
+  productionTurnContext: {
+    current?: {
+      readonly sessionId: string;
+      readonly requestId: string;
+      readonly ownerDirection?: OwnerDirectionReference;
+    };
+  };
   lastCommittedSeq: number;
   lastActive: number;
 }
@@ -786,7 +796,7 @@ async function runInAgentSessionQueue<T>(
 }
 
 async function latestCommittedSeq(projectRoot: string, sessionId: string): Promise<number> {
-  const events = await readTranscriptEvents(projectRoot, sessionId);
+  const events = await readTranscriptEventsStrict(projectRoot, sessionId);
   return events
     .filter((event) => event.type === "request_committed")
     .reduce((max, event) => Math.max(max, event.seq), 0);
@@ -1154,6 +1164,11 @@ type CreateAgentToolsForModeParams = {
   readonly playWorldExists: boolean;
   readonly intentSkillTool?: ReturnType<typeof createUseSkillTool>;
   readonly requestedSkillIds?: () => ReadonlyArray<string>;
+  readonly getProductionTurnContext?: () => {
+    readonly sessionId: string;
+    readonly requestId: string;
+    readonly ownerDirection?: OwnerDirectionReference;
+  } | undefined;
 };
 
 function createAgentToolsForMode(params: CreateAgentToolsForModeParams) {
@@ -1167,6 +1182,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
   const subAgentTool = createSubAgentTool(params.pipeline, params.bookId, params.projectRoot, {
     actionPayload: params.actionPayload,
     language: surfaceLanguage,
+    getProductionTurnContext: params.getProductionTurnContext,
   });
   const proposalTool = createProposeActionTool(lang, {
     sameSession: params.sessionKind !== "chat",
@@ -1265,6 +1281,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
         actionPayload: params.actionPayload,
         architectCreateOnly: true,
         language: surfaceLanguage,
+        getProductionTurnContext: params.getProductionTurnContext,
       })];
     }
     return [proposalTool, researchTool, materialTool, materialRetrievalTool];
@@ -1354,6 +1371,20 @@ async function runAgentSessionUnlocked(
   const requestedIntent = config.requestedIntent;
   const actionPayload = config.actionPayload;
   const actionPayloadKey = actionPayloadCacheKey(actionPayload);
+  const transcriptEvents = await readTranscriptEventsStrict(projectRoot, sessionId);
+  const transcriptBinding = deriveTranscriptSessionBinding(transcriptEvents, sessionId);
+  if (transcriptBinding) {
+    if (transcriptBinding.bookId !== bookId) {
+      throw new Error(
+        `Session ${JSON.stringify(sessionId)} is bound to book ${JSON.stringify(transcriptBinding.bookId)}, not ${JSON.stringify(bookId)}.`,
+      );
+    }
+    if (transcriptBinding.sessionKind && transcriptBinding.sessionKind !== sessionKind) {
+      throw new Error(
+        `Session ${JSON.stringify(sessionId)} is bound to kind ${JSON.stringify(transcriptBinding.sessionKind)}, not ${JSON.stringify(sessionKind)}.`,
+      );
+    }
+  }
   const configuredSkills = await loadAvailableAgentSkills({ projectRoot });
   const skillRegistry = createSkillRegistry({ skills: configuredSkills.skills });
   const skillResolution = skillRegistry.resolveSkills({
@@ -1462,6 +1493,7 @@ async function runAgentSessionUnlocked(
           onActivate: (skillId) => turnSkillIds.add(skillId),
         })
       : undefined;
+    const productionTurnContext: CachedAgent["productionTurnContext"] = {};
     const agentTools = createAgentToolsForMode({
       pipeline,
       bookId,
@@ -1477,6 +1509,7 @@ async function runAgentSessionUnlocked(
       playWorldExists,
       intentSkillTool,
       requestedSkillIds: () => [...turnSkillIds],
+      getProductionTurnContext: () => productionTurnContext.current,
     });
     const codexRequestState = { calls: 0 };
     const authorizedMutationCalls = new Map<string, {
@@ -1637,6 +1670,7 @@ async function runAgentSessionUnlocked(
       backgroundTaskContext: config.backgroundTaskContext,
       suppressProductionTools,
       codexRequestState,
+      productionTurnContext,
       lastCommittedSeq: currentCommittedSeq ?? await latestCommittedSeq(projectRoot, sessionId),
       lastActive: Date.now(),
     };
@@ -1668,6 +1702,34 @@ async function runAgentSessionUnlocked(
     sessionKind,
     input: promptMessage,
   }));
+  let ownerDirection: OwnerDirectionReference | undefined;
+  try {
+    ownerDirection = actionPayload?.writeNext?.ownerDirection
+      ?? (isGovernedBookSession(bookId, sessionKind) && userMessage.trim()
+        ? await createDetachedOwnerDirectionLease({
+            projectRoot,
+            receiptId: requestId,
+            text: userMessage,
+          })
+        : undefined);
+  } catch (error) {
+    await appendAgentTranscriptEvent(projectRoot, sessionId, (seq) => ({
+      type: "request_failed",
+      version: 1,
+      sessionId,
+      requestId,
+      seq,
+      timestamp: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    agentCache.delete(cacheKey);
+    throw error;
+  }
+  cached.productionTurnContext.current = {
+    sessionId,
+    requestId,
+    ...(ownerDirection ? { ownerDirection } : {}),
+  };
 
   let parentUuid: string | null = null;
   let piTurnIndex = 0;
@@ -1795,6 +1857,7 @@ async function runAgentSessionUnlocked(
     agentCache.delete(cacheKey);
     throw error;
   } finally {
+    cached.productionTurnContext.current = undefined;
     unsubscribe();
   }
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PlayModeSchema, type PlayMode } from "./session.js";
 import { StoryNodeSchema } from "../interactive-film/graph-schema.js";
+import { OwnerDirectionReferenceSchema } from "../production/direction-context.js";
 import {
   SHORT_FICTION_EN_MAX_WORDS_PER_CHAPTER,
   SHORT_FICTION_EN_MIN_WORDS_PER_CHAPTER,
@@ -49,6 +50,7 @@ export const CreateBookActionPayloadSchema = z.object({
 
 export const WriteNextActionPayloadSchema = z.object({
   chapterCount: z.number().int().min(1).max(20).default(1),
+  ownerDirection: OwnerDirectionReferenceSchema.optional(),
 }).strict();
 
 // charsPerChapter 的单位随语言变化：zh 是每章汉字数（900-1200），en 是每章英文单词数（600-800）。

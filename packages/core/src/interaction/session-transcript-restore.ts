@@ -1,5 +1,8 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { readTranscriptEvents } from "./session-transcript.js";
+import {
+  deriveTranscriptSessionBinding,
+  readTranscriptEventsStrict,
+} from "./session-transcript.js";
 import {
   BookSessionSchema,
   type BookSession,
@@ -502,7 +505,7 @@ export async function restoreAgentMessagesFromTranscript(
   sessionId: string,
   sessionKind?: SessionKind,
 ): Promise<AgentMessage[]> {
-  const events = await readTranscriptEvents(projectRoot, sessionId);
+  const events = await readTranscriptEventsStrict(projectRoot, sessionId);
   const summary = buildHistoricalToolSummary(events, sessionKind);
   const committed = committedMessageEvents(events, sessionKind);
   const toolRequestIds = requestIdsWithToolActivity(committed);
@@ -834,13 +837,15 @@ export async function deriveBookSessionFromTranscript(
   projectRoot: string,
   sessionId: string,
 ): Promise<BookSession | null> {
-  const events = await readTranscriptEvents(projectRoot, sessionId);
+  const events = await readTranscriptEventsStrict(projectRoot, sessionId);
   if (events.length === 0) return null;
 
-  const created = events.find((event) => event.type === "session_created");
-  let bookId = created?.type === "session_created" ? created.bookId : null;
-  let sessionKind = created?.type === "session_created" ? created.sessionKind : undefined;
-  let playMode: PlayMode | undefined = created?.type === "session_created" ? created.playMode : undefined;
+  const binding = deriveTranscriptSessionBinding(events, sessionId);
+  if (!binding) return null;
+  const created = events[0]?.type === "session_created" ? events[0] : undefined;
+  const bookId = binding.bookId;
+  const sessionKind = binding.sessionKind;
+  const playMode: PlayMode | undefined = binding.playMode;
   let title = created?.type === "session_created" ? created.title : null;
   const createdAt = created?.type === "session_created"
     ? created.createdAt
@@ -858,9 +863,6 @@ export async function deriveBookSessionFromTranscript(
 
   for (const event of events) {
     if (event.type !== "session_metadata_updated") continue;
-    if ("bookId" in event && event.bookId !== undefined) bookId = event.bookId;
-    if ("sessionKind" in event && event.sessionKind !== undefined) sessionKind = event.sessionKind;
-    if ("playMode" in event && event.playMode !== undefined) playMode = event.playMode;
     if ("title" in event && event.title !== undefined) title = event.title;
     updatedAt = Math.max(updatedAt, event.updatedAt);
   }

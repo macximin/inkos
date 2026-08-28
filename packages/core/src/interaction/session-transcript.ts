@@ -3,10 +3,27 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { TranscriptEventSchema, type TranscriptEvent } from "./session-transcript-schema.js";
-import type { SessionKind, TranscriptRole } from "./session-transcript-schema.js";
+import type { PlayMode, SessionKind, TranscriptRole } from "./session-transcript-schema.js";
 
 const SESSIONS_DIR = ".inkos/sessions";
 const appendQueues = new Map<string, Promise<void>>();
+
+export class TranscriptIntegrityError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly code: "malformed-line" | "session-mismatch" | "invalid-sequence" | "invalid-header" | "binding-drift",
+    message: string,
+  ) {
+    super(`Transcript ${JSON.stringify(sessionId)} failed ${code}: ${message}`);
+    this.name = "TranscriptIntegrityError";
+  }
+}
+
+export interface TranscriptSessionBinding {
+  readonly bookId: string | null;
+  readonly sessionKind?: SessionKind;
+  readonly playMode?: PlayMode;
+}
 
 export function sessionsDir(projectRoot: string): string {
   return join(projectRoot, SESSIONS_DIR);
@@ -45,8 +62,126 @@ export async function readTranscriptEvents(
   return events.sort((a, b) => a.seq - b.seq);
 }
 
+export function deriveTranscriptSessionBinding(
+  events: ReadonlyArray<TranscriptEvent>,
+  sessionId: string,
+): TranscriptSessionBinding | null {
+  if (events.length === 0) return null;
+  const createdEvents = events.filter((event) => event.type === "session_created");
+  if (createdEvents.length !== 1 || events[0]?.type !== "session_created") {
+    throw new TranscriptIntegrityError(
+      sessionId,
+      "invalid-header",
+      `expected exactly one leading session_created event, found ${createdEvents.length}`,
+    );
+  }
+  const created = createdEvents[0]!;
+  let bookId = created.bookId;
+  let sessionKind = created.sessionKind;
+  let playMode = created.playMode;
+
+  for (const event of events) {
+    if (event.type !== "session_metadata_updated") continue;
+    let migratedToBook = false;
+    if (event.bookId !== undefined && event.bookId !== bookId) {
+      if (bookId === null && event.bookId !== null) {
+        bookId = event.bookId;
+        migratedToBook = true;
+      } else {
+        throw new TranscriptIntegrityError(
+          sessionId,
+          "binding-drift",
+          `bookId cannot transition from ${JSON.stringify(bookId)} to ${JSON.stringify(event.bookId)} at seq ${event.seq}`,
+        );
+      }
+    }
+    if (event.sessionKind !== undefined && event.sessionKind !== sessionKind) {
+      const migrationKindChange = migratedToBook
+        && event.sessionKind === "book"
+        && (sessionKind === undefined || sessionKind === "chat" || sessionKind === "book-create");
+      if (sessionKind !== undefined && !migrationKindChange) {
+        throw new TranscriptIntegrityError(
+          sessionId,
+          "binding-drift",
+          `sessionKind cannot transition from ${JSON.stringify(sessionKind)} to ${JSON.stringify(event.sessionKind)} at seq ${event.seq}`,
+        );
+      }
+      sessionKind = event.sessionKind;
+    }
+    if (migratedToBook && sessionKind !== undefined && sessionKind !== "book") {
+      throw new TranscriptIntegrityError(
+        sessionId,
+        "binding-drift",
+        `null-to-Book migration must bind sessionKind=book at seq ${event.seq}`,
+      );
+    }
+    if (event.playMode !== undefined) playMode = event.playMode;
+  }
+  return { bookId, ...(sessionKind ? { sessionKind } : {}), ...(playMode ? { playMode } : {}) };
+}
+
+export function validateStrictTranscriptEvents(
+  events: ReadonlyArray<TranscriptEvent>,
+  sessionId: string,
+): TranscriptSessionBinding | null {
+  let previousSeq = -1;
+  for (const event of events) {
+    if (event.sessionId !== sessionId) {
+      throw new TranscriptIntegrityError(
+        sessionId,
+        "session-mismatch",
+        `event at seq ${event.seq} belongs to ${JSON.stringify(event.sessionId)}`,
+      );
+    }
+    if (event.seq <= previousSeq) {
+      throw new TranscriptIntegrityError(
+        sessionId,
+        "invalid-sequence",
+        `seq ${event.seq} is not strictly greater than ${previousSeq}`,
+      );
+    }
+    previousSeq = event.seq;
+  }
+  return deriveTranscriptSessionBinding(events, sessionId);
+}
+
+export async function readTranscriptEventsStrict(
+  projectRoot: string,
+  sessionId: string,
+): Promise<TranscriptEvent[]> {
+  let raw: string;
+  try {
+    raw = await readFile(transcriptPath(projectRoot, sessionId), "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  const events: TranscriptEvent[] = [];
+  for (const [index, line] of raw.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(line);
+    } catch {
+      throw new TranscriptIntegrityError(sessionId, "malformed-line", `line ${index + 1} is not valid JSON`);
+    }
+    const parsed = TranscriptEventSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new TranscriptIntegrityError(
+        sessionId,
+        "malformed-line",
+        `line ${index + 1} does not match transcript/v1`,
+      );
+    }
+    events.push(parsed.data);
+  }
+  validateStrictTranscriptEvents(events, sessionId);
+  return events;
+}
+
 export async function nextTranscriptSeq(projectRoot: string, sessionId: string): Promise<number> {
-  const events = await readTranscriptEvents(projectRoot, sessionId);
+  const events = await readTranscriptEventsStrict(projectRoot, sessionId);
   return events.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
 }
 
@@ -70,11 +205,13 @@ export async function appendTranscriptEvents(
   let result: TranscriptEvent[] = [];
 
   const next = previous.then(async () => {
-    const events = await readTranscriptEvents(projectRoot, sessionId);
+    const events = await readTranscriptEventsStrict(projectRoot, sessionId);
     const nextSeq = events.reduce((max, event) => Math.max(max, event.seq), 0) + 1;
     const built = await buildEvents({ events, nextSeq });
     result = built.map((event) => TranscriptEventSchema.parse(event));
     if (result.length === 0) return;
+
+    validateStrictTranscriptEvents([...events, ...result], sessionId);
 
     await mkdir(sessionsDir(projectRoot), { recursive: true });
     await appendFile(

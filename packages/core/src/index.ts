@@ -622,16 +622,22 @@ export {
   migrateBookSession,
   createAndPersistBookSession,
   SessionAlreadyMigratedError,
+  SessionBindingMismatchError,
 } from "./interaction/book-session-store.js";
 export {
   appendManualSessionMessages,
   appendTranscriptEvent,
   sessionsDir,
   readTranscriptEvents,
+  readTranscriptEventsStrict,
+  deriveTranscriptSessionBinding,
+  validateStrictTranscriptEvents,
+  TranscriptIntegrityError,
   nextTranscriptSeq,
   transcriptPath,
   legacyBookSessionPath,
 } from "./interaction/session-transcript.js";
+export type { TranscriptSessionBinding } from "./interaction/session-transcript.js";
 export {
   cleanRestoredAgentMessages,
   committedMessageEvents,
@@ -848,6 +854,25 @@ export type {
   PreparedFictionContentInvocation,
   FictionContentReceiptAudit,
 } from "./production/fiction-content-contract.js";
+export {
+  createDetachedOwnerDirectionLease,
+  resolveDetachedOwnerDirectionLease,
+  cleanupExpiredDetachedPayloadLeases,
+} from "./production/detached-payload-store.js";
+export {
+  directionTextSha256,
+  verifyResolvedProductionDirectionContext,
+  OwnerDirectionReferenceSchema,
+  ModelMediatedTaskGuidanceReferenceSchema,
+  ResolvedProductionDirectionContextSchema,
+} from "./production/direction-context.js";
+export type {
+  OwnerDirectionReference,
+  ModelMediatedTaskGuidanceReference,
+  ResolvedOwnerDirection,
+  ResolvedModelMediatedTaskGuidance,
+  ResolvedProductionDirectionContext,
+} from "./production/direction-context.js";
 export { buildWriterSystemPrompt, buildGoldenOpeningDiscipline } from "./agents/writer-prompts.js";
 export { analyzeAITells, type AITellResult, type AITellIssue } from "./agents/ai-tells.js";
 export {

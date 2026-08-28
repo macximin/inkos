@@ -3,8 +3,9 @@ import { createBookSession } from "./session.js";
 import type { BookSession, PlayMode, SessionKind } from "./session.js";
 import {
   appendTranscriptEvents,
+  deriveTranscriptSessionBinding,
   legacyBookSessionPath,
-  readTranscriptEvents,
+  readTranscriptEventsStrict,
   sessionsDir,
   transcriptPath,
 } from "./session-transcript.js";
@@ -39,6 +40,20 @@ export class SessionAlreadyMigratedError extends Error {
   }
 }
 
+export class SessionBindingMismatchError extends Error {
+  constructor(
+    sessionId: string,
+    field: "bookId" | "sessionKind",
+    currentValue: string | null | undefined,
+    requestedValue: string | null | undefined,
+  ) {
+    super(
+      `Session "${sessionId}" ${field} is bound to ${JSON.stringify(currentValue)}, not ${JSON.stringify(requestedValue)}`,
+    );
+    this.name = "SessionBindingMismatchError";
+  }
+}
+
 export async function loadBookSession(
   projectRoot: string,
   sessionId: string,
@@ -58,7 +73,41 @@ async function appendSessionCreatedEvent(
   session: BookSession,
 ): Promise<void> {
   await appendTranscriptEvents(projectRoot, session.sessionId, ({ events, nextSeq }) => {
-    if (events.some((event) => event.type === "session_created")) return [];
+    const binding = deriveTranscriptSessionBinding(events, session.sessionId);
+    if (binding) {
+      if (binding.bookId !== session.bookId) {
+        throw new SessionBindingMismatchError(
+          session.sessionId,
+          "bookId",
+          binding.bookId,
+          session.bookId,
+        );
+      }
+      if (session.sessionKind && binding.sessionKind && binding.sessionKind !== session.sessionKind) {
+        throw new SessionBindingMismatchError(
+          session.sessionId,
+          "sessionKind",
+          binding.sessionKind,
+          session.sessionKind,
+        );
+      }
+      if (
+        (session.sessionKind && !binding.sessionKind)
+        || (session.playMode && binding.playMode !== session.playMode)
+      ) {
+        return [{
+          type: "session_metadata_updated",
+          version: 1,
+          sessionId: session.sessionId,
+          seq: nextSeq,
+          timestamp: session.updatedAt,
+          updatedAt: session.updatedAt,
+          ...(session.sessionKind && !binding.sessionKind ? { sessionKind: session.sessionKind } : {}),
+          ...(session.playMode ? { playMode: session.playMode } : {}),
+        }];
+      }
+      return [];
+    }
     return [{
       type: "session_created",
       version: 1,
@@ -104,7 +153,7 @@ export async function persistBookSession(
   projectRoot: string,
   session: BookSession,
 ): Promise<void> {
-  const events = await readTranscriptEvents(projectRoot, session.sessionId);
+  const events = await readTranscriptEventsStrict(projectRoot, session.sessionId);
   if (events.length === 0) {
     if (session.messages.length === 0) {
       await appendSessionCreatedEvent(projectRoot, session);
@@ -114,12 +163,36 @@ export async function persistBookSession(
     return;
   }
 
-  await appendSessionMetadataUpdatedEvent(projectRoot, session.sessionId, {
-    bookId: session.bookId,
-    ...(session.sessionKind ? { sessionKind: session.sessionKind } : {}),
-    ...(session.playMode ? { playMode: session.playMode } : {}),
-    title: session.title,
-    updatedAt: session.updatedAt,
+  await appendTranscriptEvents(projectRoot, session.sessionId, ({ events: currentEvents, nextSeq }) => {
+    const binding = deriveTranscriptSessionBinding(currentEvents, session.sessionId);
+    if (!binding) throw new Error(`Session "${session.sessionId}" has no transcript header.`);
+    if (binding.bookId !== session.bookId) {
+      throw new SessionBindingMismatchError(
+        session.sessionId,
+        "bookId",
+        binding.bookId,
+        session.bookId,
+      );
+    }
+    if (session.sessionKind && binding.sessionKind && binding.sessionKind !== session.sessionKind) {
+      throw new SessionBindingMismatchError(
+        session.sessionId,
+        "sessionKind",
+        binding.sessionKind,
+        session.sessionKind,
+      );
+    }
+    return [{
+      type: "session_metadata_updated",
+      version: 1,
+      sessionId: session.sessionId,
+      seq: nextSeq,
+      timestamp: session.updatedAt,
+      updatedAt: session.updatedAt,
+      ...(session.sessionKind && !binding.sessionKind ? { sessionKind: session.sessionKind } : {}),
+      ...(session.playMode ? { playMode: session.playMode } : {}),
+      title: session.title,
+    }];
   });
 }
 
@@ -209,16 +282,29 @@ export async function migrateBookSession(
   sessionId: string,
   newBookId: string,
 ): Promise<BookSession | null> {
-  const session = await loadBookSession(projectRoot, sessionId);
-  if (!session) return null;
-  if (session.bookId !== null) {
-    throw new SessionAlreadyMigratedError(sessionId, session.bookId);
+  const events = await readTranscriptEventsStrict(projectRoot, sessionId);
+  if (events.length === 0) {
+    const legacy = await readLegacyBookSession(projectRoot, sessionId);
+    if (!legacy) return null;
+    await migrateLegacyBookSessionToTranscript(projectRoot, legacy);
   }
-
-  await appendSessionMetadataUpdatedEvent(projectRoot, sessionId, {
-    bookId: newBookId,
-    sessionKind: "book",
-    updatedAt: Date.now(),
+  await appendTranscriptEvents(projectRoot, sessionId, ({ events: currentEvents, nextSeq }) => {
+    const binding = deriveTranscriptSessionBinding(currentEvents, sessionId);
+    if (!binding) return [];
+    if (binding.bookId !== null) {
+      throw new SessionAlreadyMigratedError(sessionId, binding.bookId);
+    }
+    const updatedAt = Date.now();
+    return [{
+      type: "session_metadata_updated",
+      version: 1,
+      sessionId,
+      seq: nextSeq,
+      timestamp: updatedAt,
+      updatedAt,
+      bookId: newBookId,
+      sessionKind: "book",
+    }];
   });
   return loadBookSession(projectRoot, sessionId);
 }
@@ -234,7 +320,18 @@ export async function createAndPersistBookSession(
   if (sessionId) {
     const existing = await loadBookSession(projectRoot, sessionId);
     if (existing) {
-      if ((sessionKind && existing.sessionKind !== sessionKind) || (options?.playMode && existing.playMode !== options.playMode)) {
+      if (existing.bookId !== bookId) {
+        throw new SessionBindingMismatchError(sessionId, "bookId", existing.bookId, bookId);
+      }
+      if (sessionKind && existing.sessionKind && existing.sessionKind !== sessionKind) {
+        throw new SessionBindingMismatchError(
+          sessionId,
+          "sessionKind",
+          existing.sessionKind,
+          sessionKind,
+        );
+      }
+      if ((sessionKind && !existing.sessionKind) || (options?.playMode && existing.playMode !== options.playMode)) {
         await appendSessionMetadataUpdatedEvent(projectRoot, sessionId, {
           ...(sessionKind ? { sessionKind } : {}),
           ...(options?.playMode ? { playMode: options.playMode } : {}),
@@ -247,5 +344,5 @@ export async function createAndPersistBookSession(
   }
   const session = createBookSession(bookId, sessionId, sessionKind, options);
   await appendSessionCreatedEvent(projectRoot, session);
-  return session;
+  return await loadBookSession(projectRoot, session.sessionId) ?? session;
 }

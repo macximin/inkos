@@ -40,6 +40,7 @@ import { readGenreProfile } from "../agents/rules-reader.js";
 import { analyzeAITells } from "../agents/ai-tells.js";
 import { analyzeSensitiveWords, type SensitiveWordResult } from "../agents/sensitive-words.js";
 import { BookBoundCompletionAgent } from "../agents/book-bound-completion.js";
+import type { ResolvedProductionDirectionContext } from "../production/direction-context.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
@@ -432,6 +433,7 @@ export interface ChapterPipelineResult {
 export interface WriteChaptersOptions {
   readonly wordCount?: number;
   readonly temperatureOverride?: number;
+  readonly directionContext?: ResolvedProductionDirectionContext;
   readonly onChapterComplete?: (
     result: ChapterPipelineResult,
     completedCount: number,
@@ -2349,11 +2351,16 @@ export class PipelineRunner {
   // Full pipeline (convenience — runs draft + audit + revise in one shot)
   // ---------------------------------------------------------------------------
 
-  async writeNextChapter(bookId: string, wordCount?: number, temperatureOverride?: number): Promise<ChapterPipelineResult> {
+  async writeNextChapter(
+    bookId: string,
+    wordCount?: number,
+    temperatureOverride?: number,
+    directionContext?: ResolvedProductionDirectionContext,
+  ): Promise<ChapterPipelineResult> {
     this.throwIfOperationAborted();
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
-      return await this.writeNextChapterWithinBookLock(bookId, wordCount, temperatureOverride);
+      return await this.writeNextChapterWithinBookLock(bookId, wordCount, temperatureOverride, directionContext);
     } finally {
       await releaseLock();
     }
@@ -2368,13 +2375,15 @@ export class PipelineRunner {
     bookId: string,
     wordCount?: number,
     temperatureOverride?: number,
+    directionContext?: ResolvedProductionDirectionContext,
   ): Promise<ChapterPipelineResult> {
     this.throwIfOperationAborted();
     return this._writeNextChapterLocked(
       bookId,
       wordCount,
       temperatureOverride,
-      this.config.externalContext,
+      directionContext?.ownerDirection?.text ?? this.config.externalContext,
+      directionContext,
     );
   }
 
@@ -2399,7 +2408,8 @@ export class PipelineRunner {
             bookId,
             options.wordCount,
             options.temperatureOverride,
-            this.config.externalContext,
+            options.directionContext?.ownerDirection?.text ?? this.config.externalContext,
+            options.directionContext,
           );
         } catch (error) {
           // A batch that just persisted the active Arc endpoint has completed
@@ -2445,6 +2455,7 @@ export class PipelineRunner {
     wordCount?: number,
     temperatureOverride?: number,
     externalContext?: string,
+    directionContext?: ResolvedProductionDirectionContext,
   ): Promise<ChapterPipelineResult> {
     this.throwIfOperationAborted();
     await this.assertChapterProductionReadyWithinBookLock(bookId);
@@ -2504,6 +2515,7 @@ export class PipelineRunner {
       bookDir,
       chapterNumber,
       ...writeInput,
+      ...(directionContext ? { directionContext } : {}),
       lengthSpec,
       ...(wordCount ? { wordCountOverride: wordCount } : {}),
       ...(temperatureOverride ? { temperatureOverride } : {}),

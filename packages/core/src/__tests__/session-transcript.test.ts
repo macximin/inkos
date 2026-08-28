@@ -28,7 +28,23 @@ describe("session transcript codec", () => {
     await rm(projectRoot, { recursive: true, force: true });
   });
 
+  async function appendHeader(sessionId: string, sessionKind?: "book" | "play"): Promise<void> {
+    await appendTranscriptEvent(projectRoot, {
+      type: "session_created",
+      version: 1,
+      sessionId,
+      seq: 0,
+      timestamp: 0,
+      bookId: sessionKind === "book" ? "book-a" : null,
+      ...(sessionKind ? { sessionKind } : {}),
+      title: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+  }
+
   it("一行写入一个 JSON event 并保留 raw AgentMessage 字段", async () => {
+    await appendHeader("s1");
     const started: RequestStartedEvent = {
       type: "request_started",
       version: 1,
@@ -74,11 +90,11 @@ describe("session transcript codec", () => {
     await appendTranscriptEvent(projectRoot, message);
 
     const raw = await readFile(transcriptPath(projectRoot, "s1"), "utf-8");
-    expect(raw.trim().split("\n")).toHaveLength(2);
+    expect(raw.trim().split("\n")).toHaveLength(3);
 
     const events = await readTranscriptEvents(projectRoot, "s1");
-    expect(events).toHaveLength(2);
-    expect((events[1] as MessageEvent).message).toMatchObject({
+    expect(events).toHaveLength(3);
+    expect((events[2] as MessageEvent).message).toMatchObject({
       role: "assistant",
       content: [
         { type: "thinking", thinking: "推理", signature: "sig-1" },
@@ -119,6 +135,7 @@ describe("session transcript codec", () => {
   });
 
   it("按已有 transcript 分配单调递增 seq", async () => {
+    await appendHeader("s1");
     const committed: RequestCommittedEvent = {
       type: "request_committed",
       version: 1,
@@ -134,6 +151,7 @@ describe("session transcript codec", () => {
   });
 
   it("atomically assigns unique seq for concurrent generated events", async () => {
+    await appendHeader("s-concurrent");
     await Promise.all(
       Array.from({ length: 10 }, (_, index) =>
         appendTranscriptEvents(projectRoot, "s-concurrent", ({ nextSeq }) => [{
@@ -149,11 +167,12 @@ describe("session transcript codec", () => {
     );
 
     const events = await readTranscriptEvents(projectRoot, "s-concurrent");
-    expect(events).toHaveLength(10);
-    expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(events).toHaveLength(11);
+    expect(events.map((event) => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
   it("appendManualSessionMessages 写入 committed request 并保留 raw assistant message", async () => {
+    await appendHeader("s1");
     await appendManualSessionMessages(projectRoot, "s1", [{
       role: "assistant",
       content: [{ type: "text", text: "fallback" }],
@@ -174,11 +193,12 @@ describe("session transcript codec", () => {
 
     const events = await readTranscriptEvents(projectRoot, "s1");
     expect(events.map((event) => event.type)).toEqual([
+      "session_created",
       "request_started",
       "message",
       "request_committed",
     ]);
-    expect(events[0]).toMatchObject({ type: "request_started", input: "fallback-input" });
+    expect(events[1]).toMatchObject({ type: "request_started", input: "fallback-input" });
 
     const restored = await restoreAgentMessagesFromTranscript(projectRoot, "s1");
     expect(restored).toMatchObject([
@@ -187,6 +207,7 @@ describe("session transcript codec", () => {
   });
 
   it("appendManualSessionMessages can persist manual tool executions for Studio replay", async () => {
+    await appendHeader("s-tool", "play");
     await appendManualSessionMessages(projectRoot, "s-tool", [{
       role: "assistant",
       content: [{ type: "text", text: "" }],
