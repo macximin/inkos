@@ -131,6 +131,14 @@ export {
   type FireflySurfaceMatchV2,
 } from "./storyyard/review-packet-v2.js";
 export {
+  FireflySurfaceProvenanceBridgeReceiptV1Schema,
+  FireflySurfaceProvenanceInputV1Schema,
+  assertFireflySurfaceProvenanceBridgeReceiptV1Identity,
+  bridgeExactTokenSurfaceMatchV2,
+  type FireflySurfaceProvenanceBridgeReceiptV1,
+  type FireflySurfaceProvenanceInputV1,
+} from "./storyyard/surface-selector-bridge.js";
+export {
   type ArcStatus,
   type ArcEpisodeRole,
   type ArcEpisodeBeat,
