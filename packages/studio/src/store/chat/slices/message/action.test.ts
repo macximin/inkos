@@ -536,9 +536,11 @@ describe("chat message actions", () => {
     expect(store.getState().sessions[sessionId]?.stream).not.toBeNull();
     expect(findTaskExecution(store, sessionId)).toMatchObject({ status: "running" });
     // 聊天回复正常写入
-    expect(store.getState().sessions[sessionId]?.messages.at(-1)).toMatchObject({
-      role: "assistant",
-      content: "任务还在跑。",
+    await vi.waitFor(() => {
+      expect(store.getState().sessions[sessionId]?.messages.at(-1)).toMatchObject({
+        role: "assistant",
+        content: "任务还在跑。",
+      });
     });
   });
 

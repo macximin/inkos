@@ -1,0 +1,158 @@
+{
+  "schemaVersion": "production-kernel-phase0-baseline/v1",
+  "capturedOn": "2026-08-28",
+  "localBaselineCommit": "44eeaeca508bf3aa6dffb1cf5a6a142e2b2042c8",
+  "upstreamBenchmarkCommit": "091048383f411eb99948a8764f42b6fd13006f9b",
+  "packageBaseline": {
+    "version": "1.7.2",
+    "nodeEngine": ">=20.0.0",
+    "pnpmEngine": ">=9.0.0",
+    "requiredScripts": [
+      "build",
+      "test",
+      "typecheck",
+      "audit:semantic-patterns",
+      "verify:publish-manifests"
+    ]
+  },
+  "preservedContracts": [
+    {
+      "id": "book-arc-rail",
+      "testFiles": [
+        "packages/core/src/__tests__/book-production-baseline.test.ts",
+        "packages/core/src/__tests__/arc-store.test.ts",
+        "packages/core/src/__tests__/arc-rail-store.test.ts",
+        "packages/core/src/__tests__/story-rail-reflow.test.ts"
+      ]
+    },
+    {
+      "id": "book-rules-provenance-and-content-neutrality",
+      "testFiles": [
+        "packages/core/src/__tests__/book-rule-provenance.test.ts",
+        "packages/core/src/__tests__/effective-book-rules.test.ts",
+        "packages/core/src/__tests__/fiction-content-contract.test.ts",
+        "packages/core/src/__tests__/genre-fun-first-contract.test.ts"
+      ]
+    },
+    {
+      "id": "reference-hil-and-storyyard",
+      "testFiles": [
+        "packages/core/src/__tests__/reference-transformation.test.ts",
+        "packages/core/src/__tests__/storyyard-review-packet.test.ts",
+        "packages/cli/src/__tests__/review-command.test.ts"
+      ]
+    },
+    {
+      "id": "chapter-journal-and-truth",
+      "testFiles": [
+        "packages/core/src/__tests__/chapter-persistence.test.ts",
+        "packages/core/src/__tests__/chapter-approval.test.ts",
+        "packages/core/src/__tests__/chapter-truth-validation.test.ts"
+      ]
+    },
+    {
+      "id": "session-action-and-batch",
+      "testFiles": [
+        "packages/core/src/__tests__/book-session-store.test.ts",
+        "packages/core/src/__tests__/session-transcript.test.ts",
+        "packages/core/src/__tests__/chapter-batch.test.ts"
+      ]
+    }
+  ],
+  "upstreamNonAdoption": {
+    "status": "deferred-to-explicit-later-phases",
+    "byteFrozenSurfaces": [
+      {
+        "path": "packages/core/src/prompts/builtin-prompts.ts",
+        "sha256": "7de0d6c55725c7eb6e1204d39b5392c0a8b60ed876088816bd82ec0744783f15"
+      },
+      {
+        "path": "packages/core/src/skills/registry.ts",
+        "sha256": "d52d7656c87c7e99e50e33bd311f4d85af443466403f98747fa667d4bff5c186"
+      },
+      {
+        "path": "packages/core/src/skills/builtin-loader.ts",
+        "sha256": "6ecea5918727009c64afa9e6ee546fbc1a5880fea3cb030c67830514b0434e58"
+      },
+      {
+        "path": "packages/core/src/agents/length-normalizer.ts",
+        "sha256": "80820aacbc542ce922e88da434c4d7b1b97ddab3bb83f8e092c55f4c77f2d339"
+      },
+      {
+        "path": "packages/core/skills/inkos-long-writing/SKILL.md",
+        "sha256": "d674b987b23b64e70b73f8921c857a0e6e71f0715deec64f388902bf8143640f"
+      }
+    ],
+    "deferredUpstreamPaths": [
+      "packages/core/src/production/harness.ts",
+      "packages/core/src/skills/production-bindings.ts",
+      "packages/core/src/agent/worker-agent.ts",
+      "packages/core/src/agent/pi-stream.ts"
+    ]
+  },
+  "legacyTransitionBaseline": {
+    "metadataAllowsNullToBook": true,
+    "metadataCurrentlyAllowsBookToBook": true,
+    "actionEnvelopeWriteNextMaximumChapterCount": 20,
+    "batchUsesOneBookLock": true,
+    "phase1TargetRejectsBookToBook": true,
+    "phase3WriteNextTargetChapterCount": 1
+  },
+  "completionEvidence": [
+    {
+      "capability": "write-next",
+      "currentEvidence": [
+        "chapter-file",
+        "chapter-index",
+        "state-snapshot",
+        "chapter-persistence-journal",
+        "fiction-content-operation-manifest"
+      ],
+      "railTruth": "required-when-active-rail-otherwise-explicit-not-applicable"
+    },
+    {
+      "capability": "audit",
+      "currentEvidence": [
+        "audit-result",
+        "chapter-status-readback"
+      ],
+      "railTruth": "not-universally-applicable"
+    },
+    {
+      "capability": "revise",
+      "currentEvidence": [
+        "revised-chapter-or-explicit-no-apply",
+        "chapter-index",
+        "state-snapshot",
+        "revision-archive"
+      ],
+      "railTruth": "required-only-when-revised-chapter-is-rail-bound"
+    },
+    {
+      "capability": "resync",
+      "currentEvidence": [
+        "chapter-readback",
+        "chapter-index",
+        "state-snapshot"
+      ],
+      "railTruth": "required-only-when-resynced-chapter-is-rail-bound"
+    },
+    {
+      "capability": "hil-apply",
+      "currentEvidence": [
+        "hil-candidate-state",
+        "storyyard-decision-receipt",
+        "chapter-readback"
+      ],
+      "railTruth": "not-universally-applicable"
+    },
+    {
+      "capability": "reference-bind",
+      "currentEvidence": [
+        "book-reference-manifest",
+        "firefly-preflight-receipt"
+      ],
+      "railTruth": "not-applicable"
+    }
+  ]
+}
