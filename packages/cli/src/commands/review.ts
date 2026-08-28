@@ -16,6 +16,7 @@ import {
 } from "node:path";
 import {
   StateManager,
+  PipelineRunner,
   ReferenceTransformationHilStore,
   StoryRailReflowStore,
   buildFireflyReviewPackets,
@@ -30,7 +31,7 @@ import {
   type ChapterMeta,
   type StoryRailReflowPrepareResult,
 } from "@actalk/inkos-core";
-import { findProjectRoot, resolveBookId, log, logError } from "../utils.js";
+import { buildPipelineConfig, findProjectRoot, loadConfig, resolveBookId, log, logError } from "../utils.js";
 
 export const reviewCommand = new Command("review")
   .description("Review and approve chapters");
@@ -126,34 +127,43 @@ reviewCommand
       }
       const state = new StateManager(root);
       const bookId = await resolveBookId(decision.workId, root);
-      const release = await state.acquireBookLock(bookId);
+      let result: unknown;
+      if (decision.decision === "approve") {
+        const config = await loadConfig();
+        result = await new PipelineRunner(buildPipelineConfig(config, root)).applyReferenceHilCandidate({
+          bookId,
+          chapterNumber: packet.artifact.chapterNumber,
+          candidateId: candidate.id,
+          actorId: `storyyard:${decision.decisionId}`,
+          actorRole: "owner",
+          interface: "storyyard",
+          expectedCurrentContentSha256: packet.artifact.currentContentSha256,
+          expectedCandidateContentSha256: candidate.sha256,
+        });
+      } else {
+        const release = await state.acquireBookLock(bookId);
+        try {
+          const store = new ReferenceTransformationHilStore(state.bookDir(bookId));
+          const current = (await store.list()).find((view) => view.candidate.candidateId === candidate.id);
+          if (!current || current.candidate.chapterNumber !== packet.artifact.chapterNumber) {
+            throw new Error("Storyyard decision candidate is missing from the canonical InkOS Book.");
+          }
+          if (current.candidate.candidateContentSha256 !== candidate.sha256 || !current.currentChapterMatchesPreparation) {
+            throw new Error("InkOS candidate or current manuscript changed after Storyyard export.");
+          }
+          if (decision.decision === "polish") {
+            result = await store.requestPolish(packet.artifact.chapterNumber, candidate.id);
+          } else if (decision.decision === "reject") {
+            result = await store.reject(packet.artifact.chapterNumber, candidate.id);
+          } else {
+            result = { status: "held", candidateId: candidate.id };
+          }
+        } finally {
+          await release();
+        }
+      }
+      const receiptRelease = await state.acquireBookLock(bookId);
       try {
-        const store = new ReferenceTransformationHilStore(state.bookDir(bookId));
-        const current = (await store.list()).find((view) => view.candidate.candidateId === candidate.id);
-        if (!current || current.candidate.chapterNumber !== packet.artifact.chapterNumber) {
-          throw new Error("Storyyard decision candidate is missing from the canonical InkOS Book.");
-        }
-        if (current.candidate.candidateContentSha256 !== candidate.sha256 || !current.currentChapterMatchesPreparation) {
-          throw new Error("InkOS candidate or current manuscript changed after Storyyard export.");
-        }
-        let result: unknown;
-        if (decision.decision === "approve") {
-          const prefix = String(packet.artifact.chapterNumber).padStart(4, "0");
-          const files = (await readdir(join(state.bookDir(bookId), "chapters")))
-            .filter((name) => name.startsWith(prefix) && name.endsWith(".md"));
-          if (files.length !== 1) throw new Error(`Expected one canonical chapter file for ${prefix}, found ${files.length}.`);
-          result = await store.apply({
-            chapterNumber: packet.artifact.chapterNumber,
-            candidateId: candidate.id,
-            targetChapterRelativePath: join("chapters", files[0]!),
-          });
-        } else if (decision.decision === "polish") {
-          result = await store.requestPolish(packet.artifact.chapterNumber, candidate.id);
-        } else if (decision.decision === "reject") {
-          result = await store.reject(packet.artifact.chapterNumber, candidate.id);
-        } else {
-          result = { status: "held", candidateId: candidate.id };
-        }
         const receiptPath = join("books", bookId, "story", "review-decisions", `${decision.decisionId}.json`);
         const applied = {
           ...decision,
@@ -164,9 +174,9 @@ reviewCommand
         };
         await mkdir(dirname(join(root, receiptPath)), { recursive: true });
         await writeFile(join(root, receiptPath), `${JSON.stringify(applied, null, 2)}\n`, "utf8");
-        log(JSON.stringify({ decision: applied, followUp: decision.decision === "approve" ? "Run write sync, then audit, before chapter approval or continuation." : null }, null, opts.json ? 0 : 2));
+        log(JSON.stringify({ decision: applied }, null, opts.json ? 0 : 2));
       } finally {
-        await release();
+        await receiptRelease();
       }
     } catch (error) {
       if (opts.json) log(JSON.stringify({ error: String(error) }));

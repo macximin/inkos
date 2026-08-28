@@ -21,6 +21,7 @@ export async function writeCompletedOperationEvidenceFixture(input: {
       stage,
       model: "vitest-fixture",
       operationId: input.operation.operationId,
+      productionAttempt: input.operation.productionAttempt,
       messages: [
         { role: "system", content: `Explicit mocked-agent fixture for ${stage}.` },
         { role: "user", content: `Operation ${input.operation.operationKind}.` },

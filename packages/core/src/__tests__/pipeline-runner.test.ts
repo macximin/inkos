@@ -10,6 +10,7 @@ import { StateManager } from "../state/manager.js";
 import { ArcStore } from "../arc/store.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import { StoryRailReflowStore } from "../arc/reflow-store.js";
+import { ReferenceTransformationHilStore } from "../reference/hil-store.js";
 import type { ArcPacket } from "../arc/schema.js";
 import type { StoryRailPlanInput } from "../arc/rail-schema.js";
 import { loadOptionalActiveArcContext, resolveArcChapterContext } from "../arc/forecast.js";
@@ -314,6 +315,24 @@ function createCaptureLogger() {
   };
 
   return { logger, infos, warnings };
+}
+
+async function persistMockChapter(
+  bookDir: string,
+  output: WriteChapterOutput,
+  _numericalSystem?: boolean,
+  language: "zh" | "ko" | "en" = "zh",
+): Promise<void> {
+  const chaptersDir = join(bookDir, "chapters");
+  await mkdir(chaptersDir, { recursive: true });
+  const padded = String(output.chapterNumber).padStart(4, "0");
+  const title = output.title.replace(/[/\\?%*:|"<>]/g, "").replace(/\s+/g, "_").slice(0, 50);
+  const heading = language === "ko"
+    ? `# ${output.chapterNumber}화 ${output.title}`
+    : language === "en"
+      ? `# Chapter ${output.chapterNumber}: ${output.title}`
+      : `# 第${output.chapterNumber}章 ${output.title}`;
+  await writeFile(join(chaptersDir, `${padded}_${title}.md`), `${heading}\n\n${output.content}`, "utf8");
 }
 
 async function createRunnerFixture(
@@ -3419,7 +3438,7 @@ describe("PipelineRunner", () => {
         revisedContent: "After auto fix.",
         wordCount: "After auto fix.".length,
       }));
-    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockImplementation(persistMockChapter);
     vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
     vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
       createAnalyzedOutput({
@@ -4595,6 +4614,225 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("applies Reference HIL, resyncs, and audits under one correlated production attempt", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({ inputGovernanceMode: "legacy" });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const now = "2026-08-28T00:00:00.000Z";
+    const current = "# 第1章 Existing\n\nOld commercial beat.";
+    const candidate = "# 第1章 Existing\n\nThe approved candidate pays off immediately.";
+    await Promise.all([
+      writeFile(join(bookDir, "chapters", "0001_Existing.md"), current, "utf8"),
+      writeFile(join(storyDir, "current_state.md"), "old state", "utf8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "old hooks", "utf8"),
+      writeFile(join(storyDir, "particle_ledger.md"), "old ledger", "utf8"),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "Existing",
+        status: "ready-for-review",
+        wordCount: 4,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      }]),
+    ]);
+    const hil = new ReferenceTransformationHilStore(bookDir, () => new Date(now));
+    await hil.prepare({
+      chapterNumber: 1,
+      candidateId: "commercial-a",
+      currentContent: current,
+      candidateContent: candidate,
+      transformation: {
+        version: 1,
+        kind: "reference-transformation",
+        bookId,
+        referencePackId: "reference-one",
+        spineReference: "reference-one",
+        supportingReferences: [],
+        sourceSegments: [{
+          id: "segment-one",
+          sourceArcIds: ["source-arc"],
+          sourceChapterIds: [1],
+          targetRailAnchorIds: ["A01"],
+          targetArcIds: ["target-arc"],
+          retain: ["payoff"],
+          varySurface: ["people"],
+          linkedConsequences: ["result"],
+        }],
+        createdAt: now,
+        updatedAt: now,
+      },
+      sourceTexts: ["source commercial beat"],
+    });
+    vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    ).mockResolvedValue(createWriterOutput({
+      chapterNumber: 1,
+      title: "Existing",
+      content: "The approved candidate pays off immediately.",
+      updatedState: "synced state",
+      updatedHooks: "synced hooks",
+      updatedLedger: "synced ledger",
+    }));
+    vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({ passed: true, warnings: [] });
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true, issues: [], summary: "commercially ready" }),
+    );
+
+    try {
+      const result = await runner.applyReferenceHilCandidate({
+        bookId,
+        chapterNumber: 1,
+        candidateId: "commercial-a",
+        actorId: "owner-test",
+        interface: "studio",
+      });
+      expect(result.followUpStatus).toBe("complete");
+      expect(result.transitions.map((transition) => transition.state)).toEqual([
+        "applied-needs-resync",
+        "applied-needs-audit",
+        "ready",
+      ]);
+      expect(new Set(result.transitions.map((transition) => transition.productionOperationId))).toEqual(
+        new Set([result.productionAttempt.productionOperationId]),
+      );
+      const receipts = (await readdir(join(storyDir, "runtime", "chapter-commits")))
+        .filter((name) => name.startsWith(result.productionAttempt.productionOperationId));
+      expect(receipts).toHaveLength(2);
+      const [chapter] = await state.loadChapterIndex(bookId);
+      expect(chapter?.status).toBe("ready-for-review");
+      expect(chapter?.pendingAuditReason).toBeUndefined();
+      const resumed = await runner.applyReferenceHilCandidate({
+        bookId,
+        chapterNumber: 1,
+        candidateId: "commercial-a",
+        actorId: "owner-test",
+        interface: "studio",
+      });
+      expect(resumed.followUpStatus).toBe("complete");
+      expect(resumed.transitions).toHaveLength(3);
+
+      const receiptNames = await readdir(join(storyDir, "runtime", "chapter-commits"));
+      const receiptEntries = await Promise.all(receiptNames.map(async (name) => ({
+        name,
+        receipt: JSON.parse(await readFile(
+            join(storyDir, "runtime", "chapter-commits", name),
+            "utf8",
+          )),
+      })));
+      const auditReceiptName = receiptEntries.find(({ receipt }) =>
+        receipt.capability === "audit-draft")?.name;
+      expect(auditReceiptName).toBeDefined();
+      await rm(join(storyDir, "runtime", "chapter-commits", auditReceiptName!));
+      const missingEvidence = await runner.applyReferenceHilCandidate({
+        bookId,
+        chapterNumber: 1,
+        candidateId: "commercial-a",
+        actorId: "owner-test",
+        interface: "studio",
+      });
+      expect(missingEvidence.followUpStatus).toBe("needs-attention");
+      expect(missingEvidence.transitions.at(-1)?.state).toBe("needs-attention");
+      expect(missingEvidence.followUpError).toMatch(/verified audit commit evidence/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an owner-approved HIL manuscript and records needs-attention when resync fails", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture({ inputGovernanceMode: "legacy" });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const now = "2026-08-28T00:00:00.000Z";
+    const current = "# Chapter 1: One\n\nold body";
+    const candidate = "# Chapter 1: One\n\napproved body survives";
+    await Promise.all([
+      writeFile(join(bookDir, "chapters", "0001_One.md"), current, "utf8"),
+      writeFile(join(storyDir, "current_state.md"), "old state", "utf8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "old hooks", "utf8"),
+      state.saveChapterIndex(bookId, [{
+        number: 1,
+        title: "One",
+        status: "ready-for-review",
+        wordCount: 2,
+        createdAt: now,
+        updatedAt: now,
+        auditIssues: [],
+        lengthWarnings: [],
+      }]),
+    ]);
+    await new ReferenceTransformationHilStore(bookDir).prepare({
+      chapterNumber: 1,
+      candidateId: "broken-resync",
+      currentContent: current,
+      candidateContent: candidate,
+      transformation: {
+        version: 1,
+        kind: "reference-transformation",
+        bookId,
+        referencePackId: "reference-one",
+        spineReference: "reference-one",
+        supportingReferences: [],
+        sourceSegments: [{
+          id: "segment-one",
+          sourceArcIds: ["source-arc"],
+          sourceChapterIds: [1],
+          targetRailAnchorIds: ["A01"],
+          targetArcIds: ["target-arc"],
+          retain: ["payoff"],
+          varySurface: ["people"],
+          linkedConsequences: ["result"],
+        }],
+        createdAt: now,
+        updatedAt: now,
+      },
+      sourceTexts: ["source"],
+    });
+    vi.spyOn(
+      WriterAgent.prototype as unknown as {
+        settleChapterState: (input: Record<string, unknown>) => Promise<WriteChapterOutput>;
+      },
+      "settleChapterState",
+    ).mockResolvedValue(createWriterOutput({
+      chapterNumber: 1,
+      title: "One",
+      content: "approved body survives",
+      updatedState: "unsupported state",
+      updatedHooks: "unsupported hooks",
+    }));
+    vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({
+      passed: false,
+      warnings: [{ category: "unsupported_change", description: "cannot settle approved body" }],
+    });
+    const audit = vi.spyOn(ContinuityAuditor.prototype, "auditChapter");
+
+    try {
+      const result = await runner.applyReferenceHilCandidate({
+        bookId,
+        chapterNumber: 1,
+        candidateId: "broken-resync",
+        actorId: "owner-test",
+        interface: "studio",
+      });
+      expect(result.followUpStatus).toBe("needs-attention");
+      expect(result.transitions.map((transition) => transition.state)).toEqual([
+        "applied-needs-resync",
+        "needs-attention",
+      ]);
+      expect(audit).not.toHaveBeenCalled();
+      await expect(readFile(join(bookDir, "chapters", "0001_One.md"), "utf8"))
+        .resolves.toBe(candidate);
+      expect((await state.loadChapterIndex(bookId))[0]?.pendingAuditReason)
+        .toBe("hil-applied-pending-resync");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back resynced chapter truth, index, and snapshot when resync index persistence fails", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
       inputGovernanceMode: "legacy",
@@ -4826,7 +5064,7 @@ describe("PipelineRunner", () => {
         wordCount: input.chapterContent.length,
       }),
     );
-    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockImplementation(persistMockChapter);
     vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
 
     const result = await runner.importChapters({
@@ -5340,7 +5578,7 @@ describe("PipelineRunner", () => {
         wordCount: chapterContent.length,
       }),
     );
-    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockImplementation(persistMockChapter);
     vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
     vi.spyOn(runner, "generateStyleGuide").mockRejectedValue(new Error("style failed"));
 
@@ -5569,7 +5807,7 @@ describe("PipelineRunner", () => {
         wordCount: countChapterLength(input.chapterContent, "en_words"),
       }),
     );
-    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockImplementation(persistMockChapter);
     vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
 
     const result = await runner.importChapters({
@@ -5701,7 +5939,7 @@ describe("PipelineRunner", () => {
         wordCount: "章节正文。".length,
       }),
     );
-    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockImplementation(persistMockChapter);
     vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
 
     try {
@@ -5756,7 +5994,7 @@ describe("PipelineRunner", () => {
         wordCount: countChapterLength("A cold wind crossed the harbor.", "en_words"),
       }),
     );
-    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockImplementation(persistMockChapter);
     vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
 
     try {

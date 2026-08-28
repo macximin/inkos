@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { commitAtomicFileSet, syncDirectory } from "../utils/atomic-file-set.js";
 import type { BookConfig } from "../models/book.js";
 import {
   ReferenceBindingSchema,
@@ -21,13 +22,6 @@ function sha256(value: string): string {
 
 function parseJsonLines<T>(text: string, parse: (value: unknown) => T): T[] {
   return text.split("\n").filter((line) => line.trim()).map((line) => parse(JSON.parse(line)));
-}
-
-async function writeJsonAtomically(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temporary, path);
 }
 
 export interface BindReferencePackInput {
@@ -51,6 +45,14 @@ export class ReferencePackStore {
   get bindingPath(): string { return join(this.bookDir, "story", "reference_binding.json"); }
   get transformationPath(): string { return join(this.bookDir, "story", "reference_transformation.json"); }
   packDir(packId: string): string { return join(this.projectRoot, ".inkos", "reference-packs", packId); }
+  installObjectDir(installObjectSha256: string): string {
+    return join(this.projectRoot, ".inkos", "reference-packs", "objects", installObjectSha256);
+  }
+  installedPackDir(binding: ReferenceBinding): string {
+    return binding.installObjectSha256
+      ? this.installObjectDir(binding.installObjectSha256)
+      : this.packDir(binding.referencePackId);
+  }
 
   async bind(input: Omit<BindReferencePackInput, "projectRoot" | "bookDir">): Promise<ReferenceBinding> {
     const packText = await readFile(resolve(input.packPath), "utf8");
@@ -82,13 +84,20 @@ export class ReferencePackStore {
       }
     }
 
-    const installedDir = this.packDir(pack.id);
-    await mkdir(installedDir, { recursive: true });
-    await Promise.all([
-      writeFile(join(installedDir, "reference-pack.json"), packText, "utf8"),
-      writeFile(join(installedDir, "story-index.jsonl"), storyIndexText, "utf8"),
-      writeFile(join(installedDir, "style-examples.jsonl"), styleExamplesText, "utf8"),
-    ]);
+    const installObjectSha256 = sha256(JSON.stringify({
+      version: 1,
+      packSha256: sha256(packText),
+      storyIndexSha256: sha256(storyIndexText),
+      styleExamplesSha256: sha256(styleExamplesText),
+      sourceSha256: sha256(sourceText),
+    }));
+    const installedDir = await this.installContentAddressedObject({
+      installObjectSha256,
+      packText,
+      storyIndexText,
+      styleExamplesText,
+      sourceText,
+    });
     const binding = ReferenceBindingSchema.parse({
       version: 1,
       kind: "reference-binding",
@@ -99,10 +108,17 @@ export class ReferencePackStore {
       storyIndexSha256: sha256(storyIndexText),
       styleExamplesSha256: sha256(styleExamplesText),
       sourceSha256: sha256(sourceText),
-      sourcePath,
+      sourcePath: join(installedDir, "source.txt"),
+      installObjectSha256,
       boundAt: (input.now ?? (() => new Date()))().toISOString(),
     });
-    await writeJsonAtomically(this.bindingPath, binding);
+    await commitAtomicFileSet({
+      rootDir: this.bookDir,
+      writes: [{
+        relativePath: join("story", "reference_binding.json"),
+        content: `${JSON.stringify(binding, null, 2)}\n`,
+      }],
+    });
     return binding;
   }
 
@@ -116,7 +132,7 @@ export class ReferencePackStore {
   }
 
   async loadPack(binding: ReferenceBinding): Promise<ReferencePack> {
-    const text = await readFile(join(this.packDir(binding.referencePackId), "reference-pack.json"), "utf8");
+    const text = await readFile(join(this.installedPackDir(binding), "reference-pack.json"), "utf8");
     if (sha256(text) !== binding.packSha256) throw new Error("Installed reference pack SHA-256 mismatch.");
     return ReferencePackSchema.parse(JSON.parse(text));
   }
@@ -144,8 +160,8 @@ export class ReferencePackStore {
     }
     const pack = await this.loadPack(binding);
     const [storyIndexText, styleExamplesText, sourceText] = await Promise.all([
-      readFile(join(this.packDir(binding.referencePackId), "story-index.jsonl"), "utf8"),
-      readFile(join(this.packDir(binding.referencePackId), "style-examples.jsonl"), "utf8"),
+      readFile(join(this.installedPackDir(binding), "story-index.jsonl"), "utf8"),
+      readFile(join(this.installedPackDir(binding), "style-examples.jsonl"), "utf8"),
       readFile(binding.sourcePath, "utf8"),
     ]);
     if (sha256(storyIndexText) !== binding.storyIndexSha256) throw new Error("Installed story index SHA-256 mismatch.");
@@ -167,7 +183,7 @@ export class ReferencePackStore {
     if (transformation.bookId !== input.book.id || transformation.referencePackId !== binding.referencePackId) {
       throw new Error("Reference transformation does not match the Book binding.");
     }
-    const installedDir = this.packDir(binding.referencePackId);
+    const installedDir = this.installedPackDir(binding);
     const [storyIndexText, styleExamplesText, sourceText] = await Promise.all([
       readFile(join(installedDir, "story-index.jsonl"), "utf8"),
       readFile(join(installedDir, "style-examples.jsonl"), "utf8"),
@@ -218,6 +234,64 @@ export class ReferencePackStore {
       styleExamples,
       rendered,
     };
+  }
+
+  private async installContentAddressedObject(input: {
+    readonly installObjectSha256: string;
+    readonly packText: string;
+    readonly storyIndexText: string;
+    readonly styleExamplesText: string;
+    readonly sourceText: string;
+  }): Promise<string> {
+    const target = this.installObjectDir(input.installObjectSha256);
+    const assertExact = async (): Promise<void> => {
+      const [pack, story, style, source] = await Promise.all([
+        readFile(join(target, "reference-pack.json"), "utf8"),
+        readFile(join(target, "story-index.jsonl"), "utf8"),
+        readFile(join(target, "style-examples.jsonl"), "utf8"),
+        readFile(join(target, "source.txt"), "utf8"),
+      ]);
+      if (
+        pack !== input.packText
+        || story !== input.storyIndexText
+        || style !== input.styleExamplesText
+        || source !== input.sourceText
+      ) throw new Error(`Content-addressed reference object ${input.installObjectSha256} is corrupt.`);
+    };
+    try {
+      await assertExact();
+      return target;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error;
+    }
+
+    const objectsDir = join(this.projectRoot, ".inkos", "reference-packs", "objects");
+    await mkdir(objectsDir, { recursive: true });
+    const staging = await mkdtemp(join(objectsDir, ".install-"));
+    try {
+      await commitAtomicFileSet({
+        rootDir: staging,
+        writes: [
+          { relativePath: "reference-pack.json", content: input.packText },
+          { relativePath: "story-index.jsonl", content: input.storyIndexText },
+          { relativePath: "style-examples.jsonl", content: input.styleExamplesText },
+          { relativePath: "source.txt", content: input.sourceText },
+        ],
+      });
+      await syncDirectory(staging);
+      try {
+        await rename(staging, target);
+        await syncDirectory(objectsDir);
+      } catch (error) {
+        if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException | undefined)?.code ?? "")) throw error;
+        await rm(staging, { recursive: true, force: true });
+      }
+      await assertExact();
+      return target;
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 }
 

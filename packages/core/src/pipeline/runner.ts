@@ -44,6 +44,13 @@ import type { ResolvedProductionDirectionContext } from "../production/direction
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
+import {
+  writeChapterCommitReceipt,
+  repairChapterCommitEvidence,
+  listChapterCommitReceiptsForAttempt,
+  type ChapterCommitReceipt,
+  type ChapterCommitRepairReceipt,
+} from "../state/chapter-commit-receipt.js";
 import { buildChapterFutureAdvantageExecution } from "../state/future-advantage-ledger.js";
 import { hashFutureAdvantageChapterContent } from "../models/future-advantage-ledger.js";
 import { ArcStore } from "../arc/store.js";
@@ -91,13 +98,30 @@ import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persi
 import { selectBookReferenceContext } from "../references/reference-context.js";
 import { ensureFireflyLongformPreflight } from "../reference/firefly-preflight.js";
 import {
+  ReferenceTransformationHilStore,
+  type ReferenceTransformationCandidate,
+} from "../reference/hil-store.js";
+import {
+  appendReferenceHilApplyTransition,
+  buildReferenceHilApplyTransition,
+  createReferenceHilDecisionReceipt,
+  loadReferenceHilOperation,
+  type ReferenceHilApplyTransition,
+  type ReferenceHilDecisionReceipt,
+} from "../reference/hil-apply-operation.js";
+import {
   beginFictionContentOperation,
   runWithFictionContentOperation,
   sealFictionContentOperationManifest,
   verifyFictionContentOperationEvidence,
   verifyFictionContentOperationManifest,
   type FictionContentOperationStart,
+  type FictionContentOperationManifest,
 } from "../production/fiction-content-contract.js";
+import {
+  createProductionAttemptIdentity,
+  type ProductionAttemptIdentity,
+} from "../production/attempt-identity.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -428,6 +452,24 @@ export interface ChapterPipelineResult {
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
+  readonly productionAttempt?: ProductionAttemptIdentity;
+  readonly chapterCommitReceipt?: ChapterCommitReceipt;
+}
+
+export interface ReferenceHilApplyResult {
+  readonly candidate: ReferenceTransformationCandidate;
+  readonly decision: ReferenceHilDecisionReceipt;
+  readonly transitions: ReadonlyArray<ReferenceHilApplyTransition>;
+  readonly productionAttempt: ProductionAttemptIdentity;
+  readonly syncResult?: ChapterPipelineResult;
+  readonly auditResult?: AuditResult & {
+    readonly chapterNumber: number;
+    readonly publicationCompatibility: SensitiveWordResult;
+    readonly productionAttempt?: ProductionAttemptIdentity;
+    readonly chapterCommitReceipt?: ChapterCommitReceipt;
+  };
+  readonly followUpStatus: "complete" | "needs-attention";
+  readonly followUpError?: string;
 }
 
 export interface WriteChaptersOptions {
@@ -450,6 +492,8 @@ export interface DraftResult {
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
+  readonly productionAttempt?: ProductionAttemptIdentity;
+  readonly chapterCommitReceipt?: ChapterCommitReceipt;
 }
 
 export interface PlanChapterResult {
@@ -494,6 +538,8 @@ export interface ReviseResult {
   };
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
+  readonly productionAttempt?: ProductionAttemptIdentity;
+  readonly chapterCommitReceipt?: ChapterCommitReceipt;
 }
 
 export interface TruthFiles {
@@ -540,6 +586,11 @@ export interface ImportChaptersResult {
   readonly importedCount: number;
   readonly totalWords: number;
   readonly nextChapter: number;
+  readonly chapterCommits: ReadonlyArray<{
+    readonly chapterNumber: number;
+    readonly productionAttempt: ProductionAttemptIdentity;
+    readonly receipt: ChapterCommitReceipt;
+  }>;
 }
 
 export interface InitBookOptions {
@@ -1449,12 +1500,14 @@ export class PipelineRunner {
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
       const chapterNumber = await this.state.getNextChapterNumber(bookId);
+      const productionAttempt = createProductionAttemptIdentity();
       const fictionOperation = await beginFictionContentOperation({
         projectRoot: this.config.projectRoot,
         bookId,
         operationKind: "write-draft",
         chapterNumber,
         requiredStages: ["writer"],
+        productionAttempt,
       });
       return await runWithFictionContentOperation(fictionOperation, async () => {
       const stageLanguage = await this.resolveBookLanguage(book);
@@ -1541,6 +1594,7 @@ export class PipelineRunner {
       const resolvedLang = book.language ?? gp.language;
       // Save truth files
       this.logStage(stageLanguage, { zh: "落盘草稿与真相文件", en: "persisting draft and truth files" });
+      let chapterCommitReceipt: ChapterCommitReceipt | undefined;
       await runChapterPersistenceTransaction({
         bookDir,
         chapterNumber,
@@ -1578,6 +1632,14 @@ export class PipelineRunner {
           await this.state.snapshotState(bookId, chapterNumber);
           await this.syncCurrentStateFactHistory(bookId, chapterNumber);
           await this.persistStoryRailTruthReceipt(bookId, entry);
+          chapterCommitReceipt = await writeChapterCommitReceipt({
+            bookDir,
+            bookId,
+            chapterNumber,
+            capability: "write-draft",
+            productionAttempt,
+            operationManifests: [fictionManifest],
+          });
         },
       });
 
@@ -1594,6 +1656,8 @@ export class PipelineRunner {
         lengthWarnings,
         lengthTelemetry,
         tokenUsage: draftOutput.tokenUsage,
+        productionAttempt,
+        chapterCommitReceipt,
       };
       });
     } finally {
@@ -1656,6 +1720,8 @@ export class PipelineRunner {
   async auditDraft(bookId: string, chapterNumber?: number): Promise<AuditResult & {
     readonly chapterNumber: number;
     readonly publicationCompatibility: SensitiveWordResult;
+    readonly productionAttempt?: ProductionAttemptIdentity;
+    readonly chapterCommitReceipt?: ChapterCommitReceipt;
   }> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
@@ -1666,9 +1732,15 @@ export class PipelineRunner {
   }
 
   /** Audit while the caller owns StateManager.acquireBookLock(bookId). */
-  private async _auditDraftLocked(bookId: string, chapterNumber?: number): Promise<AuditResult & {
+  private async _auditDraftLocked(
+    bookId: string,
+    chapterNumber?: number,
+    productionAttempt: ProductionAttemptIdentity = createProductionAttemptIdentity(),
+  ): Promise<AuditResult & {
     readonly chapterNumber: number;
     readonly publicationCompatibility: SensitiveWordResult;
+    readonly productionAttempt?: ProductionAttemptIdentity;
+    readonly chapterCommitReceipt?: ChapterCommitReceipt;
   }> {
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
@@ -1677,9 +1749,22 @@ export class PipelineRunner {
       throw new Error(`No chapters to audit for "${bookId}"`);
     }
 
+    const fictionOperation = await beginFictionContentOperation({
+      projectRoot: this.config.projectRoot,
+      bookId,
+      operationKind: "audit-draft",
+      chapterNumber: targetChapter,
+      requiredStages: ["auditor"],
+      productionAttempt,
+    });
+    return await runWithFictionContentOperation(fictionOperation, async () => {
+
     const content = await this.readChapterContent(bookDir, targetChapter);
     const index = await this.state.loadChapterIndex(bookId);
     const chapterMeta = index.find((chapter) => chapter.number === targetChapter);
+    if (chapterMeta?.pendingAuditReason === "production-evidence-needs-recovery") {
+      throw new Error(`Chapter ${targetChapter} production evidence must be repaired before audit.`);
+    }
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const language = book.language ?? gp.language;
@@ -1758,6 +1843,16 @@ export class PipelineRunner {
       : undefined;
     const futureAdvantageExecution = newlyAuditedFutureAdvantageExecution
       ?? preserveCurrentFutureAdvantageExecution(chapterMeta, content);
+    await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
+    const fictionManifest = await sealFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+    });
+    await verifyFictionContentOperationManifest({
+      projectRoot: this.config.projectRoot,
+      operation: fictionOperation,
+      expectedManifest: fictionManifest,
+    });
 
     // Update index with audit result
     const updated = index.map((ch) =>
@@ -1774,21 +1869,36 @@ export class PipelineRunner {
           }
         : ch,
     );
-    await this.state.saveChapterIndex(bookId, updated);
     const latestChapter = index.length > 0 ? Math.max(...index.map((chapter) => chapter.number)) : targetChapter;
-    if (targetChapter === latestChapter) {
-      await this.persistValidAuditDriftGuidance({
-        bookDir,
-        chapterNumber: targetChapter,
-        auditResult: result,
-        language,
-      }).catch(() => undefined);
-      const settledChapter = updated.find((chapter) => chapter.number === targetChapter);
-      if (settledChapter?.arcProvenance?.storyRail) {
-        await this.state.snapshotState(bookId, targetChapter);
-        await this.persistStoryRailTruthReceipt(bookId, settledChapter);
+    let chapterCommitReceipt: ChapterCommitReceipt | undefined;
+    await runChapterPersistenceTransaction({
+      bookDir,
+      chapterNumber: targetChapter,
+      persist: async () => {
+        await this.state.saveChapterIndex(bookId, updated);
+        if (targetChapter === latestChapter) {
+          await this.persistValidAuditDriftGuidance({
+            bookDir,
+            chapterNumber: targetChapter,
+            auditResult: result,
+            language,
+          }).catch(() => undefined);
+          const settledChapter = updated.find((chapter) => chapter.number === targetChapter);
+          if (settledChapter?.arcProvenance?.storyRail) {
+            await this.state.snapshotState(bookId, targetChapter);
+            await this.persistStoryRailTruthReceipt(bookId, settledChapter);
+          }
+        }
+        chapterCommitReceipt = await writeChapterCommitReceipt({
+          bookDir,
+          bookId,
+          chapterNumber: targetChapter,
+          capability: "audit-draft",
+          productionAttempt,
+          operationManifests: [fictionManifest],
+        });
       }
-    }
+    });
 
     await this.emitWebhook(
       result.passed ? "audit-passed" : "audit-failed",
@@ -1801,7 +1911,10 @@ export class PipelineRunner {
       ...result,
       chapterNumber: targetChapter,
       publicationCompatibility: evaluation.publicationCompatibility,
+      productionAttempt,
+      chapterCommitReceipt,
     };
+    });
   }
 
   /** Revise the latest (or specified) chapter based on audit issues. */
@@ -1814,6 +1927,7 @@ export class PipelineRunner {
       if (targetChapter < 1) {
         throw new Error(`No chapters to revise for "${bookId}"`);
       }
+      const productionAttempt = createProductionAttemptIdentity();
       const fictionOperation = await beginFictionContentOperation({
         projectRoot: this.config.projectRoot,
         bookId,
@@ -1823,11 +1937,14 @@ export class PipelineRunner {
         // planner, composer, normalizer, and post-audit calls remain part of the
         // exact operation delta when that path invokes them.
         requiredStages: ["auditor"],
+        productionAttempt,
       });
       return await runWithFictionContentOperation(fictionOperation, async () => {
       let fictionOperationSealed = false;
-      const sealRevisionOperation = async (): Promise<void> => {
-        if (fictionOperationSealed) return;
+      let fictionOperationManifest: FictionContentOperationManifest | undefined;
+      let chapterCommitReceipt: ChapterCommitReceipt | undefined;
+      const sealRevisionOperation = async (): Promise<FictionContentOperationManifest> => {
+        if (fictionOperationSealed && fictionOperationManifest) return fictionOperationManifest;
         await this.writeExplicitTestOnlyFictionContentEvidence(fictionOperation);
         const manifest = await sealFictionContentOperationManifest({
           projectRoot: this.config.projectRoot,
@@ -1839,6 +1956,8 @@ export class PipelineRunner {
           expectedManifest: manifest,
         });
         fictionOperationSealed = true;
+        fictionOperationManifest = manifest;
+        return manifest;
       };
 
       const stageLanguage = await this.resolveBookLanguage(book);
@@ -1851,6 +1970,9 @@ export class PipelineRunner {
       const chapterMeta = index.find((ch) => ch.number === targetChapter);
       if (!chapterMeta) {
         throw new Error(`Chapter ${targetChapter} not found in index`);
+      }
+      if (chapterMeta.pendingAuditReason === "production-evidence-needs-recovery") {
+        throw new Error(`Chapter ${targetChapter} production evidence must be repaired before revision.`);
       }
       const latestChapter = index.length > 0
         ? Math.max(...index.map((chapter) => chapter.number))
@@ -1917,7 +2039,7 @@ export class PipelineRunner {
         : buildLengthSpec(book.chapterWordCount, language);
       const revisionBaseCount = countChapterLength(content, lengthSpec.countingMode);
       const persistOriginalAuditState = async (evaluation: MergedAuditEvaluation): Promise<void> => {
-        await sealRevisionOperation();
+        const manifest = await sealRevisionOperation();
         const retainedLengthWarnings = this.buildLengthWarnings(
           targetChapter,
           revisionBaseCount,
@@ -1936,15 +2058,29 @@ export class PipelineRunner {
                 : chapter.pendingAuditReason,
             }
           : chapter);
-        await this.state.saveChapterIndex(bookId, retainedIndex);
-        if (isLatestChapter) {
-          await this.persistValidAuditDriftGuidance({
-            bookDir,
-            chapterNumber: targetChapter,
-            auditResult: evaluation.auditResult,
-            language,
-          }).catch(() => undefined);
-        }
+        await runChapterPersistenceTransaction({
+          bookDir,
+          chapterNumber: targetChapter,
+          persist: async () => {
+            await this.state.saveChapterIndex(bookId, retainedIndex);
+            if (isLatestChapter) {
+              await this.persistValidAuditDriftGuidance({
+                bookDir,
+                chapterNumber: targetChapter,
+                auditResult: evaluation.auditResult,
+                language,
+              }).catch(() => undefined);
+            }
+            chapterCommitReceipt = await writeChapterCommitReceipt({
+              bookDir,
+              bookId,
+              chapterNumber: targetChapter,
+              capability: "revise-draft",
+              productionAttempt,
+              operationManifests: [manifest],
+            });
+          },
+        });
       };
 
       // A concrete brief or a non-auto mode is an explicit user/HIL edit.
@@ -1960,6 +2096,8 @@ export class PipelineRunner {
           fixedIssues: [],
           applied: false,
           status: "unchanged",
+          productionAttempt,
+          chapterCommitReceipt,
           skippedReason: "Audit output could not be parsed; the original chapter was preserved and no revision was attempted.",
         };
       }
@@ -1974,6 +2112,8 @@ export class PipelineRunner {
           fixedIssues: [],
           applied: false,
           status: "unchanged",
+          productionAttempt,
+          chapterCommitReceipt,
           skippedReason: "No creative critical issue requires revision. Warnings remain advisory unless the user explicitly requests an edit.",
         };
       }
@@ -2027,6 +2167,8 @@ export class PipelineRunner {
           fixedIssues: [],
           applied: false,
           status: "unchanged",
+          productionAttempt,
+          chapterCommitReceipt,
           skippedReason: reviseOutput.failureReason
             ?? (reviseOutput.parseFailed
               ? "Revision output could not be parsed; the original chapter was preserved."
@@ -2078,6 +2220,8 @@ export class PipelineRunner {
           fixedIssues: [],
           applied: false,
           status: "unchanged",
+          productionAttempt,
+          chapterCommitReceipt,
           skippedReason: "Post-revision audit output could not be parsed; the original chapter was preserved.",
         };
       }
@@ -2136,6 +2280,8 @@ export class PipelineRunner {
           fixedIssues: [],
           applied: false,
           status: "unchanged",
+          productionAttempt,
+          chapterCommitReceipt,
           skippedReason: `Manual revision kept original chapter: before blocking=${preRevision.blockingCount}, critical=${preRevision.criticalCount}, aiTell=${preRevision.aiTellCount}; after blocking=${effectivePostRevision.blockingCount}, critical=${effectivePostRevision.criticalCount}, aiTell=${effectivePostRevision.aiTellCount}.`,
           revisionDiagnostics: {
             standard: REVISION_GATE_STANDARDS[revisionGate],
@@ -2154,7 +2300,7 @@ export class PipelineRunner {
         };
       }
       this.logLengthWarnings(lengthWarnings);
-      await sealRevisionOperation();
+      const revisionManifest = await sealRevisionOperation();
 
       // Save revised chapter file
       this.logStage(stageLanguage, {
@@ -2272,6 +2418,14 @@ export class PipelineRunner {
         const revisedEntry = updatedIndex.find((chapter) => chapter.number === targetChapter);
         if (revisedEntry) await this.persistStoryRailTruthReceipt(bookId, revisedEntry);
       }
+      chapterCommitReceipt = await writeChapterCommitReceipt({
+        bookDir,
+        bookId,
+        chapterNumber: targetChapter,
+        capability: "revise-draft",
+        productionAttempt,
+        operationManifests: [revisionManifest],
+      });
         },
       });
 
@@ -2288,6 +2442,8 @@ export class PipelineRunner {
         status: effectivePostRevision.auditResult.passed ? "ready-for-review" : "audit-failed",
         lengthWarnings,
         lengthTelemetry,
+        productionAttempt,
+        chapterCommitReceipt,
       };
       });
     } finally {
@@ -2441,6 +2597,24 @@ export class PipelineRunner {
     }
   }
 
+  async repairChapterProductionEvidence(
+    bookId: string,
+    productionOperationId: string,
+    receiptId: string,
+  ): Promise<ChapterCommitRepairReceipt> {
+    const releaseLock = await this.state.acquireBookLock(bookId);
+    try {
+      return await repairChapterCommitEvidence({
+        bookDir: this.state.bookDir(bookId),
+        bookId,
+        productionOperationId,
+        receiptId,
+      });
+    } finally {
+      await releaseLock();
+    }
+  }
+
   async resyncChapterArtifacts(bookId: string, chapterNumber?: number): Promise<ChapterPipelineResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
@@ -2448,6 +2622,245 @@ export class PipelineRunner {
     } finally {
       await releaseLock();
     }
+  }
+
+  /**
+   * Apply and settle one human-approved Reference HIL candidate while holding
+   * one Book lock. The approved manuscript is forward-only: a resync or audit
+   * failure leaves a typed needs-attention transition and never restores the
+   * pre-approval body.
+   */
+  async applyReferenceHilCandidate(input: {
+    readonly bookId: string;
+    readonly chapterNumber: number;
+    readonly candidateId: string;
+    readonly actorId: string;
+    readonly actorRole?: "owner" | "reviewer";
+    readonly interface: "studio" | "cli" | "storyyard";
+    readonly targetChapterRelativePath?: string;
+    readonly expectedCurrentContentSha256?: string;
+    readonly expectedCandidateContentSha256?: string;
+  }): Promise<ReferenceHilApplyResult> {
+    const releaseLock = await this.state.acquireBookLock(input.bookId);
+    try {
+      const bookDir = this.state.bookDir(input.bookId);
+      const store = new ReferenceTransformationHilStore(bookDir);
+      let view = await store.get(input.chapterNumber, input.candidateId);
+      if (
+        (input.expectedCurrentContentSha256
+          && view.candidate.currentContentSha256 !== input.expectedCurrentContentSha256)
+        || (input.expectedCandidateContentSha256
+          && view.candidate.candidateContentSha256 !== input.expectedCandidateContentSha256)
+      ) {
+        throw new Error("Reference HIL candidate no longer matches the approved external review packet.");
+      }
+      let productionAttempt: ProductionAttemptIdentity;
+      let decision: ReferenceHilDecisionReceipt;
+      let transitions: ReferenceHilApplyTransition[];
+
+      if (view.candidate.status === "prepared") {
+        productionAttempt = createProductionAttemptIdentity();
+        decision = createReferenceHilDecisionReceipt({
+          actorId: input.actorId,
+          actorRole: input.actorRole,
+          interface: input.interface,
+          bookId: input.bookId,
+          chapterNumber: input.chapterNumber,
+          candidateId: input.candidateId,
+          currentContentSha256: view.candidate.currentContentSha256,
+          candidateContentSha256: view.candidate.candidateContentSha256,
+        });
+        const targetChapterRelativePath = input.targetChapterRelativePath
+          ?? await this.resolveCanonicalChapterRelativePath(bookDir, input.chapterNumber);
+        const applied = await store.apply({
+          bookId: input.bookId,
+          chapterNumber: input.chapterNumber,
+          candidateId: input.candidateId,
+          targetChapterRelativePath,
+          productionAttempt,
+          decision,
+        });
+        view = await store.get(input.chapterNumber, input.candidateId);
+        transitions = [applied.transition];
+      } else if (view.candidate.status === "applied") {
+        const productionOperationId = view.candidate.productionOperationId;
+        const attemptId = view.candidate.attemptId;
+        if (!productionOperationId || !attemptId) {
+          throw new Error("Applied Reference HIL candidate is missing production correlation.");
+        }
+        const operation = await loadReferenceHilOperation({ bookDir, productionOperationId });
+        decision = operation.decision;
+        transitions = [...operation.transitions];
+        productionAttempt = { productionOperationId, attemptId };
+        const first = transitions[0];
+        if (
+          !first
+          || first.attemptId !== attemptId
+          || first.candidateId !== input.candidateId
+          || first.chapterNumber !== input.chapterNumber
+          || decision.decisionId !== view.candidate.decisionId
+        ) {
+          throw new Error("Applied Reference HIL recovery history does not match the canonical candidate.");
+        }
+      } else {
+        throw new Error(`Reference HIL candidate is already ${view.candidate.status}.`);
+      }
+
+      const appendTransition = async (
+        state: "applied-needs-audit" | "ready" | "needs-attention",
+        phase: "resync" | "audit" | "complete",
+        error?: unknown,
+      ): Promise<ReferenceHilApplyTransition> => {
+        const transition = buildReferenceHilApplyTransition({
+          bookId: input.bookId,
+          chapterNumber: input.chapterNumber,
+          candidateId: input.candidateId,
+          productionAttempt,
+          decisionId: decision.decisionId,
+          sequence: transitions.length,
+          state,
+          phase,
+          error,
+        });
+        await appendReferenceHilApplyTransition({ bookDir, transition });
+        transitions.push(transition);
+        return transition;
+      };
+
+      const latest = () => transitions.at(-1)!;
+      const loadChapter = async (): Promise<ChapterMeta> => {
+        const chapter = (await this.state.loadChapterIndex(input.bookId))
+          .find((entry) => entry.number === input.chapterNumber);
+        if (!chapter) throw new Error(`Chapter ${input.chapterNumber} is missing from the chapter index.`);
+        return chapter;
+      };
+      const resultBase = () => ({
+        candidate: view.candidate,
+        decision,
+        transitions: [...transitions],
+        productionAttempt,
+      });
+      const hasVerifiedAuditCommit = async (): Promise<boolean> => (
+        await listChapterCommitReceiptsForAttempt(bookDir, productionAttempt)
+      ).some((receipt) =>
+        receipt.chapterNumber === input.chapterNumber
+        && receipt.capability === "audit-draft"
+        && receipt.commitState === "verified");
+
+      let syncResult: ChapterPipelineResult | undefined;
+      const beforeResync = await loadChapter();
+      if (latest().state === "ready") {
+        if (
+          beforeResync.status === "ready-for-review"
+          && beforeResync.pendingAuditReason === undefined
+          && await hasVerifiedAuditCommit()
+        ) {
+          return { ...resultBase(), followUpStatus: "complete" };
+        }
+        const error = new Error("Reference HIL ready transition is missing its verified audit commit evidence.");
+        await appendTransition("needs-attention", "complete", error);
+        return {
+          ...resultBase(),
+          followUpStatus: "needs-attention",
+          followUpError: error.message,
+        };
+      }
+
+      const resyncAlreadyCommitted = beforeResync.pendingAuditReason === "resynced-manual-edit"
+        || beforeResync.pendingAuditReason === "production-evidence-needs-recovery";
+      const auditAlreadyCommitted = beforeResync.pendingAuditReason === undefined
+        && beforeResync.status === "ready-for-review";
+
+      if (auditAlreadyCommitted && await hasVerifiedAuditCommit()) {
+        await appendTransition("ready", "complete");
+        return { ...resultBase(), followUpStatus: "complete" };
+      }
+
+      if (
+        latest().state === "applied-needs-resync"
+        || (latest().state === "needs-attention" && latest().phase !== "audit")
+      ) {
+        if (!resyncAlreadyCommitted) {
+          try {
+            syncResult = await this._resyncChapterArtifactsLocked(
+              input.bookId,
+              input.chapterNumber,
+              productionAttempt,
+            );
+          } catch (error) {
+            await appendTransition("needs-attention", "resync", error);
+            return {
+              ...resultBase(),
+              followUpStatus: "needs-attention",
+              followUpError: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
+        await appendTransition("applied-needs-audit", "resync");
+      }
+
+      const beforeAudit = await loadChapter();
+      if (
+        beforeAudit.pendingAuditReason === undefined
+        && beforeAudit.status === "ready-for-review"
+        && await hasVerifiedAuditCommit()
+      ) {
+        await appendTransition("ready", "complete");
+        return { ...resultBase(), syncResult, followUpStatus: "complete" };
+      }
+
+      try {
+        const auditResult = await this._auditDraftLocked(
+          input.bookId,
+          input.chapterNumber,
+          productionAttempt,
+        );
+        const settledChapter = await loadChapter();
+        if (
+          auditResult.passed
+          && !auditResult.parseFailed
+          && auditResult.chapterCommitReceipt?.commitState === "verified"
+          && settledChapter.status === "ready-for-review"
+          && settledChapter.pendingAuditReason === undefined
+        ) {
+          await appendTransition("ready", "complete");
+          return { ...resultBase(), syncResult, auditResult, followUpStatus: "complete" };
+        }
+        const error = new Error(
+          settledChapter.pendingAuditReason === "production-evidence-needs-recovery"
+            ? "Reference HIL audit passed, but its production evidence needs repair."
+            : auditResult.summary || "Reference HIL post-apply audit did not pass.",
+        );
+        await appendTransition("needs-attention", "audit", error);
+        return {
+          ...resultBase(),
+          syncResult,
+          auditResult,
+          followUpStatus: "needs-attention",
+          followUpError: error.message,
+        };
+      } catch (error) {
+        await appendTransition("needs-attention", "audit", error);
+        return {
+          ...resultBase(),
+          syncResult,
+          followUpStatus: "needs-attention",
+          followUpError: error instanceof Error ? error.message : String(error),
+        };
+      }
+    } finally {
+      await releaseLock();
+    }
+  }
+
+  private async resolveCanonicalChapterRelativePath(bookDir: string, chapterNumber: number): Promise<string> {
+    const prefix = String(chapterNumber).padStart(4, "0");
+    const files = (await readdir(join(bookDir, "chapters")))
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".md"));
+    if (files.length !== 1) {
+      throw new Error(`Chapter ${chapterNumber} needs exactly one manuscript file; found ${files.length}.`);
+    }
+    return join("chapters", files[0]!);
   }
 
   private async _writeNextChapterLocked(
@@ -2464,6 +2877,7 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     await this.assertNoPendingStateRepair(bookId);
     const chapterNumber = await this.state.getNextChapterNumber(bookId);
+    const productionAttempt = createProductionAttemptIdentity();
     const requiredFictionStages = (this.config.chapterReviewMode ?? "auto") === "manual"
       ? ["writer"]
       : ["writer", "auditor"];
@@ -2473,6 +2887,7 @@ export class PipelineRunner {
       operationKind: "write-next-chapter",
       chapterNumber,
       requiredStages: requiredFictionStages,
+      productionAttempt,
     });
     return await runWithFictionContentOperation(fictionOperation, async () => {
     const stageLanguage = await this.resolveBookLanguage(book);
@@ -2839,6 +3254,7 @@ export class PipelineRunner {
       operation: fictionOperation,
       expectedManifest: fictionManifest,
     });
+    let chapterCommitReceipt: ChapterCommitReceipt | undefined;
     await runChapterPersistenceTransaction({
       bookDir,
       chapterNumber,
@@ -2877,6 +3293,14 @@ export class PipelineRunner {
             this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" }),
         });
         await this.persistStoryRailTruthReceipt(bookId, artifacts.entry);
+        chapterCommitReceipt = await writeChapterCommitReceipt({
+          bookDir,
+          bookId,
+          chapterNumber,
+          capability: "write-next-chapter",
+          productionAttempt,
+          operationManifests: [fictionManifest],
+        });
       },
     });
 
@@ -2922,6 +3346,8 @@ export class PipelineRunner {
       lengthWarnings,
       lengthTelemetry,
       tokenUsage: totalUsage,
+      productionAttempt,
+      chapterCommitReceipt,
     };
     });
   }
@@ -2941,6 +3367,9 @@ export class PipelineRunner {
       throw new Error(`Chapter ${targetChapter} not found in "${bookId}".`);
     }
     const targetMeta = index[targetIndex]!;
+    if (targetMeta.pendingAuditReason === "production-evidence-needs-recovery") {
+      throw new Error(`Chapter ${targetChapter} production evidence must be repaired before state repair.`);
+    }
     const latestChapter = Math.max(...index.map((chapter) => chapter.number));
     if (targetMeta.status !== "state-degraded") {
       throw new Error(`Chapter ${targetChapter} is not state-degraded.`);
@@ -2948,12 +3377,14 @@ export class PipelineRunner {
     if (targetChapter !== latestChapter) {
       throw new Error(`Only the latest state-degraded chapter can be repaired safely (latest is ${latestChapter}).`);
     }
+    const productionAttempt = createProductionAttemptIdentity();
     const fictionOperation = await beginFictionContentOperation({
       projectRoot: this.config.projectRoot,
       bookId,
       operationKind: "repair-chapter-state",
       chapterNumber: targetChapter,
       requiredStages: ["writer", "auditor"],
+      productionAttempt,
     });
     return await runWithFictionContentOperation(fictionOperation, async () => {
 
@@ -3037,6 +3468,7 @@ export class PipelineRunner {
       auditIssues: targetMeta.auditIssues.filter((issue) => !injectedIssues.has(issue)),
       reviewNote: undefined,
     };
+    let chapterCommitReceipt: ChapterCommitReceipt | undefined;
     await runChapterPersistenceTransaction({
       bookDir,
       chapterNumber: targetChapter,
@@ -3049,6 +3481,14 @@ export class PipelineRunner {
         await this.syncCurrentStateFactHistory(bookId, targetChapter);
         await this.state.saveChapterIndex(bookId, index);
         await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
+        chapterCommitReceipt = await writeChapterCommitReceipt({
+          bookDir,
+          bookId,
+          chapterNumber: targetChapter,
+          capability: "repair-chapter-state",
+          productionAttempt,
+          operationManifests: [fictionManifest],
+        });
       },
     });
 
@@ -3067,11 +3507,17 @@ export class PipelineRunner {
       lengthWarnings: targetMeta.lengthWarnings,
       lengthTelemetry: targetMeta.lengthTelemetry,
       tokenUsage: targetMeta.tokenUsage,
+      productionAttempt,
+      chapterCommitReceipt,
     };
     });
   }
 
-  private async _resyncChapterArtifactsLocked(bookId: string, chapterNumber?: number): Promise<ChapterPipelineResult> {
+  private async _resyncChapterArtifactsLocked(
+    bookId: string,
+    chapterNumber?: number,
+    productionAttempt: ProductionAttemptIdentity = createProductionAttemptIdentity(),
+  ): Promise<ChapterPipelineResult> {
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
     const stageLanguage = await this.resolveBookLanguage(book);
@@ -3087,6 +3533,9 @@ export class PipelineRunner {
     }
 
     const targetMeta = index[targetIndex]!;
+    if (targetMeta.pendingAuditReason === "production-evidence-needs-recovery") {
+      throw new Error(`Chapter ${targetChapter} production evidence must be repaired before resync.`);
+    }
     const latestChapter = Math.max(...index.map((chapter) => chapter.number));
     if (targetChapter !== latestChapter) {
       throw new Error(`Only the latest persisted chapter can be synced safely (latest is ${latestChapter}).`);
@@ -3097,6 +3546,7 @@ export class PipelineRunner {
       operationKind: "resync-chapter-artifacts",
       chapterNumber: targetChapter,
       requiredStages: ["writer", "auditor"],
+      productionAttempt,
     });
     return await runWithFictionContentOperation(fictionOperation, async () => {
 
@@ -3240,6 +3690,7 @@ export class PipelineRunner {
       arcProvenance: resyncedArcProvenance,
       futureAdvantageExecution: resyncedFutureAdvantageExecution,
     };
+    let chapterCommitReceipt: ChapterCommitReceipt | undefined;
     await runChapterPersistenceTransaction({
       bookDir,
       chapterNumber: targetChapter,
@@ -3252,6 +3703,14 @@ export class PipelineRunner {
         await this.syncCurrentStateFactHistory(bookId, targetChapter);
         await this.state.saveChapterIndex(bookId, index);
         await this.persistStoryRailTruthReceipt(bookId, index[targetIndex]!);
+        chapterCommitReceipt = await writeChapterCommitReceipt({
+          bookDir,
+          bookId,
+          chapterNumber: targetChapter,
+          capability: "resync-chapter-artifacts",
+          productionAttempt,
+          operationManifests: [fictionManifest],
+        });
       },
     });
     return {
@@ -3269,6 +3728,8 @@ export class PipelineRunner {
       lengthWarnings: resyncedLengthWarnings,
       lengthTelemetry: resyncedLengthTelemetry,
       tokenUsage: targetMeta.tokenUsage,
+      productionAttempt,
+      chapterCommitReceipt,
     };
     });
   }
@@ -3834,6 +4295,11 @@ ${matrix}`,
       const countingMode = resolveLengthCountingMode(book.language ?? gp.language);
       let totalWords = 0;
       let importedCount = 0;
+      const chapterCommits: Array<{
+        chapterNumber: number;
+        productionAttempt: ProductionAttemptIdentity;
+        receipt: ChapterCommitReceipt;
+      }> = [];
 
       for (let i = startFrom - 1; i < input.chapters.length; i++) {
         this.throwIfOperationAborted();
@@ -3849,12 +4315,14 @@ ${matrix}`,
         }
         const ch = input.chapters[i]!;
         const chapterNumber = i + 1;
+        const productionAttempt = createProductionAttemptIdentity();
         const fictionOperation = await beginFictionContentOperation({
           projectRoot: this.config.projectRoot,
           bookId: input.bookId,
           operationKind: "import-chapter",
           chapterNumber,
           requiredStages: ["auditor"],
+          productionAttempt,
         });
         await runWithFictionContentOperation(fictionOperation, async () => {
         const governedInput = await this.prepareWriteInput(book, bookDir, chapterNumber);
@@ -3905,7 +4373,7 @@ ${matrix}`,
           operation: fictionOperation,
           expectedManifest: fictionManifest,
         });
-        await runChapterPersistenceTransaction({
+        const chapterCommitReceipt = await runChapterPersistenceTransaction({
           bookDir,
           chapterNumber,
           persist: async () => {
@@ -3947,11 +4415,20 @@ ${matrix}`,
             await this.markBookActiveIfNeeded(input.bookId);
             await this.syncCurrentStateFactHistory(input.bookId, chapterNumber);
             await this.persistStoryRailTruthReceipt(input.bookId, newEntry);
+            return await writeChapterCommitReceipt({
+              bookDir,
+              bookId: input.bookId,
+              chapterNumber,
+              capability: "import-chapter",
+              productionAttempt,
+              operationManifests: [fictionManifest],
+            });
           },
         });
 
         importedCount++;
         totalWords += chapterWordCount;
+        chapterCommits.push({ chapterNumber, productionAttempt, receipt: chapterCommitReceipt });
         });
       }
 
@@ -3966,6 +4443,7 @@ ${matrix}`,
         importedCount,
         totalWords,
         nextChapter,
+        chapterCommits,
       };
     } finally {
       await releaseLock();
@@ -4042,6 +4520,11 @@ ${matrix}`,
     if (latestChapter?.pendingAuditReason === "resynced-manual-edit") {
       throw new Error(
         `Latest chapter ${latestChapter.number} was resynced from a manual edit and requires auditDraft before continuing.`,
+      );
+    }
+    if (latestChapter?.pendingAuditReason === "production-evidence-needs-recovery") {
+      throw new Error(
+        `Latest chapter ${latestChapter.number} committed but its production evidence needs repair before continuing.`,
       );
     }
   }

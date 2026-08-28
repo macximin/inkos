@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import { ArcStore } from "../arc/store.js";
 import { StoryRailStore } from "../arc/rail-store.js";
 import { ReferenceTransformationHilStore } from "../reference/hil-store.js";
+import { createReferenceHilDecisionReceipt } from "../reference/hil-apply-operation.js";
+import { createProductionAttemptIdentity } from "../production/attempt-identity.js";
 import { ensureFireflyLongformPreflight } from "../reference/firefly-preflight.js";
 import { ReferencePackStore } from "../reference/store.js";
 import type { BookConfig } from "../models/book.js";
@@ -29,6 +31,13 @@ describe("reference-derived production", () => {
       now: () => new Date(NOW),
     });
     expect(binding.referencePackId).toBe("fixture-reference-v1");
+    expect(binding.installObjectSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(binding.sourcePath).toBe(join(
+      store.installObjectDir(binding.installObjectSha256!),
+      "source.txt",
+    ));
+    await expect(readFile(join(store.installedPackDir(binding), "reference-pack.json"), "utf8"))
+      .resolves.toContain('"fixture-reference-v1"');
 
     const receipt = await ensureFireflyLongformPreflight({
       projectRoot: fixture.root,
@@ -55,6 +64,13 @@ describe("reference-derived production", () => {
     expect(repeated.transformationSha256).toBe(receipt.transformationSha256);
     expect(repeated.railPlanSha256).toBe(receipt.railPlanSha256);
 
+    const plannedTransformation = await store.loadTransformation(true);
+    if (!plannedTransformation) throw new Error("fixture transformation missing");
+    await writeFile(store.transformationPath, `${JSON.stringify({
+      ...plannedTransformation,
+      supportingReferences: [{ referenceId: "future-support-only", roles: ["emotion"], status: "planned" }],
+    }, null, 2)}\n`, "utf8");
+
     const context = await store.buildWriterContext({
       book: fixture.book,
       chapterNumber: 1,
@@ -65,6 +81,10 @@ describe("reference-derived production", () => {
     expect(context?.rendered).toContain("REFERENCE STORY EXAMPLES");
     expect(context?.rendered).toContain("첫 장면 실제 원문");
     expect(context?.rendered).toContain("원작과의 거리는 품질 기준이 아닙니다");
+    expect(context?.transformation.supportingReferences).toEqual([
+      { referenceId: "future-support-only", roles: ["emotion"], status: "planned" },
+    ]);
+    expect(context?.rendered).not.toContain("future-support-only");
     await expect(store.buildWriterContext({
       book: fixture.book,
       chapterNumber: 2,
@@ -142,16 +162,33 @@ describe("reference-derived production", () => {
       currentChapterMatchesPreparation: true,
       candidate: { candidateId: "candidate-a", status: "prepared" },
     });
+    const productionAttempt = createProductionAttemptIdentity();
+    const decision = createReferenceHilDecisionReceipt({
+      actorId: "owner-test",
+      interface: "cli",
+      bookId: fixture.book.id,
+      chapterNumber: 1,
+      candidateId: "candidate-a",
+      currentContentSha256: sha256(current),
+      candidateContentSha256: sha256(candidate),
+      now: () => new Date(NOW),
+    });
     await expect(hil.apply({
+      bookId: fixture.book.id,
       chapterNumber: 1,
       candidateId: "candidate-a",
       targetChapterRelativePath: join("chapters", "..", "..", "0001_escape.md"),
+      productionAttempt,
+      decision,
     })).rejects.toThrow(/target does not match/u);
 
     await hil.apply({
+      bookId: fixture.book.id,
       chapterNumber: 1,
       candidateId: "candidate-a",
       targetChapterRelativePath: targetRelative,
+      productionAttempt,
+      decision,
     });
     expect(await readFile(join(fixture.bookDir, targetRelative), "utf8")).toBe(candidate);
     expect(await readFile(

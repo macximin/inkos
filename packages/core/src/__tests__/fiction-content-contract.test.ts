@@ -42,6 +42,7 @@ async function recordInvocation(input: {
   agentName: string;
   stage: string;
   operationId?: string;
+  productionAttempt?: Awaited<ReturnType<typeof beginFictionContentOperation>>["productionAttempt"];
   error?: Error;
 }): Promise<string> {
   const prepared = await prepareFictionContentInvocation({
@@ -50,6 +51,7 @@ async function recordInvocation(input: {
     agentName: input.agentName,
     stage: input.stage,
     operationId: input.operationId,
+    productionAttempt: input.productionAttempt,
     model: "test-model",
     messages: [{ role: "system", content: `Test ${input.stage}.` }],
   });
@@ -66,6 +68,7 @@ describe("fiction content contract", () => {
     expect([
       "write-draft",
       "write-next-chapter",
+      "audit-draft",
       "revise-draft",
       "repair-chapter-state",
       "resync-chapter-artifacts",
@@ -73,6 +76,7 @@ describe("fiction content contract", () => {
     ].map((kind) => FictionContentOperationKindSchema.parse(kind))).toEqual([
       "write-draft",
       "write-next-chapter",
+      "audit-draft",
       "revise-draft",
       "repair-chapter-state",
       "resync-chapter-artifacts",
@@ -346,6 +350,7 @@ describe("fiction content contract", () => {
       agentName: "writer",
       stage: "writer",
       operationId: operation.operationId,
+      productionAttempt: operation.productionAttempt,
     });
     const invocations = await verifyFictionContentOperationEvidence(root, operation);
     expect(invocations.map((invocation) => invocation.invocationId)).toEqual([currentId]);
@@ -358,6 +363,8 @@ describe("fiction content contract", () => {
     })).resolves.toEqual(manifest);
     expect(manifest).toMatchObject({
       operationId: operation.operationId,
+      productionOperationId: operation.productionAttempt.productionOperationId,
+      attemptId: operation.productionAttempt.attemptId,
       bookId,
       operationKind: "write-draft",
       chapterNumber: 4,
@@ -382,6 +389,7 @@ describe("fiction content contract", () => {
       agentName: "writer",
       stage: "writer",
       operationId: operation.operationId,
+      productionAttempt: operation.productionAttempt,
     });
 
     await expect(verifyFictionContentOperationEvidence(root, operation))
@@ -418,6 +426,7 @@ describe("fiction content contract", () => {
       stage: "writer",
       model: "test-model",
       operationId: operation.operationId,
+      productionAttempt: operation.productionAttempt,
       messages: [{ role: "system", content: "Partial current call." }],
     });
 
@@ -440,6 +449,7 @@ describe("fiction content contract", () => {
       agentName: "writer",
       stage: "writer",
       operationId: operation.operationId,
+      productionAttempt: operation.productionAttempt,
       error: new Error("request refused by provider content policy"),
     });
 
@@ -462,6 +472,7 @@ describe("fiction content contract", () => {
       agentName: "writer",
       stage: "writer",
       operationId: operation.operationId,
+      productionAttempt: operation.productionAttempt,
     });
     const manifest = await sealFictionContentOperationManifest({ projectRoot: root, operation });
     await recordInvocation({
@@ -470,6 +481,7 @@ describe("fiction content contract", () => {
       agentName: "late-validator",
       stage: "auditor",
       operationId: operation.operationId,
+      productionAttempt: operation.productionAttempt,
     });
 
     await expect(verifyFictionContentOperationManifest({
@@ -501,6 +513,7 @@ describe("fiction content contract", () => {
       agentName: "writer-one",
       stage: "writer",
       operationId: first.operationId,
+      productionAttempt: first.productionAttempt,
     });
     await recordInvocation({
       root,
@@ -514,6 +527,7 @@ describe("fiction content contract", () => {
       agentName: "writer-two",
       stage: "writer",
       operationId: second.operationId,
+      productionAttempt: second.productionAttempt,
     });
 
     await expect(verifyFictionContentOperationEvidence(root, first))

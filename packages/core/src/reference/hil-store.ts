@@ -5,6 +5,16 @@ import { z } from "zod";
 import { ChapterMetaSchema } from "../models/chapter.js";
 import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
 import { safeNonSymlinkChildPath } from "../utils/path-safety.js";
+import type { ProductionAttemptIdentity } from "../production/attempt-identity.js";
+import {
+  ReferenceHilDecisionReceiptSchema,
+  buildReferenceHilApplyTransition,
+  loadReferenceHilOperation,
+  referenceHilDecisionRelativePath,
+  referenceHilTransitionRelativePath,
+  type ReferenceHilApplyTransition,
+  type ReferenceHilDecisionReceipt,
+} from "./hil-apply-operation.js";
 import { ReferenceTransformationSchema } from "./schema.js";
 
 const CANDIDATE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u;
@@ -57,7 +67,18 @@ const CandidateMetaSchema = z.object({
   }).strict().optional(),
   preparedAt: z.string().datetime(),
   decidedAt: z.string().datetime().optional(),
-}).strict();
+  productionOperationId: z.string().uuid().optional(),
+  attemptId: z.string().uuid().optional(),
+  decisionId: z.string().uuid().optional(),
+}).strict().superRefine((candidate, ctx) => {
+  const correlation = [candidate.productionOperationId, candidate.attemptId, candidate.decisionId];
+  if (correlation.some((value) => value !== undefined) && correlation.some((value) => value === undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["productionOperationId"], message: "production correlation must be complete" });
+  }
+  if (candidate.status !== "applied" && correlation.some((value) => value !== undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["productionOperationId"], message: "only an applied candidate may carry production correlation" });
+  }
+});
 export type ReferenceTransformationCandidate = z.infer<typeof CandidateMetaSchema>;
 
 const ComparisonReportSchema = z.object({
@@ -95,6 +116,7 @@ export interface ReferenceTransformationHilCandidateView {
   readonly currentContent: string;
   readonly candidateContent: string;
   readonly currentChapterMatchesPreparation: boolean;
+  readonly applyTransition?: ReferenceHilApplyTransition;
 }
 
 function sha256(value: string): string {
@@ -189,12 +211,28 @@ export class ReferenceTransformationHilStore {
       readFile(join(this.bookDir, this.candidateDir(chapterNumber), `${candidateId}.md`), "utf8"),
       this.readCurrentChapter(chapterNumber),
     ]);
+    let applyTransition: ReferenceHilApplyTransition | undefined;
+    if (candidate.status === "applied" && candidate.productionOperationId) {
+      const operation = await loadReferenceHilOperation({
+        bookDir: this.bookDir,
+        productionOperationId: candidate.productionOperationId,
+      });
+      applyTransition = operation.transitions.at(-1);
+      if (
+        !applyTransition
+        || applyTransition.attemptId !== candidate.attemptId
+        || operation.decision.decisionId !== candidate.decisionId
+      ) {
+        throw new Error("Applied Reference HIL candidate does not match its production operation history.");
+      }
+    }
     return {
       candidate,
       report,
       currentContent,
       candidateContent,
       currentChapterMatchesPreparation: sha256(currentContent) === candidate.currentContentSha256,
+      ...(applyTransition ? { applyTransition } : {}),
     };
   }
 
@@ -287,10 +325,17 @@ export class ReferenceTransformationHilStore {
   }
 
   async apply(input: {
+    readonly bookId: string;
     readonly chapterNumber: number;
     readonly candidateId: string;
     readonly targetChapterRelativePath: string;
-  }): Promise<ReferenceTransformationCandidate> {
+    readonly productionAttempt: ProductionAttemptIdentity;
+    readonly decision: ReferenceHilDecisionReceipt;
+  }): Promise<{
+    readonly candidate: ReferenceTransformationCandidate;
+    readonly decision: ReferenceHilDecisionReceipt;
+    readonly transition: ReferenceHilApplyTransition;
+  }> {
     assertCandidateLocator(input.chapterNumber, input.candidateId);
     const metaPath = join(this.bookDir, this.candidateDir(input.chapterNumber), `${input.candidateId}.json`);
     const bodyPath = join(this.bookDir, this.candidateDir(input.chapterNumber), `${input.candidateId}.md`);
@@ -320,6 +365,16 @@ export class ReferenceTransformationHilStore {
     if (sha256(currentBody) !== candidate.currentContentSha256) {
       throw new Error("Current chapter changed after candidate preparation; prepare a new comparison.");
     }
+    const decision = ReferenceHilDecisionReceiptSchema.parse(input.decision);
+    if (
+      decision.bookId !== input.bookId
+      || decision.chapterNumber !== input.chapterNumber
+      || decision.candidateId !== input.candidateId
+      || decision.currentContentSha256 !== candidate.currentContentSha256
+      || decision.candidateContentSha256 !== candidate.candidateContentSha256
+    ) {
+      throw new Error("Reference HIL decision receipt does not match the exact candidate and current manuscript.");
+    }
     const index = ChapterMetaSchema.array().parse(JSON.parse(rawIndex));
     const targetIndex = index.findIndex((chapter) => chapter.number === input.chapterNumber);
     if (targetIndex < 0) throw new Error(`Chapter ${input.chapterNumber} is missing from the chapter index.`);
@@ -333,6 +388,9 @@ export class ReferenceTransformationHilStore {
       ...candidate,
       status: "applied",
       decidedAt: this.now().toISOString(),
+      productionOperationId: input.productionAttempt.productionOperationId,
+      attemptId: input.productionAttempt.attemptId,
+      decisionId: decision.decisionId,
     });
     const report = await this.loadCandidateReport(input.chapterNumber, input.candidateId);
     const decidedReport = ComparisonReportSchema.parse({
@@ -351,6 +409,17 @@ export class ReferenceTransformationHilStore {
           futureAdvantageExecution: undefined,
         })
       : chapter);
+    const transition = buildReferenceHilApplyTransition({
+      bookId: input.bookId,
+      chapterNumber: input.chapterNumber,
+      candidateId: input.candidateId,
+      productionAttempt: input.productionAttempt,
+      decisionId: decision.decisionId,
+      sequence: 0,
+      state: "applied-needs-resync",
+      phase: "apply",
+      now: this.now,
+    });
     await commitAtomicFileSet({
       rootDir: this.bookDir,
       writes: [
@@ -375,9 +444,17 @@ export class ReferenceTransformationHilStore {
           relativePath: this.latestComparisonReportPath(input.chapterNumber),
           content: `${JSON.stringify(decidedReport, null, 2)}\n`,
         },
+        {
+          relativePath: referenceHilDecisionRelativePath(input.productionAttempt.productionOperationId),
+          content: `${JSON.stringify(decision, null, 2)}\n`,
+        },
+        {
+          relativePath: referenceHilTransitionRelativePath(input.productionAttempt.productionOperationId, 0),
+          content: `${JSON.stringify(transition, null, 2)}\n`,
+        },
       ],
     });
-    return decided;
+    return { candidate: decided, decision, transition };
   }
 
   async requestPolish(

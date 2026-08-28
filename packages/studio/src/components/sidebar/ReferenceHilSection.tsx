@@ -22,11 +22,16 @@ interface HilCandidateView {
   readonly currentContent: string;
   readonly candidateContent: string;
   readonly currentChapterMatchesPreparation: boolean;
+  readonly applyTransition?: {
+    readonly state: "applied-needs-resync" | "applied-needs-audit" | "ready" | "needs-attention";
+    readonly phase: "apply" | "resync" | "audit" | "complete";
+  };
 }
 
 export interface ReferenceHilResponse {
   readonly bookId: string;
   readonly pendingCount: number;
+  readonly attentionCount: number;
   readonly candidates: ReadonlyArray<HilCandidateView>;
 }
 
@@ -78,6 +83,11 @@ export function ReferenceHilSection({ bookId }: { readonly bookId: string }) {
             {tr(`${data!.pendingCount} 个待审`, `${data!.pendingCount} pending`, `${data!.pendingCount}개 대기`)}
           </span>
         )}
+        {(data?.attentionCount ?? 0) > 0 && (
+          <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-bold text-destructive">
+            {tr(`${data!.attentionCount} 个需处理`, `${data!.attentionCount} need attention`, `${data!.attentionCount}개 후속 처리`)}
+          </span>
+        )}
       </div>
       <p className="mt-1 text-xs leading-5 text-muted-foreground">
         {tr("比较当前稿与候选稿，再决定接受、润色或拒绝。", "Compare the current and candidate drafts before deciding.", "현재 원고와 후보를 비교한 뒤 수락·폴리싱·거절합니다.")}
@@ -103,7 +113,7 @@ export function ReferenceHilSection({ bookId }: { readonly bookId: string }) {
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs font-semibold">{view.candidate.chapterNumber}화 · {id}</span>
                   <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                    {reportStatusLabel(view.report.status)} · {view.currentChapterMatchesPreparation
+                    {view.applyTransition ? applyStateLabel(view.applyTransition.state) : reportStatusLabel(view.report.status)} · {view.currentChapterMatchesPreparation
                       ? tr("当前稿一致", "baseline current", "기준 원고 일치")
                       : tr("当前稿已变更", "baseline changed", "기준 원고 변경됨")}
                   </span>
@@ -171,6 +181,13 @@ function reportStatusLabel(status: HilCandidateView["report"]["status"]): string
   if (status === "polish-requested") return tr("已请求润色", "Polish requested", "폴리싱 요청됨");
   if (status === "rejected") return tr("已拒绝", "Rejected", "거절됨");
   return tr("待审", "Awaiting review", "검토 대기");
+}
+
+function applyStateLabel(state: NonNullable<HilCandidateView["applyTransition"]>["state"]): string {
+  if (state === "ready") return tr("已完成", "Ready", "적용 완료");
+  if (state === "needs-attention") return tr("需要处理", "Needs attention", "후속 처리 필요");
+  if (state === "applied-needs-audit") return tr("等待审计", "Awaiting audit", "검수 대기");
+  return tr("等待同步", "Awaiting resync", "동기화 대기");
 }
 
 function DraftPane({ label, content }: { readonly label: string; readonly content: string }) {

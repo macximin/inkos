@@ -17,6 +17,7 @@ export const ChapterStatusSchema = z.enum([
   "audit-failed",
   "state-degraded",
   "revising",
+  "needs-revision",
   "ready-for-review",
   "approved",
   "rejected",
@@ -124,6 +125,7 @@ export const ChapterMetaSchema = z.object({
   pendingAuditReason: z.enum([
     "resynced-manual-edit",
     "hil-applied-pending-resync",
+    "production-evidence-needs-recovery",
   ]).optional(),
   detectionScore: z.number().min(0).max(1).optional(),
   detectionProvider: z.string().optional(),

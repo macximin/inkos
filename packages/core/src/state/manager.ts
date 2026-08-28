@@ -9,6 +9,7 @@ import {
 } from "../models/chapter.js";
 import { commitAtomicFileSet, recoverAtomicFileSets } from "../utils/atomic-file-set.js";
 import { recoverChapterPersistenceTransactions } from "./chapter-persistence-journal.js";
+import { recoverBookMutationTransactions } from "./book-mutation-journal.js";
 import { bootstrapStructuredStateFromMarkdown, resolveDurableStoryProgress } from "./state-bootstrap.js";
 import { isSafeBookId } from "../utils/book-id.js";
 
@@ -205,6 +206,7 @@ export class StateManager {
       try {
         await recoverAtomicFileSets(this.bookDir(bookId));
         await recoverChapterPersistenceTransactions(this.bookDir(bookId));
+        await recoverBookMutationTransactions(this.bookDir(bookId));
       } catch (recoveryError) {
         try {
           const snapshot = await this.readLockSnapshot(lockPath);

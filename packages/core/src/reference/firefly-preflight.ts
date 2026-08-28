@@ -90,7 +90,7 @@ export async function ensureFireflyLongformPreflight(input: {
   if (!transformation) {
     if (!readyReference) throw new Error("Reference pack is required to create the transformation map.");
     const installedStoryIndex = join(
-      referenceStore.packDir(readyReference.binding.referencePackId),
+      referenceStore.installedPackDir(readyReference.binding),
       "story-index.jsonl",
     );
     const entries = (await readFile(installedStoryIndex, "utf8"))

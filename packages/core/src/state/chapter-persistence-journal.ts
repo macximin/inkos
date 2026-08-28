@@ -45,9 +45,10 @@ export interface ChapterPersistenceJournal {
 export async function beginChapterPersistenceJournal(
   bookDir: string,
   chapterNumber: number,
+  additionalRelativePaths: ReadonlyArray<string> = [],
 ): Promise<ChapterPersistenceJournal> {
   assertChapterNumber(chapterNumber);
-  const before = await captureChapterPersistenceState(bookDir, chapterNumber);
+  const before = await captureChapterPersistenceState(bookDir, chapterNumber, additionalRelativePaths);
   const journalName = `${CHAPTER_TRANSACTION_PREFIX}${randomUUID()}`;
   const manifest: ChapterTransactionManifest = {
     version: 1,
@@ -168,8 +169,9 @@ export async function recoverChapterPersistenceTransactions(bookDir: string): Pr
 async function captureChapterPersistenceState(
   bookDir: string,
   chapterNumber: number,
+  additionalRelativePaths: ReadonlyArray<string>,
 ): Promise<ReadonlyMap<string, Uint8Array>> {
-  const paths = await collectChapterPersistencePaths(bookDir, chapterNumber);
+  const paths = await collectChapterPersistencePaths(bookDir, chapterNumber, additionalRelativePaths);
   const snapshot = new Map<string, Uint8Array>();
   for (const relativePath of [...paths].sort()) {
     const absolutePath = join(bookDir, relativePath);
@@ -192,7 +194,7 @@ async function restoreChapterPersistenceState(
   chapterNumber: number,
   before: ReadonlyMap<string, Uint8Array>,
 ): Promise<void> {
-  const currentPaths = await collectChapterPersistencePaths(bookDir, chapterNumber);
+  const currentPaths = await collectChapterPersistencePaths(bookDir, chapterNumber, [...before.keys()]);
   await commitAtomicFileSet({
     rootDir: bookDir,
     writes: [...before.entries()].map(([relativePath, content]) => ({ relativePath, content })),
@@ -203,10 +205,12 @@ async function restoreChapterPersistenceState(
 async function collectChapterPersistencePaths(
   bookDir: string,
   chapterNumber: number,
+  additionalRelativePaths: ReadonlyArray<string> = [],
 ): Promise<Set<string>> {
   const paddedChapter = String(chapterNumber).padStart(4, "0");
   const paths = new Set<string>(CHAPTER_PERSISTENCE_FILES);
   paths.add(join("story", "runtime", `chapter-${paddedChapter}.truth-receipt.json`));
+  for (const relativePath of additionalRelativePaths) paths.add(safeRelativePath(relativePath));
   const chaptersDir = join(bookDir, "chapters");
   try {
     const entries = await readdir(chaptersDir, { withFileTypes: true });
@@ -228,6 +232,7 @@ async function collectChapterPersistencePaths(
     collectFilesRecursively(bookDir, join("chapters", ".versions", paddedChapter), paths),
     collectFilesRecursively(bookDir, join("story", "state"), paths),
     collectFilesRecursively(bookDir, join("story", "snapshots", String(chapterNumber)), paths),
+    collectFilesRecursively(bookDir, join("story", "runtime", "chapter-commits"), paths),
   ]);
   return paths;
 }

@@ -1,16 +1,18 @@
 import { Command } from "commander";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
 import {
   ArcStore,
   BookConfigSchema,
+  PipelineRunner,
   ReferencePackStore,
   ReferenceTransformationHilStore,
   StateManager,
   ensureFireflyLongformPreflight,
+  runBookMutationTransaction,
 } from "@actalk/inkos-core";
-import { findProjectRoot, log, logError, resolveBookId } from "../utils.js";
+import { buildPipelineConfig, findProjectRoot, loadConfig, log, logError, resolveBookId } from "../utils.js";
 
 async function referenceArtifact(root: string, path: string, role: string) {
   return {
@@ -19,33 +21,6 @@ async function referenceArtifact(root: string, path: string, role: string) {
     sha256: createHash("sha256").update(await readFile(path)).digest("hex"),
     role,
   };
-}
-
-interface FileSnapshot {
-  readonly path: string;
-  readonly bytes: Buffer | null;
-}
-
-async function snapshotFiles(paths: ReadonlyArray<string>): Promise<ReadonlyArray<FileSnapshot>> {
-  return Promise.all(paths.map(async (path) => {
-    try {
-      return { path, bytes: await readFile(path) };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return { path, bytes: null };
-      throw error;
-    }
-  }));
-}
-
-async function restoreFiles(snapshots: ReadonlyArray<FileSnapshot>): Promise<void> {
-  for (const snapshot of snapshots) {
-    if (snapshot.bytes === null) {
-      await rm(snapshot.path, { force: true });
-      continue;
-    }
-    await mkdir(dirname(snapshot.path), { recursive: true });
-    await writeFile(snapshot.path, snapshot.bytes);
-  }
 }
 
 export const referenceCommand = new Command("reference")
@@ -66,65 +41,58 @@ referenceCommand
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
       const state = new StateManager(root);
-      const book = await state.loadBookConfig(bookId);
       const store = new ReferencePackStore(root, state.bookDir(bookId));
       const release = await state.acquireBookLock(bookId);
       try {
+        const book = await state.loadBookConfig(bookId);
         const packId = JSON.parse(await readFile(opts.pack, "utf8"))?.id;
         if (typeof packId !== "string" || !packId.trim()) throw new Error("Reference pack id is missing.");
         const bookDir = state.bookDir(bookId);
-        const installedDir = store.packDir(packId);
-        const snapshots = await snapshotFiles([
-          join(bookDir, "book.json"),
-          store.bindingPath,
-          store.transformationPath,
-          join(bookDir, "story", "rails", "plan.json"),
-          join(installedDir, "reference-pack.json"),
-          join(installedDir, "story-index.jsonl"),
-          join(installedDir, "style-examples.jsonl"),
-        ]);
-        try {
-          const binding = await store.bind({
-            bookId,
-            packPath: opts.pack,
-            storyIndexPath: opts.storyIndex,
-            styleExamplesPath: opts.styleExamples,
-            sourcePath: opts.source,
-            spineReference: opts.spine,
-          });
-          const updated = BookConfigSchema.parse({
-            ...book,
-            writing: {
-              ...book.writing,
-              reviewMode: "manual",
-              railPolicy: "auto-required",
-              referencePolicy: "auto-required",
-              referencePackId: binding.referencePackId,
-              spineReference: binding.spineReference,
-            },
-            updatedAt: new Date().toISOString(),
-          });
-          await state.saveBookConfig(bookId, updated);
-          const preflight = await ensureFireflyLongformPreflight({
-            projectRoot: root,
-            bookDir,
-            book: updated,
-          });
-          const artifacts = await Promise.all([
-            referenceArtifact(root, join(bookDir, "book.json"), "book-config"),
-            referenceArtifact(root, store.bindingPath, "reference-binding"),
-            referenceArtifact(root, store.transformationPath, "reference-transformation"),
-            referenceArtifact(root, join(bookDir, "story", "rails", "plan.json"), "story-rail-plan"),
-          ]);
-          log(JSON.stringify({ bookId, binding, writing: updated.writing, preflight, artifacts }, null, opts.json ? 2 : 2));
-        } catch (error) {
-          try {
-            await restoreFiles(snapshots);
-          } catch (rollbackError) {
-            throw new AggregateError([error, rollbackError], "Reference bind failed and rollback was incomplete.");
-          }
-          throw error;
-        }
+        await runBookMutationTransaction({
+          bookDir,
+          kind: "reference-bind",
+          relativePaths: [
+            "book.json",
+            join("story", "reference_binding.json"),
+            join("story", "reference_transformation.json"),
+            join("story", "rails", "plan.json"),
+          ],
+          persist: async () => {
+            const binding = await store.bind({
+              bookId,
+              packPath: opts.pack,
+              storyIndexPath: opts.storyIndex,
+              styleExamplesPath: opts.styleExamples,
+              sourcePath: opts.source,
+              spineReference: opts.spine,
+            });
+            const updated = BookConfigSchema.parse({
+              ...book,
+              writing: {
+                ...book.writing,
+                reviewMode: "manual",
+                railPolicy: "auto-required",
+                referencePolicy: "auto-required",
+                referencePackId: binding.referencePackId,
+                spineReference: binding.spineReference,
+              },
+              updatedAt: new Date().toISOString(),
+            });
+            await state.saveBookConfig(bookId, updated);
+            const preflight = await ensureFireflyLongformPreflight({
+              projectRoot: root,
+              bookDir,
+              book: updated,
+            });
+            const artifacts = await Promise.all([
+              referenceArtifact(root, join(bookDir, "book.json"), "book-config"),
+              referenceArtifact(root, store.bindingPath, "reference-binding"),
+              referenceArtifact(root, store.transformationPath, "reference-transformation"),
+              referenceArtifact(root, join(bookDir, "story", "rails", "plan.json"), "story-rail-plan"),
+            ]);
+            log(JSON.stringify({ bookId, binding, writing: updated.writing, preflight, artifacts }, null, opts.json ? 2 : 2));
+          },
+        });
       } finally {
         await release();
       }
@@ -244,26 +212,23 @@ hil.command("apply")
   .argument("[book-id]", "Book ID")
   .requiredOption("--chapter <n>", "Chapter number")
   .requiredOption("--candidate-id <id>", "Candidate id")
-  .requiredOption("--target <relative-path>", "Current chapter path relative to Book root")
+  .option("--target <relative-path>", "Current chapter path relative to Book root")
+  .option("--actor <id>", "Owner/reviewer id recorded in the decision receipt", "local-owner")
   .action(async (bookIdArg: string | undefined, opts) => {
     try {
       const root = findProjectRoot();
       const bookId = await resolveBookId(bookIdArg, root);
-      const state = new StateManager(root);
-      const release = await state.acquireBookLock(bookId);
-      try {
-        const result = await new ReferenceTransformationHilStore(state.bookDir(bookId)).apply({
-          chapterNumber: Number.parseInt(opts.chapter, 10),
-          candidateId: opts.candidateId,
-          targetChapterRelativePath: opts.target,
-        });
-        log(JSON.stringify({
-          ...result,
-          followUp: "Run write sync, then audit, before approval or continuation.",
-        }, null, 2));
-      } finally {
-        await release();
-      }
+      const config = await loadConfig();
+      const result = await new PipelineRunner(buildPipelineConfig(config, root)).applyReferenceHilCandidate({
+        bookId,
+        chapterNumber: Number.parseInt(opts.chapter, 10),
+        candidateId: opts.candidateId,
+        actorId: String(opts.actor),
+        actorRole: "owner",
+        interface: "cli",
+        targetChapterRelativePath: opts.target,
+      });
+      log(JSON.stringify(result, null, 2));
     } catch (error) {
       logError(`Reference HIL apply failed: ${String(error)}`);
       process.exitCode = 1;

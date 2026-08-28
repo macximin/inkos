@@ -59,7 +59,42 @@ export {
   type ReferenceTransformationHilCandidateView,
   type TransformationComparisonReport,
 } from "./reference/hil-store.js";
+export {
+  ReferenceHilDecisionReceiptSchema,
+  ReferenceHilApplyStateSchema,
+  ReferenceHilApplyTransitionSchema,
+  createReferenceHilDecisionReceipt,
+  buildReferenceHilApplyTransition,
+  appendReferenceHilApplyTransition,
+  loadReferenceHilOperation,
+  referenceHilOperationDir,
+  referenceHilDecisionRelativePath,
+  referenceHilTransitionRelativePath,
+  type ReferenceHilDecisionReceipt,
+  type ReferenceHilApplyState,
+  type ReferenceHilApplyTransition,
+} from "./reference/hil-apply-operation.js";
 export { assertChapterApprovalReady } from "./state/chapter-approval.js";
+export {
+  beginBookMutationJournal,
+  commitBookMutationJournal,
+  rollbackBookMutationJournal,
+  runBookMutationTransaction,
+  recoverBookMutationTransactions,
+  type BookMutationJournal,
+} from "./state/book-mutation-journal.js";
+export {
+  ChapterCommitCapabilitySchema,
+  ChapterCommitReceiptSchema,
+  ChapterCommitRepairReceiptSchema,
+  chapterCommitReceiptRelativePath,
+  writeChapterCommitReceipt,
+  listChapterCommitReceiptsForAttempt,
+  repairChapterCommitEvidence,
+  type ChapterCommitCapability,
+  type ChapterCommitReceipt,
+  type ChapterCommitRepairReceipt,
+} from "./state/chapter-commit-receipt.js";
 export {
   FireflyReviewCandidateSchema,
   FireflyReviewDecisionSchema,
@@ -866,6 +901,12 @@ export {
   ModelMediatedTaskGuidanceReferenceSchema,
   ResolvedProductionDirectionContextSchema,
 } from "./production/direction-context.js";
+export {
+  ProductionAttemptIdentitySchema,
+  createProductionAttemptIdentity,
+  verifyProductionAttemptIdentity,
+  type ProductionAttemptIdentity,
+} from "./production/attempt-identity.js";
 export type {
   OwnerDirectionReference,
   ModelMediatedTaskGuidanceReference,
@@ -945,7 +986,7 @@ export { arbitrateRuntimeStateDeltaHooks, type HookArbiterDecision } from "./uti
 export { analyzeHookHealth } from "./utils/hook-health.js";
 
 // Pipeline
-export { PipelineRunner, StoryRailProductionGateError, type PipelineConfig, type ChapterPipelineResult, type WriteChaptersOptions, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";
+export { PipelineRunner, StoryRailProductionGateError, type PipelineConfig, type ChapterPipelineResult, type ReferenceHilApplyResult, type WriteChaptersOptions, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";
 export { Scheduler, type SchedulerConfig } from "./pipeline/scheduler.js";
 export { detectChapter, detectAndRewrite, loadDetectionHistory, type DetectChapterResult, type DetectAndRewriteResult } from "./pipeline/detection-runner.js";
 export { runScriptCreation, runStoryboardCreation, runInteractiveFilmCreation, createStoryboardAssetsManifest, type ScriptCreationRunOptions, type ScriptCreationRunResult, type StoryboardAssetsManifest, type StoryboardCreationRunOptions, type StoryboardCreationRunResult, type InteractiveFilmCreationRunOptions, type InteractiveFilmCreationRunResult, type StoryboardImageAsset, type StoryboardImageAssetVariant } from "./pipeline/script-storyboard-runner.js";

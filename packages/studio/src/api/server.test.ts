@@ -20,6 +20,7 @@ const consolidateMock = vi.fn();
 const evaluateBookQualityMock = vi.fn();
 const reviseDraftMock = vi.fn();
 const resyncChapterArtifactsMock = vi.fn();
+const applyReferenceHilCandidateMock = vi.fn();
 const writeNextChapterMock = vi.fn();
 const writeChaptersMock = vi.fn();
 const rollbackToChapterMock = vi.fn();
@@ -459,6 +460,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     importFanficCanon = importFanficCanonMock;
     reviseDraft = reviseDraftMock;
     resyncChapterArtifacts = resyncChapterArtifactsMock;
+    applyReferenceHilCandidate = applyReferenceHilCandidateMock;
     writeNextChapter = writeNextChapterMock;
     writeChapters = writeChaptersMock;
     completeBookBound = vi.fn(async (_bookId: string, request: {
@@ -697,6 +699,7 @@ describe("createStudioServer daemon lifecycle", () => {
     evaluateBookQualityMock.mockReset();
     reviseDraftMock.mockReset();
     resyncChapterArtifactsMock.mockReset();
+    applyReferenceHilCandidateMock.mockReset();
     writeNextChapterMock.mockReset();
     writeChaptersMock.mockReset();
     rollbackToChapterMock.mockReset();
@@ -765,6 +768,13 @@ describe("createStudioServer daemon lifecycle", () => {
       revised: false,
       status: "ready-for-review",
       auditResult: { passed: true, issues: [], summary: "synced" },
+    });
+    applyReferenceHilCandidateMock.mockResolvedValue({
+      candidate: { candidateId: "candidate-a", status: "applied" },
+      decision: { decisionId: "decision-a" },
+      transitions: [{ state: "ready" }],
+      productionAttempt: { productionOperationId: "00000000-0000-4000-8000-000000000001", attemptId: "00000000-0000-4000-8000-000000000002" },
+      followUpStatus: "complete",
     });
     writeNextChapterMock.mockResolvedValue({
       chapterNumber: 3,
@@ -1405,11 +1415,33 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(listed.status).toBe(200);
     await expect(listed.json()).resolves.toMatchObject({
       pendingCount: 1,
+      attentionCount: 0,
       candidates: [{
         currentChapterMatchesPreparation: true,
         candidate: { candidateId: "candidate-a", status: "prepared" },
         report: { status: "unreviewed" },
       }],
+    });
+
+    const applied = await app.request("http://localhost/api/v1/books/hil-book/reference-hil/1/candidate-a/apply", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actorId: "studio-owner" }),
+    });
+    expect(applied.status).toBe(200);
+    await expect(applied.json()).resolves.toMatchObject({
+      ok: true,
+      action: "apply",
+      followUpStatus: "complete",
+      result: { transitions: [{ state: "ready" }] },
+    });
+    expect(applyReferenceHilCandidateMock).toHaveBeenCalledWith({
+      bookId: "hil-book",
+      chapterNumber: 1,
+      candidateId: "candidate-a",
+      actorId: "studio-owner",
+      actorRole: "owner",
+      interface: "studio",
     });
 
     const polished = await app.request("http://localhost/api/v1/books/hil-book/reference-hil/1/candidate-a/polish", {

@@ -4150,6 +4150,7 @@ export function createStudioServer(
       return c.json({
         bookId: id,
         pendingCount: candidates.filter(({ candidate }) => candidate.status === "prepared").length,
+        attentionCount: candidates.filter(({ applyTransition }) => applyTransition?.state === "needs-attention").length,
         candidates,
       });
     } catch (e) {
@@ -4174,60 +4175,51 @@ export function createStudioServer(
 
     try {
       await state.loadBookConfig(id);
-      const releaseLock = await state.acquireBookLock(id);
-      let result: unknown;
-      try {
-        const store = new ReferenceTransformationHilStore(state.bookDir(id));
-        if (action === "polish") {
-          result = await store.requestPolish(chapterNumber, candidateId);
-        } else if (action === "reject") {
-          result = await store.reject(chapterNumber, candidateId);
-        } else {
-          const chapterFiles = (await readdir(join(state.bookDir(id), "chapters")))
-            .filter((file) => file.startsWith(String(chapterNumber).padStart(4, "0")) && file.endsWith(".md"));
-          if (chapterFiles.length !== 1) {
-            throw new Error(`Chapter ${chapterNumber} needs exactly one manuscript file; found ${chapterFiles.length}.`);
-          }
-          result = await store.apply({
-            chapterNumber,
-            candidateId,
-            targetChapterRelativePath: join("chapters", chapterFiles[0]!),
-          });
-        }
-      } finally {
-        await releaseLock();
-      }
-
       if (action !== "apply") {
+        const releaseLock = await state.acquireBookLock(id);
+        let result: unknown;
+        try {
+          const store = new ReferenceTransformationHilStore(state.bookDir(id));
+          result = action === "polish"
+            ? await store.requestPolish(chapterNumber, candidateId)
+            : await store.reject(chapterNumber, candidateId);
+        } finally {
+          await releaseLock();
+        }
         broadcast("reference-hil:updated", { bookId: id, chapterNumber, candidateId, action });
         return c.json({ ok: true, action, result });
       }
 
-      let syncResult: unknown;
-      let auditResult: unknown;
-      let followUpError: string | undefined;
-      try {
-        const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForSettings: id }));
-        syncResult = await pipeline.resyncChapterArtifacts(id, chapterNumber);
-        auditResult = await pipeline.auditDraft(id, chapterNumber);
-      } catch (error) {
-        followUpError = error instanceof Error ? error.message : String(error);
-      }
+      const body = await c.req.json().catch(() => ({})) as { actorId?: unknown; actorRole?: unknown };
+      const actorId = typeof body.actorId === "string" && body.actorId.trim()
+        ? body.actorId.trim()
+        : "local-owner";
+      const actorRole = body.actorRole === "reviewer" ? "reviewer" as const : "owner" as const;
+      const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForSettings: id }));
+      const result = await pipeline.applyReferenceHilCandidate({
+        bookId: id,
+        chapterNumber,
+        candidateId,
+        actorId,
+        actorRole,
+        interface: "studio",
+      });
       broadcast("reference-hil:updated", {
         bookId: id,
         chapterNumber,
         candidateId,
         action,
-        followUpError,
+        followUpStatus: result.followUpStatus,
+        followUpError: result.followUpError,
       });
       return c.json({
         ok: true,
         action,
         result,
-        syncResult,
-        auditResult,
-        followUpStatus: followUpError ? "needs-attention" : "complete",
-        ...(followUpError ? { followUpError } : {}),
+        syncResult: result.syncResult,
+        auditResult: result.auditResult,
+        followUpStatus: result.followUpStatus,
+        ...(result.followUpError ? { followUpError: result.followUpError } : {}),
       });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);

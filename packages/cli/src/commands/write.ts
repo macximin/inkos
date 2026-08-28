@@ -397,3 +397,29 @@ writeCommand
       process.exit(1);
     }
   });
+
+writeCommand
+  .command("repair-evidence")
+  .description("Repair only a committed Chapter's missing production evidence; never reruns or rewrites prose")
+  .argument("[book-id]", "Book ID (auto-detected if only one book)")
+  .requiredOption("--operation <uuid>", "Production operation ID from the recovery gate")
+  .requiredOption("--receipt <uuid>", "Chapter commit receipt ID")
+  .option("--json", "Output JSON")
+  .action(async (bookIdArg: string | undefined, opts) => {
+    try {
+      const root = findProjectRoot();
+      const bookId = await resolveBookId(bookIdArg, root);
+      const config = await loadConfig();
+      const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
+      const result = await pipeline.repairChapterProductionEvidence(
+        bookId,
+        String(opts.operation),
+        String(opts.receipt),
+      );
+      log(JSON.stringify(result, null, opts.json ? 0 : 2));
+    } catch (error) {
+      if (opts.json) log(JSON.stringify({ error: String(error) }));
+      else logError(`Failed to repair Chapter production evidence: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });

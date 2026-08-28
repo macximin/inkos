@@ -4,8 +4,25 @@ import { mkdir, open, readFile, readdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { LLMMessage } from "../llm/provider.js";
+import {
+  createProductionAttemptIdentity,
+  verifyProductionAttemptIdentity,
+  type ProductionAttemptIdentity,
+} from "./attempt-identity.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+function assertPairedProductionCorrelation(
+  value: { readonly productionOperationId?: string | null; readonly attemptId?: string | null },
+  ctx: z.RefinementCtx,
+): void {
+  if ((value.productionOperationId === null) !== (value.attemptId === null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "productionOperationId and attemptId must both be present or both be null",
+    });
+  }
+}
 
 export const FICTION_CONTENT_CONTRACT_ID = "fiction-content-neutral-ko/v1" as const;
 
@@ -111,10 +128,12 @@ const FictionContentInvocationTraceSchema = z.object({
   agentName: z.string().min(1),
   stage: z.string().min(1),
   operationId: z.string().uuid().nullable().default(null),
+  productionOperationId: z.string().uuid().nullable().default(null),
+  attemptId: z.string().uuid().nullable().default(null),
   createdAt: z.string().datetime(),
   model: z.string().min(1),
   logicalRequestPayloadSha256: Sha256Schema,
-}).strict();
+}).strict().superRefine(assertPairedProductionCorrelation);
 
 const FictionContentInvocationReceiptSchema = z.object({
   version: z.literal(1),
@@ -123,6 +142,8 @@ const FictionContentInvocationReceiptSchema = z.object({
   agentName: z.string().min(1),
   stage: z.string().min(1),
   operationId: z.string().uuid().nullable().default(null),
+  productionOperationId: z.string().uuid().nullable().default(null),
+  attemptId: z.string().uuid().nullable().default(null),
   traceSha256: Sha256Schema,
   logicalRequestPayloadSha256: Sha256Schema,
   systemPromptSha256: Sha256Schema,
@@ -134,7 +155,7 @@ const FictionContentInvocationReceiptSchema = z.object({
   contentIntensityAuthorityReceiptSha256: Sha256Schema.nullable(),
   model: z.string().min(1),
   reasoningEffort: z.string().min(1).nullable(),
-}).strict();
+}).strict().superRefine(assertPairedProductionCorrelation);
 
 const FictionContentInvocationOutcomeSchema = z.object({
   version: z.literal(1),
@@ -143,12 +164,15 @@ const FictionContentInvocationOutcomeSchema = z.object({
   agentName: z.string().min(1),
   stage: z.string().min(1),
   operationId: z.string().uuid().nullable().default(null),
+  productionOperationId: z.string().uuid().nullable().default(null),
+  attemptId: z.string().uuid().nullable().default(null),
   completedAt: z.string().datetime(),
   status: z.enum(["completed", "provider-refused", "failed"]),
   outputSha256: Sha256Schema.nullable(),
   errorName: z.string().min(1).nullable(),
   errorMessageSha256: Sha256Schema.nullable(),
 }).strict().superRefine((outcome, ctx) => {
+  assertPairedProductionCorrelation(outcome, ctx);
   if (outcome.status === "completed") {
     if (!outcome.outputSha256 || outcome.errorName || outcome.errorMessageSha256) {
       ctx.addIssue({
@@ -172,17 +196,20 @@ export const FictionContentToolAuthorizationSchema = z.object({
   agentName: z.string().min(1),
   stage: z.string().min(1),
   operationId: z.string().uuid().nullable(),
+  productionOperationId: z.string().uuid().nullable().default(null),
+  attemptId: z.string().uuid().nullable().default(null),
   createdAt: z.string().datetime(),
   assistantOutputSha256: Sha256Schema,
   toolCallId: z.string().min(1),
   toolName: z.string().min(1),
   argumentsSha256: Sha256Schema,
   outcomeFileSha256: Sha256Schema,
-}).strict();
+}).strict().superRefine(assertPairedProductionCorrelation);
 
 export const FictionContentOperationKindSchema = z.enum([
   "write-draft",
   "write-next-chapter",
+  "audit-draft",
   "revise-draft",
   "repair-chapter-state",
   "resync-chapter-artifacts",
@@ -231,6 +258,8 @@ const FictionContentOperationInvocationSchema = z.object({
 export const FictionContentOperationManifestSchema = z.object({
   version: z.literal(1),
   operationId: z.string().uuid(),
+  productionOperationId: z.string().uuid().nullable().default(null),
+  attemptId: z.string().uuid().nullable().default(null),
   bookId: z.string().min(1),
   operationKind: FictionContentOperationKindSchema,
   chapterNumber: z.number().int().positive(),
@@ -245,6 +274,7 @@ export const FictionContentOperationManifestSchema = z.object({
   invocations: z.array(FictionContentOperationInvocationSchema).min(1),
   invocationSetSha256: Sha256Schema,
 }).strict().superRefine((manifest, ctx) => {
+  assertPairedProductionCorrelation(manifest, ctx);
   if (new Set(manifest.requiredStages).size !== manifest.requiredStages.length) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -302,6 +332,7 @@ export type FictionContentOperationManifest = z.infer<typeof FictionContentOpera
 
 export interface FictionContentOperationStart {
   readonly operationId: string;
+  readonly productionAttempt: ProductionAttemptIdentity;
   readonly bookId: string;
   readonly operationKind: FictionContentOperationKind;
   readonly chapterNumber: number;
@@ -343,6 +374,8 @@ export interface PrepareFictionContentInvocationInput {
   readonly evidenceBookDir?: string;
   /** Host operation identity. Normally inherited from runWithFictionContentOperation. */
   readonly operationId?: string;
+  /** Optional explicit parent attempt. Normally inherited from the active host operation. */
+  readonly productionAttempt?: ProductionAttemptIdentity;
 }
 
 export interface PreparedFictionContentInvocation {
@@ -355,6 +388,7 @@ export interface PreparedFictionContentInvocation {
 interface ActiveFictionContentOperation {
   readonly operationId: string;
   readonly bookId: string;
+  readonly productionAttempt: ProductionAttemptIdentity;
 }
 
 const activeFictionContentOperation = new AsyncLocalStorage<ActiveFictionContentOperation>();
@@ -373,12 +407,15 @@ export async function runWithFictionContentOperation<T>(
   if (current && (
     current.operationId !== operation.operationId
     || current.bookId !== operation.bookId
+    || current.productionAttempt.productionOperationId !== operation.productionAttempt.productionOperationId
+    || current.productionAttempt.attemptId !== operation.productionAttempt.attemptId
   )) {
-    throw new Error("Nested fiction-content operations must keep the same Book and operation ID.");
+    throw new Error("Nested fiction-content operations must keep the same Book, operation, and production attempt.");
   }
   return activeFictionContentOperation.run({
     operationId: operation.operationId,
     bookId: operation.bookId,
+    productionAttempt: operation.productionAttempt,
   }, task);
 }
 
@@ -489,8 +526,21 @@ export async function prepareFictionContentInvocation(
   ) {
     throw new Error("Fiction-content invocation operation ID does not match the active host operation.");
   }
+  if (
+    input.productionAttempt
+    && activeOperation
+    && (
+      input.productionAttempt.productionOperationId !== activeOperation.productionAttempt.productionOperationId
+      || input.productionAttempt.attemptId !== activeOperation.productionAttempt.attemptId
+    )
+  ) {
+    throw new Error("Fiction-content invocation production attempt does not match the active host operation.");
+  }
   const operationId = input.operationId ?? activeOperation?.operationId ?? null;
   if (operationId) z.string().uuid().parse(operationId);
+  const productionAttempt = input.productionAttempt
+    ? verifyProductionAttemptIdentity(input.productionAttempt)
+    : activeOperation?.productionAttempt;
   const messages = appendFictionContentContract(input.messages, intensity);
   const systemPrompt = messages.filter((message) => message.role === "system")
     .map((message) => message.content)
@@ -517,6 +567,8 @@ export async function prepareFictionContentInvocation(
     agentName: input.agentName,
     stage: input.stage,
     operationId,
+    productionOperationId: productionAttempt?.productionOperationId ?? null,
+    attemptId: productionAttempt?.attemptId ?? null,
     createdAt: (input.now ?? (() => new Date()))().toISOString(),
     model: input.model,
     logicalRequestPayloadSha256,
@@ -528,6 +580,8 @@ export async function prepareFictionContentInvocation(
     agentName: input.agentName,
     stage: input.stage,
     operationId,
+    productionOperationId: productionAttempt?.productionOperationId ?? null,
+    attemptId: productionAttempt?.attemptId ?? null,
     traceSha256: hashCanonicalJson(trace),
     logicalRequestPayloadSha256,
     systemPromptSha256: sha256(systemPrompt),
@@ -568,6 +622,8 @@ export async function writeFictionContentInvocationOutcome(input: {
     agentName: trace.agentName,
     stage: trace.stage,
     operationId: trace.operationId,
+    productionOperationId: trace.productionOperationId,
+    attemptId: trace.attemptId,
     completedAt: (input.now ?? (() => new Date()))().toISOString(),
     status,
     outputSha256: hasError ? null : sha256(input.output!),
@@ -626,6 +682,8 @@ export async function authorizeFictionContentToolCalls(input: {
       agentName: completed.trace.agentName,
       stage: completed.trace.stage,
       operationId: completed.trace.operationId,
+      productionOperationId: completed.trace.productionOperationId,
+      attemptId: completed.trace.attemptId,
       createdAt,
       assistantOutputSha256: sha256(input.assistantOutput),
       toolCallId: toolCall.id,
@@ -680,6 +738,8 @@ export async function verifyFictionContentToolAuthorization(input: {
     || stored.agentName !== completed.trace.agentName
     || stored.stage !== completed.trace.stage
     || stored.operationId !== completed.trace.operationId
+    || stored.productionOperationId !== completed.trace.productionOperationId
+    || stored.attemptId !== completed.trace.attemptId
     || stored.assistantOutputSha256 !== sha256(input.assistantOutput)
     || stored.toolCallId !== input.toolCall.id
     || stored.toolName !== input.toolCall.name
@@ -729,6 +789,7 @@ export async function beginFictionContentOperation(input: {
   readonly operationKind: FictionContentOperationKind;
   readonly chapterNumber: number;
   readonly requiredStages: ReadonlyArray<string>;
+  readonly productionAttempt?: ProductionAttemptIdentity;
   readonly now?: () => Date;
 }): Promise<FictionContentOperationStart> {
   assertSafeBookId(input.bookId);
@@ -751,6 +812,9 @@ export async function beginFictionContentOperation(input: {
   });
   return {
     operationId: randomUUID(),
+    productionAttempt: input.productionAttempt
+      ? verifyProductionAttemptIdentity(input.productionAttempt)
+      : createProductionAttemptIdentity(),
     bookId: input.bookId,
     operationKind,
     chapterNumber: input.chapterNumber,
@@ -786,6 +850,8 @@ export async function sealFictionContentOperationManifest(input: {
   const manifest = FictionContentOperationManifestSchema.parse({
     version: 1,
     operationId: input.operation.operationId,
+    productionOperationId: input.operation.productionAttempt.productionOperationId,
+    attemptId: input.operation.productionAttempt.attemptId,
     bookId: input.operation.bookId,
     operationKind: input.operation.operationKind,
     chapterNumber: input.operation.chapterNumber,
@@ -829,6 +895,8 @@ export async function verifyFictionContentOperationManifest(input: {
   }
   if (
     stored.operationId !== input.operation.operationId
+    || stored.productionOperationId !== input.operation.productionAttempt.productionOperationId
+    || stored.attemptId !== input.operation.productionAttempt.attemptId
     || stored.bookId !== input.operation.bookId
     || stored.operationKind !== input.operation.operationKind
     || stored.chapterNumber !== input.operation.chapterNumber
@@ -945,6 +1013,8 @@ async function loadFictionContentEvidenceLedger(
       || receipt.agentName !== trace.agentName
       || receipt.stage !== trace.stage
       || receipt.operationId !== trace.operationId
+      || receipt.productionOperationId !== trace.productionOperationId
+      || receipt.attemptId !== trace.attemptId
       || receipt.model !== trace.model
     ) {
       throw new Error(`Fiction-content receipt does not match trace ${invocationId}.`);
@@ -960,6 +1030,8 @@ async function loadFictionContentEvidenceLedger(
       || outcome.agentName !== trace.agentName
       || outcome.stage !== trace.stage
       || outcome.operationId !== trace.operationId
+      || outcome.productionOperationId !== trace.productionOperationId
+      || outcome.attemptId !== trace.attemptId
     ) {
       throw new Error(`Fiction-content outcome does not match trace ${invocationId}.`);
     }
@@ -993,6 +1065,14 @@ function collectFictionContentOperationInvocations(
     const traceEntry = ledger.traces.get(invocationId)!;
     const receiptEntry = ledger.receipts.get(invocationId)!;
     const outcomeEntry = ledger.outcomes.get(invocationId)!;
+    if (
+      traceEntry.value.productionOperationId !== operation.productionAttempt.productionOperationId
+      || traceEntry.value.attemptId !== operation.productionAttempt.attemptId
+    ) {
+      throw new Error(
+        `Current Book operation fiction call ${invocationId} is not correlated to the active production attempt.`,
+      );
+    }
     if (outcomeEntry.value.status !== "completed") {
       throw new Error(
         `Current Book operation has an incomplete/refused model call ${invocationId} (${outcomeEntry.value.status}).`,
@@ -1020,6 +1100,7 @@ function collectFictionContentOperationInvocations(
 
 function validateFictionContentOperationStart(operation: FictionContentOperationStart): void {
   z.string().uuid().parse(operation.operationId);
+  verifyProductionAttemptIdentity(operation.productionAttempt);
   assertSafeBookId(operation.bookId);
   FictionContentOperationKindSchema.parse(operation.operationKind);
   if (!Number.isInteger(operation.chapterNumber) || operation.chapterNumber < 1) {
@@ -1119,11 +1200,15 @@ async function loadCompletedPreparedEvidence(
     || receipt.agentName !== trace.agentName
     || receipt.stage !== trace.stage
     || receipt.operationId !== trace.operationId
+    || receipt.productionOperationId !== trace.productionOperationId
+    || receipt.attemptId !== trace.attemptId
     || outcome.invocationId !== trace.invocationId
     || outcome.bookId !== trace.bookId
     || outcome.agentName !== trace.agentName
     || outcome.stage !== trace.stage
     || outcome.operationId !== trace.operationId
+    || outcome.productionOperationId !== trace.productionOperationId
+    || outcome.attemptId !== trace.attemptId
     || outcome.status !== "completed"
     || outcome.outputSha256 !== sha256(assistantOutput)
   ) {

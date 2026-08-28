@@ -110,6 +110,7 @@ export const ReferenceBindingSchema = z.object({
   styleExamplesSha256: Sha256Schema,
   sourceSha256: Sha256Schema,
   sourcePath: z.string().min(1),
+  installObjectSha256: Sha256Schema.optional(),
   boundAt: z.string().datetime(),
 }).strict();
 export type ReferenceBinding = z.infer<typeof ReferenceBindingSchema>;
@@ -152,6 +153,7 @@ export const ReferenceTransformationSchema = z.object({
   supportingReferences: z.array(z.object({
     referenceId: z.string().min(1),
     roles: z.array(z.enum(["engine", "payoff", "emotion", "hook", "wildcard"])).min(1),
+    status: z.literal("planned").default("planned"),
   }).strict()).default([]),
   sourceSegments: z.array(ReferenceTransformationSegmentSchema).min(1),
   createdAt: z.string().datetime(),
