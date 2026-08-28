@@ -468,6 +468,14 @@ describe("ProjectConfigSchema", () => {
     expect(result.inputGovernanceMode).toBe("v2");
   });
 
+  it("keeps the production kernel off by default and accepts an observe opt-in", () => {
+    expect(ProjectConfigSchema.parse(validProject).production.kernel).toBe("off");
+    expect(ProjectConfigSchema.parse({
+      ...validProject,
+      production: { kernel: "observe" },
+    }).production.kernel).toBe("observe");
+  });
+
   it("rejects wrong version", () => {
     expect(() =>
       ProjectConfigSchema.parse({ ...validProject, version: "1.0.0" }),

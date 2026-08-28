@@ -131,6 +131,14 @@ export const ResearchSearchConfigSchema = z.object({
 
 export type ResearchSearchConfig = z.infer<typeof ResearchSearchConfigSchema>;
 
+export const ProductionKernelModeSchema = z.enum(["off", "observe", "enforce"]);
+export type ProductionKernelMode = z.infer<typeof ProductionKernelModeSchema>;
+
+export const ProductionConfigSchema = z.object({
+  kernel: ProductionKernelModeSchema.default("off"),
+}).default({ kernel: "off" });
+export type ProductionConfig = z.infer<typeof ProductionConfigSchema>;
+
 export const ProjectConfigSchema = z.object({
   name: z.string().min(1),
   version: z.literal("0.1.0"),
@@ -147,6 +155,7 @@ export const ProjectConfigSchema = z.object({
   researchSearch: ResearchSearchConfigSchema,
   modelOverrides: z.record(z.string(), ModelOverrideValueSchema).optional(),
   inputGovernanceMode: InputGovernanceModeSchema.default("v2"),
+  production: ProductionConfigSchema,
   daemon: z.object({
     schedule: z.object({
       radarCron: z.string().default("0 */6 * * *"),

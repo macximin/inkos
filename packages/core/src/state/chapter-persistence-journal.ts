@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, readdir, rename, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { basename, isAbsolute, join, normalize, sep } from "node:path";
@@ -36,6 +36,40 @@ export interface ChapterPersistenceJournal {
   readonly journalDir: string;
   readonly chapterNumber: number;
   readonly before: ReadonlyMap<string, Uint8Array>;
+}
+
+export interface ChapterPersistenceFingerprint {
+  readonly chapterNumber: number;
+  readonly artifacts: ReadonlyArray<{
+    readonly path: string;
+    readonly sha256: string;
+  }>;
+  readonly fingerprintSha256: string;
+}
+
+/**
+ * Hash the exact canon surface protected by the Chapter persistence journal.
+ * Production-run projections deliberately live outside this surface, so an
+ * observe-only run can prove no-commit without making itself part of canon.
+ */
+export async function captureChapterPersistenceFingerprint(
+  bookDir: string,
+  chapterNumber: number,
+): Promise<ChapterPersistenceFingerprint> {
+  const before = await captureChapterPersistenceState(bookDir, chapterNumber, []);
+  const artifacts = [...before.entries()]
+    .map(([path, content]) => ({
+      path,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    chapterNumber,
+    artifacts,
+    fingerprintSha256: createHash("sha256")
+      .update(JSON.stringify(artifacts))
+      .digest("hex"),
+  };
 }
 
 /**

@@ -10,7 +10,7 @@ export {
   ChapterMetaSchema,
   ChapterStatusSchema,
 } from "./models/chapter.js";
-export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema } from "./models/project.js";
+export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, type ProductionConfig, type ProductionKernelMode, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema, ProductionConfigSchema, ProductionKernelModeSchema } from "./models/project.js";
 export { type CurrentState, type ParticleLedger, type PendingHooks, type PendingHook, type LedgerEntry } from "./models/state.js";
 export { type GenreProfile, type ParsedGenreProfile, GenreProfileSchema, parseGenreProfile } from "./models/genre-profile.js";
 export {
@@ -907,6 +907,51 @@ export {
   verifyProductionAttemptIdentity,
   type ProductionAttemptIdentity,
 } from "./production/attempt-identity.js";
+export {
+  ProductionCommandSourceSchema,
+  ProductionCommandBindingSchema,
+  ProductionTargetLengthSchema,
+  ProductionCommandSchema,
+  isProductionCommandActionAuthorized,
+  productionIntentDigest,
+  createWriteNextProductionCommand,
+  parsePersistedProductionCommand,
+  type ProductionCommandSource,
+  type ProductionCommandBinding,
+  type ProductionTargetLength,
+  type ProductionCommand,
+} from "./production/production-command.js";
+export {
+  ProductionExecutionContextSchema,
+  runWithProductionExecutionContext,
+  currentProductionExecutionContext,
+  requireProductionExecutionContext,
+  type ProductionExecutionContext,
+} from "./production/execution-context.js";
+export {
+  ProductionRunSnapshotSchema,
+  ProductionRunSchema,
+  createProductionRunSnapshot,
+  saveProductionRunSnapshot,
+  loadProductionRunSnapshotByCommandId,
+  loadProductionRunByCommandId,
+  findProductionProjectionByIdempotencyKey,
+  finalizeProductionRun,
+  verifyProductionCommitEvidence,
+  verifyProductionNoCommit,
+  buildSucceededProductionRun,
+  buildNoCommitProductionRun,
+  type ProductionArtifactRef,
+  type ProjectedChapterResult,
+  type ProductionRunSnapshot,
+  type ProductionRun,
+} from "./production/run-projection.js";
+export {
+  executeObserveOnlyWriteNext,
+  reconcileProductionRunSnapshot,
+  ProductionExecutionTerminalError,
+  type ProductionKernelWriteNextResult,
+} from "./production/production-kernel.js";
 export type {
   OwnerDirectionReference,
   ModelMediatedTaskGuidanceReference,

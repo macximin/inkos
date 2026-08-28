@@ -63,14 +63,17 @@ import {
   normalizeCoverBaseUrl,
   resolveCoverProviderPreset,
   SessionKindSchema,
-  isExplicitWriteChapterCommand,
   isUsablePlayInitialScene,
-  isWriteNextInstruction,
   normalizeActionSource as normalizeCoreActionSource,
   normalizeActionPayload as normalizeCoreActionPayload,
   normalizePlayMode as normalizeCorePlayMode,
   normalizeRequestedIntent as normalizeCoreRequestedIntent,
   normalizeSkillIdList as normalizeCoreSkillIdList,
+  isProductionCommandActionAuthorized,
+  createWriteNextProductionCommand,
+  type ProductionCommand,
+  type ProductionCommandBinding,
+  type ProductionKernelMode,
   inferLanguage,
   defaultChapterLength,
   BookRuleOwnerDecisionDraftSchema,
@@ -1035,10 +1038,8 @@ function normalizeStudioPlayMode(value: unknown): PlayMode | undefined {
   }
 }
 
-// 判断"这次请求要不要把写下一章当成确认式生产任务执行"。
-// 命中的三种来源（显式 write_next intent / free-text 明确写章命令 / 其它来源的
-// 写作指令启发式）全部走确认式任务分支：有 taskId、AbortController、磁盘快照，
-// 可中止、可在刷新后恢复。没有书或不在书籍会话时交给聊天 agent 处理。
+// Only a typed, non-free-text action may enter the write-next mutation path.
+// Free text remains proposal/chat input even when it contains an imperative.
 function isWriteNextProductionRequest(args: {
   readonly instruction: string;
   readonly agentBookId: string | null | undefined;
@@ -1047,9 +1048,10 @@ function isWriteNextProductionRequest(args: {
   readonly requestedIntent?: RequestedIntent;
 }): boolean {
   if (!args.agentBookId || args.sessionKind !== "book") return false;
-  if (args.requestedIntent === "write_next") return true;
-  if (args.actionSource === "free-text") return isExplicitWriteChapterCommand(args.instruction);
-  return isWriteNextInstruction(args.instruction);
+  return args.requestedIntent !== undefined && isProductionCommandActionAuthorized({
+    actionSource: args.actionSource,
+    requestedIntent: args.requestedIntent,
+  });
 }
 
 type ExternalChatEditResult = {
@@ -1689,6 +1691,8 @@ function createWriteNextChapterTool(
   lang: StudioLanguage,
   chapterCount = 1,
   ownerDirection?: OwnerDirectionReference,
+  productionCommand?: ProductionCommand,
+  productionBinding?: ProductionCommandBinding,
 ): {
   readonly name: "sub_agent";
   readonly execute: (
@@ -1701,7 +1705,7 @@ function createWriteNextChapterTool(
   return {
     name: "sub_agent",
     async execute(_toolCallId, _params, signal, onUpdate) {
-      const directionContext = ownerDirection
+      const directionContext = ownerDirection && !productionCommand
         ? {
             ownerDirection: await resolveDetachedOwnerDirectionLease({
               projectRoot,
@@ -1776,11 +1780,26 @@ function createWriteNextChapterTool(
           text: pick(lang, `正在为 ${bookId} 写下一章…`, `Writing the next chapter for ${bookId}...`, `${bookId}의 다음 화를 집필하고 있습니다…`),
         }],
       });
-      const writeResult = await pipeline.runWithAbortSignal(
-        signal,
-        () => pipeline.writeNextChapter(bookId, undefined, undefined, directionContext),
+      const kernelExecution = productionCommand && productionBinding
+        ? await pipeline.runWithAbortSignal(
+            signal,
+            () => pipeline.executeProductionWriteNext(productionCommand, productionBinding),
+          )
+        : undefined;
+      const projectedChapter = kernelExecution?.run.chapter;
+      if (kernelExecution && (!projectedChapter || kernelExecution.run.executionStatus !== "succeeded")) {
+        throw new Error(`Production run ${kernelExecution.run.command.commandId} ended ${kernelExecution.run.executionStatus}.`);
+      }
+      const writeResult = kernelExecution
+        ? kernelExecution.result ?? projectedChapter!
+        : await pipeline.runWithAbortSignal(
+            signal,
+            () => pipeline.writeNextChapter(bookId, undefined, undefined, directionContext),
+          );
+      const writeNeedsReview = Boolean(
+        kernelExecution?.run.completionHealth === "needs-recovery"
+        || writeResult.status && writeResult.status !== "ready-for-review",
       );
-      const writeNeedsReview = Boolean(writeResult.status && writeResult.status !== "ready-for-review");
       return {
         ...(writeNeedsReview ? { isError: true } : {}),
         content: [{ type: "text", text: buildWriteNextResponseText(bookId, writeResult, writeNeedsReview, lang) }],
@@ -1791,6 +1810,12 @@ function createWriteNextChapterTool(
           title: writeResult.title,
           wordCount: writeResult.wordCount,
           status: writeResult.status,
+          ...(kernelExecution ? {
+            productionRunId: kernelExecution.run.command.commandId,
+            productionOperationId: kernelExecution.run.productionAttempt.productionOperationId,
+            completionHealth: kernelExecution.run.completionHealth,
+            projectionOrigin: kernelExecution.run.projectionOrigin,
+          } : {}),
           ...(ownerDirection ? { ownerDirection } : {}),
         },
       };
@@ -1806,7 +1831,9 @@ async function executeConfirmedProductionAction(args: {
   readonly streamSessionId: string;
   readonly instruction: string;
   readonly requestedIntent: RequestedIntent;
+  readonly actionSource: ActionSource;
   readonly actionPayload?: ActionPayload;
+  readonly productionKernelMode: ProductionKernelMode;
   readonly playMode?: PlayMode;
   readonly language?: StudioLanguage;
   readonly taskId: string;
@@ -1876,6 +1903,26 @@ async function executeConfirmedProductionAction(args: {
         receiptId: args.sourceRequestId ?? args.taskId,
         text: args.instruction,
       });
+    const productionBinding: ProductionCommandBinding | undefined = chapterCount === 1 && args.productionKernelMode !== "off"
+      ? {
+          bookId: args.bookId,
+          sessionId: args.sessionId,
+          requestId: args.sourceRequestId ?? args.taskId,
+          workOrderId: args.sourceRequestId ?? args.taskId,
+        }
+      : undefined;
+    const productionCommand = productionBinding
+      ? createWriteNextProductionCommand({
+          idempotencyKey: args.sourceRequestId ?? args.taskId,
+          source: "studio",
+          actionSource: args.actionSource,
+          binding: productionBinding,
+          ownerDirection,
+          // Phase 3 does not yet own production Skill resolution. Recording
+          // requested IDs as activated would create false execution evidence.
+          activatedSkills: [],
+        })
+      : undefined;
     tool = createWriteNextChapterTool(
       args.pipeline,
       args.root,
@@ -1883,6 +1930,8 @@ async function executeConfirmedProductionAction(args: {
       lang,
       chapterCount,
       ownerDirection,
+      productionCommand,
+      productionBinding,
     );
     agent = "writer";
     params = { agent: "writer", bookId: args.bookId };
@@ -2040,9 +2089,8 @@ async function executeConfirmedProductionAction(args: {
 
   await args.onTaskChange(exec);
 
-  // background: true 标明这是后台生产任务的工具启动（聊天轮工具不带）。
-  // free-text 命中写章启发式时前端在发送时无法预知这轮会按任务执行，
-  // 收到这个标记后把该轮从聊天轮重分类为任务轮。
+  // background: true marks an explicitly confirmed production task. Free
+  // text is proposal-only and therefore never reaches this broadcast path.
   broadcast("tool:start", {
     sessionId: args.streamSessionId,
     id,
@@ -3268,6 +3316,7 @@ export function createStudioServer(
       chapterReviewMode,
       revisionGate: overrides?.revisionGate ?? revisionGate,
       modelOverrides: currentConfig.modelOverrides,
+      productionKernelMode: currentConfig.production?.kernel ?? "off",
       notifyChannels: currentConfig.notify,
       logger,
       onContextCompression: (event) => {
@@ -5721,6 +5770,9 @@ export function createStudioServer(
 
     const actionSource = normalizeStudioActionSource(reqActionSource);
     const requestedIntent = normalizeStudioRequestedIntent(reqRequestedIntent);
+    // A free-text intent is advisory metadata only. It cannot create an
+    // execution obligation or post-hoc claim that a mutating tool had to run.
+    const authorizedActionIntent = actionSource === "free-text" ? undefined : requestedIntent;
     const actionPayload = normalizeStudioActionPayload(reqActionPayload);
     const requestedSkills = normalizeStudioSkillIdList(reqRequestedSkills, "requestedSkills");
     const disabledSkills = normalizeStudioSkillIdList(reqDisabledSkills, "disabledSkills");
@@ -5957,10 +6009,8 @@ export function createStudioServer(
             baseUrl: configuredEntry?.baseUrl ?? "",
           } as any)
         : client;
-      // 确认式生产任务的 intent：写下一章的各种触发方式（quick-action 按钮、
-      // free-text 明确写章命令、写作指令启发式）统一归一成 write_next，与其它
-      // button/slash 确认的生产 intent 走同一条任务分支，获得 taskId、
-      // AbortController、磁盘快照与单任务闸门。
+      // A write-next mutation requires an explicit typed action. Free text,
+      // including imperative prose, stays in the proposal/chat path.
       const confirmedIntent: RequestedIntent | undefined = isWriteNextProductionRequest({ instruction, agentBookId, sessionKind, actionSource, requestedIntent })
         ? "write_next"
         : requestedIntent && isConfirmedProductionAction({ actionSource, requestedIntent })
@@ -6049,7 +6099,9 @@ export function createStudioServer(
             streamSessionId,
             instruction,
             requestedIntent: confirmedIntent,
+            actionSource,
             actionPayload,
+            productionKernelMode: config.production?.kernel ?? "off",
             language: surfaceLanguage,
             taskId,
             sourceRequestId,
@@ -6167,7 +6219,7 @@ export function createStudioServer(
           sessionKind,
           playMode,
           actionSource,
-          requestedIntent,
+          requestedIntent: authorizedActionIntent,
           actionPayload,
           requestedSkills,
           disabledSkills,
@@ -6271,7 +6323,7 @@ export function createStudioServer(
         const actionExecutionError = validateAgentActionExecution({
           instruction,
           agentBookId,
-          requestedIntent,
+          requestedIntent: authorizedActionIntent,
           collectedToolExecs,
           language: surfaceLanguage,
         });
@@ -6347,7 +6399,7 @@ export function createStudioServer(
         const actionExecutionError = validateAgentActionExecution({
           instruction,
           agentBookId,
-          requestedIntent,
+          requestedIntent: authorizedActionIntent,
           collectedToolExecs,
           language,
         });
@@ -6360,7 +6412,7 @@ export function createStudioServer(
 
         await refreshBookSessionFromTranscript();
         const createdBookId = await finalizeCreatedBook();
-        if (requestedIntent || createdBookId || hasSuccessfulToolResult(collectedToolExecs)) {
+        if (authorizedActionIntent || createdBookId || hasSuccessfulToolResult(collectedToolExecs)) {
           const responseSessionKind = bookSession.sessionKind ?? sessionKind;
           broadcast("agent:complete", { instruction, activeBookId, sessionId: bookSession.sessionId, sessionKind: responseSessionKind });
           return c.json({

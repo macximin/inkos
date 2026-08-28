@@ -4,7 +4,7 @@ import { createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, FanficMode, RevisionGate } from "../models/book.js";
 import { ChapterMetaSchema, type ChapterArcProvenance, type ChapterMeta } from "../models/chapter.js";
-import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode } from "../models/project.js";
+import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode, ProductionKernelMode } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import {
   ArchitectAgent,
@@ -120,8 +120,17 @@ import {
 } from "../production/fiction-content-contract.js";
 import {
   createProductionAttemptIdentity,
+  verifyProductionAttemptIdentity,
   type ProductionAttemptIdentity,
 } from "../production/attempt-identity.js";
+import {
+  executeObserveOnlyWriteNext,
+  type ProductionKernelWriteNextResult,
+} from "../production/production-kernel.js";
+import type {
+  ProductionCommand,
+  ProductionCommandBinding,
+} from "../production/production-command.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -420,6 +429,8 @@ export interface PipelineConfig {
   readonly externalContext?: string;
   readonly modelOverrides?: Record<string, string | AgentLLMOverride>;
   readonly inputGovernanceMode?: InputGovernanceMode;
+  /** Phase-3 production kernel flag. Defaults to off for upstream compatibility. */
+  readonly productionKernelMode?: ProductionKernelMode;
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
   readonly onContextCompression?: ContextCompressionCallback;
@@ -2532,6 +2543,7 @@ export class PipelineRunner {
     wordCount?: number,
     temperatureOverride?: number,
     directionContext?: ResolvedProductionDirectionContext,
+    productionAttempt?: ProductionAttemptIdentity,
   ): Promise<ChapterPipelineResult> {
     this.throwIfOperationAborted();
     return this._writeNextChapterLocked(
@@ -2540,7 +2552,30 @@ export class PipelineRunner {
       temperatureOverride,
       directionContext?.ownerDirection?.text ?? this.config.externalContext,
       directionContext,
+      productionAttempt,
     );
+  }
+
+  /** Execute one typed write-next command through the Phase-3 observe kernel. */
+  async executeProductionWriteNext(
+    command: ProductionCommand,
+    currentBinding: ProductionCommandBinding,
+  ): Promise<ProductionKernelWriteNextResult> {
+    return executeObserveOnlyWriteNext({
+      projectRoot: this.config.projectRoot,
+      kernelMode: this.config.productionKernelMode ?? "off",
+      persistedCommand: command,
+      currentBinding,
+      signal: this.currentAbortSignal(),
+      executeWithinBookLock: ({ bookId, wordCount, productionAttempt, directionContext }) =>
+        this.writeNextChapterWithinBookLock(
+          bookId,
+          wordCount,
+          undefined,
+          directionContext,
+          productionAttempt,
+        ),
+    });
   }
 
   async writeChapters(
@@ -2869,6 +2904,7 @@ export class PipelineRunner {
     temperatureOverride?: number,
     externalContext?: string,
     directionContext?: ResolvedProductionDirectionContext,
+    suppliedProductionAttempt?: ProductionAttemptIdentity,
   ): Promise<ChapterPipelineResult> {
     this.throwIfOperationAborted();
     await this.assertChapterProductionReadyWithinBookLock(bookId);
@@ -2877,7 +2913,9 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     await this.assertNoPendingStateRepair(bookId);
     const chapterNumber = await this.state.getNextChapterNumber(bookId);
-    const productionAttempt = createProductionAttemptIdentity();
+    const productionAttempt = suppliedProductionAttempt
+      ? verifyProductionAttemptIdentity(suppliedProductionAttempt)
+      : createProductionAttemptIdentity();
     const requiredFictionStages = (this.config.chapterReviewMode ?? "auto") === "manual"
       ? ["writer"]
       : ["writer", "auditor"];

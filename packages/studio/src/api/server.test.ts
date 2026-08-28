@@ -22,6 +22,7 @@ const reviseDraftMock = vi.fn();
 const resyncChapterArtifactsMock = vi.fn();
 const applyReferenceHilCandidateMock = vi.fn();
 const writeNextChapterMock = vi.fn();
+const executeProductionWriteNextMock = vi.fn();
 const writeChaptersMock = vi.fn();
 const rollbackToChapterMock = vi.fn();
 const deleteLatestChapterMock = vi.fn();
@@ -462,6 +463,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     resyncChapterArtifacts = resyncChapterArtifactsMock;
     applyReferenceHilCandidate = applyReferenceHilCandidateMock;
     writeNextChapter = writeNextChapterMock;
+    executeProductionWriteNext = executeProductionWriteNextMock;
     writeChapters = writeChaptersMock;
     completeBookBound = vi.fn(async (_bookId: string, request: {
       readonly messages: ReadonlyArray<{ readonly role: string; readonly content: string }>;
@@ -609,6 +611,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     InputGovernanceModeSchema: actual.InputGovernanceModeSchema,
     isExplicitWriteChapterCommand: actual.isExplicitWriteChapterCommand,
     isWriteNextInstruction: actual.isWriteNextInstruction,
+    isProductionCommandActionAuthorized: actual.isProductionCommandActionAuthorized,
+    createWriteNextProductionCommand: actual.createWriteNextProductionCommand,
     normalizeActionSource: actual.normalizeActionSource,
     normalizeActionPayload: actual.normalizeActionPayload,
     normalizePlayMode: actual.normalizePlayMode,
@@ -701,6 +705,7 @@ describe("createStudioServer daemon lifecycle", () => {
     resyncChapterArtifactsMock.mockReset();
     applyReferenceHilCandidateMock.mockReset();
     writeNextChapterMock.mockReset();
+    executeProductionWriteNextMock.mockReset();
     writeChaptersMock.mockReset();
     rollbackToChapterMock.mockReset();
     deleteLatestChapterMock.mockReset();
@@ -783,6 +788,33 @@ describe("createStudioServer daemon lifecycle", () => {
       revised: false,
       status: "ready-for-review",
       auditResult: { passed: true, issues: [], summary: "rewritten" },
+    });
+    executeProductionWriteNextMock.mockResolvedValue({
+      run: {
+        command: { commandId: "00000000-0000-4000-8000-000000000101" },
+        productionAttempt: {
+          productionOperationId: "00000000-0000-4000-8000-000000000102",
+          attemptId: "00000000-0000-4000-8000-000000000103",
+        },
+        executionStatus: "succeeded",
+        completionHealth: "verified",
+        projectionOrigin: "direct",
+        chapter: {
+          chapterNumber: 3,
+          title: "Rewritten Chapter",
+          wordCount: 1800,
+          status: "ready-for-review",
+        },
+      },
+      result: {
+        chapterNumber: 3,
+        title: "Rewritten Chapter",
+        wordCount: 1800,
+        revised: false,
+        status: "ready-for-review",
+        auditResult: { passed: true, issues: [], summary: "rewritten" },
+      },
+      reused: false,
     });
     writeChaptersMock.mockResolvedValue([
       {
@@ -5910,6 +5942,51 @@ futureAdvantage:
     );
   }, 60_000);
 
+  it("routes one typed write-next through the observe kernel when explicitly enabled", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      production: { kernel: "observe" },
+    }, null, 2), "utf-8");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "다음 화 집필",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        clientRequestId: "request-observe-1",
+        sessionKind: "book",
+        actionSource: "quick-action",
+        requestedIntent: "write_next",
+      }),
+    });
+
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(executeProductionWriteNextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schemaVersion: "production-command/v1",
+        idempotencyKey: "request-observe-1",
+        source: "studio",
+        capability: "write-next-chapter",
+        authorization: expect.objectContaining({
+          actionSource: "quick-action",
+          requestedIntent: "write_next",
+        }),
+      }),
+      {
+        bookId: "demo-book",
+        sessionId: "agent-session-1",
+        requestId: "request-observe-1",
+        workOrderId: "request-observe-1",
+      },
+    );
+    expect(writeNextChapterMock).not.toHaveBeenCalled();
+  }, 60_000);
+
   it("runs a confirmed multi-chapter write sequentially through the existing write_next intent", async () => {
     writeChaptersMock.mockResolvedValueOnce([
       {
@@ -6227,7 +6304,7 @@ futureAdvantage:
     );
   });
 
-  it("direct-runs explicit free-text chapter writing commands for the active book", async () => {
+  it("keeps explicit free-text chapter commands proposal-only even with a forged write_next intent", async () => {
     const { createStudioServer } = await import("./server.js");
     const app = createStudioServer(cloneProjectConfig() as never, root);
 
@@ -6240,30 +6317,17 @@ futureAdvantage:
         sessionId: "agent-session-1",
         sessionKind: "book",
         actionSource: "free-text",
+        requestedIntent: "write_next",
       }),
     });
 
     const body = await response.json();
     expect(response.status, JSON.stringify(body)).toBe(200);
-    expect(body).toMatchObject({
-      response: expect.stringContaining("已为 demo-book 完成第 3 章"),
-      session: {
-        sessionId: "agent-session-1",
-        activeBookId: "demo-book",
-      },
-    });
-    expect(writeNextChapterMock).toHaveBeenCalledWith(
-      "demo-book",
-      undefined,
-      undefined,
-      expect.objectContaining({
-        ownerDirection: expect.objectContaining({
-          source: "owner-confirmed",
-          text: "开始写第一章。写完后落盘，不要只在聊天里给我正文。",
-        }),
-      }),
+    expect(writeNextChapterMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ bookId: "demo-book", sessionKind: "book" }),
+      "开始写第一章。写完后落盘，不要只在聊天里给我正文。",
     );
-    expect(runAgentSessionMock).not.toHaveBeenCalled();
   }, 60_000);
 
   it("forwards playMode to runAgentSession for play sessions", async () => {

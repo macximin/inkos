@@ -153,6 +153,7 @@ export function buildPipelineConfig(
     revisionGate: extra?.revisionGate,
     modelOverrides: config.modelOverrides,
     inputGovernanceMode: extra?.inputGovernanceMode ?? config.inputGovernanceMode,
+    productionKernelMode: config.production?.kernel ?? "off",
     notifyChannels: extra?.notifyChannels ?? config.notify,
     radarSources: extra?.radarSources,
     externalContext: extra?.externalContext,
