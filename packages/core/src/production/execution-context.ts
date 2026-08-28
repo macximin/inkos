@@ -5,6 +5,7 @@ import { ProductionAttemptIdentitySchema } from "./attempt-identity.js";
 import {
   ProductionCommandBindingSchema,
   ProductionCommandSourceSchema,
+  ProductionCommandAuthorizationV2Schema,
 } from "./production-command.js";
 import { Sha256HexSchema } from "./direction-context.js";
 import { ProductionInputReceiptSchema } from "./production-input.js";
@@ -17,9 +18,12 @@ export const ProductionExecutionContextSchema = z.object({
   attemptId: ProductionAttemptIdentitySchema.shape.attemptId,
   intentDigest: Sha256HexSchema,
   capability: z.literal("write-next-chapter"),
-  mode: z.literal("observe"),
+  mode: z.enum(["observe", "enforce"]),
   source: ProductionCommandSourceSchema,
-  actionSource: ActionSourceSchema,
+  actionSource: z.union([ActionSourceSchema, ProductionCommandAuthorizationV2Schema.options[0].shape.kind
+    .or(ProductionCommandAuthorizationV2Schema.options[1].shape.kind)
+    .or(ProductionCommandAuthorizationV2Schema.options[2].shape.kind)
+    .or(ProductionCommandAuthorizationV2Schema.options[3].shape.kind)]),
   binding: ProductionCommandBindingSchema,
   activatedSkills: z.array(z.string().trim().min(1).max(240)),
   productionInputs: ProductionInputReceiptSchema.optional(),

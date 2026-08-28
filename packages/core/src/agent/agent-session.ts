@@ -210,6 +210,7 @@ interface CachedAgent {
       readonly sessionId: string;
       readonly requestId: string;
       readonly ownerDirection?: OwnerDirectionReference;
+      readonly toolAuthorization?: FictionContentToolAuthorization;
     };
   };
   lastCommittedSeq: number;
@@ -1168,6 +1169,7 @@ type CreateAgentToolsForModeParams = {
     readonly sessionId: string;
     readonly requestId: string;
     readonly ownerDirection?: OwnerDirectionReference;
+    readonly toolAuthorization?: FictionContentToolAuthorization;
   } | undefined;
 };
 
@@ -1637,6 +1639,10 @@ async function runAgentSessionUnlocked(
               arguments: toolCall.arguments,
             },
           });
+          productionTurnContext.current = {
+            ...productionTurnContext.current!,
+            toolAuthorization: authorized.authorization,
+          };
         } catch (error) {
           return {
             block: true,

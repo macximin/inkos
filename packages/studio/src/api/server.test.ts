@@ -23,6 +23,7 @@ const resyncChapterArtifactsMock = vi.fn();
 const applyReferenceHilCandidateMock = vi.fn();
 const writeNextChapterMock = vi.fn();
 const executeProductionWriteNextMock = vi.fn();
+const executeSurfaceWriteNextMock = vi.fn();
 const writeChaptersMock = vi.fn();
 const rollbackToChapterMock = vi.fn();
 const deleteLatestChapterMock = vi.fn();
@@ -465,6 +466,8 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     applyReferenceHilCandidate = applyReferenceHilCandidateMock;
     writeNextChapter = writeNextChapterMock;
     executeProductionWriteNext = executeProductionWriteNextMock;
+    executeSurfaceWriteNext = executeSurfaceWriteNextMock;
+    getSurfaceGatewayMode = () => (this.config as { surfaceGatewayMode?: "legacy" | "dual" | "kernel" }).surfaceGatewayMode ?? "legacy";
     writeChapters = writeChaptersMock;
     completeBookBound = vi.fn(async (_bookId: string, request: {
       readonly messages: ReadonlyArray<{ readonly role: string; readonly content: string }>;
@@ -616,6 +619,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
     isWriteNextInstruction: actual.isWriteNextInstruction,
     isProductionCommandActionAuthorized: actual.isProductionCommandActionAuthorized,
     createWriteNextProductionCommand: actual.createWriteNextProductionCommand,
+    hashCanonicalJson: actual.hashCanonicalJson,
     normalizeActionSource: actual.normalizeActionSource,
     normalizeActionPayload: actual.normalizeActionPayload,
     normalizePlayMode: actual.normalizePlayMode,
@@ -709,6 +713,7 @@ describe("createStudioServer daemon lifecycle", () => {
     applyReferenceHilCandidateMock.mockReset();
     writeNextChapterMock.mockReset();
     executeProductionWriteNextMock.mockReset();
+    executeSurfaceWriteNextMock.mockReset();
     writeChaptersMock.mockReset();
     rollbackToChapterMock.mockReset();
     deleteLatestChapterMock.mockReset();
@@ -798,6 +803,33 @@ describe("createStudioServer daemon lifecycle", () => {
         productionAttempt: {
           productionOperationId: "00000000-0000-4000-8000-000000000102",
           attemptId: "00000000-0000-4000-8000-000000000103",
+        },
+        executionStatus: "succeeded",
+        completionHealth: "verified",
+        projectionOrigin: "direct",
+        chapter: {
+          chapterNumber: 3,
+          title: "Rewritten Chapter",
+          wordCount: 1800,
+          status: "ready-for-review",
+        },
+      },
+      result: {
+        chapterNumber: 3,
+        title: "Rewritten Chapter",
+        wordCount: 1800,
+        revised: false,
+        status: "ready-for-review",
+        auditResult: { passed: true, issues: [], summary: "rewritten" },
+      },
+      reused: false,
+    });
+    executeSurfaceWriteNextMock.mockResolvedValue({
+      run: {
+        command: { commandId: "00000000-0000-4000-8000-000000000201" },
+        productionAttempt: {
+          productionOperationId: "00000000-0000-4000-8000-000000000202",
+          attemptId: "00000000-0000-4000-8000-000000000203",
         },
         executionStatus: "succeeded",
         completionHealth: "verified",
@@ -6041,6 +6073,44 @@ futureAdvantage:
         workOrderId: "request-observe-1",
       },
     );
+    expect(writeNextChapterMock).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("routes one typed write-next through the Phase-5 surface gateway when enabled", async () => {
+    await writeFile(join(root, "inkos.json"), JSON.stringify({
+      ...projectConfig,
+      production: { kernel: "off", surfaceGateway: "dual" },
+    }, null, 2), "utf-8");
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instruction: "상업성 우선으로 다음 화 집필",
+        activeBookId: "demo-book",
+        sessionId: "agent-session-1",
+        clientRequestId: "request-surface-1",
+        sessionKind: "book",
+        actionSource: "quick-action",
+        requestedIntent: "write_next",
+      }),
+    });
+
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(executeSurfaceWriteNextMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: "studio",
+      idempotencyKey: "request-surface-1",
+      bookId: "demo-book",
+      sessionId: "agent-session-1",
+      requestId: "request-surface-1",
+      workOrderId: "request-surface-1",
+      ownerDirection: expect.objectContaining({ source: "owner-confirmed" }),
+      authorization: expect.objectContaining({ kind: "confirmed-ui" }),
+    }));
+    expect(executeProductionWriteNextMock).not.toHaveBeenCalled();
     expect(writeNextChapterMock).not.toHaveBeenCalled();
   }, 60_000);
 

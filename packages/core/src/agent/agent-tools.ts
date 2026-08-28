@@ -50,6 +50,7 @@ import {
   type OwnerDirectionReference,
   type ResolvedProductionDirectionContext,
 } from "../production/direction-context.js";
+import { hashCanonicalJson, type FictionContentToolAuthorization } from "../production/fiction-content-contract.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -706,6 +707,7 @@ export function createSubAgentTool(
       readonly sessionId: string;
       readonly requestId: string;
       readonly ownerDirection?: OwnerDirectionReference;
+      readonly toolAuthorization?: FictionContentToolAuthorization;
     } | undefined;
   } = {},
 ): AgentTool<any> {
@@ -944,18 +946,70 @@ export function createSubAgentTool(
               `Writing next chapter for "${targetBookId}"...`,
               `“${targetBookId}” 작품의 다음 회차를 집필하는 중...`,
             ));
-            const result = await runPipelineWithAbortSignal(
-              pipeline,
-              _signal,
-              () => directionContext
-                ? pipeline.writeNextChapter(
-                    targetBookId,
-                    chapterWordCount,
-                    undefined,
-                    directionContext,
-                  )
-                : pipeline.writeNextChapter(targetBookId, chapterWordCount),
-            );
+            let result;
+            const surfaceGatewayMode = typeof (pipeline as Partial<PipelineRunner>).getSurfaceGatewayMode === "function"
+              ? pipeline.getSurfaceGatewayMode()
+              : "legacy";
+            if (surfaceGatewayMode === "legacy") {
+              result = await runPipelineWithAbortSignal(
+                pipeline,
+                _signal,
+                () => directionContext
+                  ? pipeline.writeNextChapter(
+                      targetBookId,
+                      chapterWordCount,
+                      undefined,
+                      directionContext,
+                    )
+                  : pipeline.writeNextChapter(targetBookId, chapterWordCount),
+              );
+            } else {
+              if (!projectRoot || !turnContext?.ownerDirection || !turnContext.toolAuthorization) {
+                throw new Error("Agent write-next requires a persisted owner direction and verified tool authorization while the surface gateway is active.");
+              }
+              const targetBook = await new StateManager(projectRoot).loadBookConfig(targetBookId);
+              const targetLength = chapterWordCount === undefined ? undefined : {
+                count: chapterWordCount,
+                unit: targetBook.language === "ko" ? "ko-chars" as const : targetBook.language === "en" ? "words" as const : "zh-chars" as const,
+              };
+              const toolAuthorization = turnContext.toolAuthorization;
+              const execution = await runPipelineWithAbortSignal(
+                pipeline,
+                _signal,
+                () => pipeline.executeSurfaceWriteNext({
+                  source: "agent",
+                  idempotencyKey: `${turnContext.requestId}:${toolCallId}`,
+                  bookId: targetBookId,
+                  sessionId: turnContext.sessionId,
+                  requestId: turnContext.requestId,
+                  ownerDirection: turnContext.ownerDirection!,
+                  ...(taskGuidance ? {
+                    taskGuidance: {
+                      source: taskGuidance.source,
+                      transcriptRef: taskGuidance.transcriptRef,
+                      textSha256: taskGuidance.textSha256,
+                    },
+                  } : {}),
+                  authorization: {
+                    kind: "confirmed-agent-tool",
+                    sessionRequestId: turnContext.requestId,
+                    proposalReceiptSha256: hashCanonicalJson(toolAuthorization),
+                    confirmationReceiptSha256: hashCanonicalJson({
+                      schemaVersion: "agent-tool-confirmation/v1",
+                      sessionId: turnContext.sessionId,
+                      requestId: turnContext.requestId,
+                      authorizationId: toolAuthorization.authorizationId,
+                    }),
+                    toolArgsSha256: toolAuthorization.argumentsSha256,
+                  },
+                  ...(targetLength ? { targetLength } : {}),
+                }),
+              );
+              if (!execution.result) {
+                throw new Error(`Production command ${execution.run.command.commandId} was reused without an in-memory Chapter result.`);
+              }
+              result = execution.result;
+            }
             progress(copy(
               `Writer 已完成“${targetBookId}”的章节。`,
               `Writer finished chapter for "${targetBookId}".`,

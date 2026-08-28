@@ -134,9 +134,13 @@ export type ResearchSearchConfig = z.infer<typeof ResearchSearchConfigSchema>;
 export const ProductionKernelModeSchema = z.enum(["off", "observe", "enforce"]);
 export type ProductionKernelMode = z.infer<typeof ProductionKernelModeSchema>;
 
+export const SurfaceGatewayModeSchema = z.enum(["legacy", "dual", "kernel"]);
+export type SurfaceGatewayMode = z.infer<typeof SurfaceGatewayModeSchema>;
+
 export const ProductionConfigSchema = z.object({
   kernel: ProductionKernelModeSchema.default("off"),
-}).default({ kernel: "off" });
+  surfaceGateway: SurfaceGatewayModeSchema.default("legacy"),
+}).default({ kernel: "off", surfaceGateway: "legacy" });
 export type ProductionConfig = z.infer<typeof ProductionConfigSchema>;
 
 export const ProjectConfigSchema = z.object({

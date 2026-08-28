@@ -196,7 +196,11 @@ describe("interaction runtime", () => {
       }),
     });
 
-    expect(writeNextChapter).toHaveBeenCalledWith("harbor");
+    expect(writeNextChapter).toHaveBeenCalledWith("harbor", {
+      sessionId: "project-interaction",
+      requestId: expect.any(String),
+      instruction: "/write",
+    });
     expect(reviseDraft).not.toHaveBeenCalled();
     expect(result.session.activeBookId).toBe("harbor");
     expect(result.session.activeChapterNumber).toBe(7);

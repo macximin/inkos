@@ -1,5 +1,6 @@
 import { Command } from "commander";
-import { PipelineRunner, StateManager, resolveChapterReviewMode } from "@actalk/inkos-core";
+import { PipelineRunner, StateManager, createDetachedOwnerDirectionLease, hashCanonicalJson, resolveChapterReviewMode } from "@actalk/inkos-core";
+import { randomUUID } from "node:crypto";
 import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -56,12 +57,61 @@ writeCommand
 
       const count = parseInt(opts.count, 10);
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
+      const surfaceGatewayMode = config.production?.surfaceGateway ?? "legacy";
+      if (surfaceGatewayMode !== "legacy" && count !== 1) {
+        throw new Error("Phase-5 surface gateway accepts exactly one Chapter per typed write-next command.");
+      }
 
       const results = [];
       for (let i = 0; i < count; i++) {
         if (!opts.json) log(formatWriteNextProgress(language, i + 1, count, bookId));
 
-        const result = await pipeline.writeNextChapter(bookId, wordCount);
+        let result;
+        if (surfaceGatewayMode === "legacy") {
+          result = await pipeline.writeNextChapter(bookId, wordCount);
+        } else {
+          const requestId = randomUUID();
+          const directionText = context?.trim() || `Typed CLI request: write the next Chapter for ${bookId}.`;
+          const ownerDirection = await createDetachedOwnerDirectionLease({
+            projectRoot: root,
+            receiptId: requestId,
+            text: directionText,
+          });
+          const targetLength = wordCount === undefined ? undefined : {
+            count: wordCount,
+            unit: book.language === "ko" ? "ko-chars" as const : book.language === "en" ? "words" as const : "zh-chars" as const,
+          };
+          const previewSha256 = hashCanonicalJson({
+            command: "inkos write next",
+            bookId,
+            chapterCount: 1,
+            targetLength: targetLength ?? null,
+            ownerDirectionTextSha256: ownerDirection.textSha256,
+          });
+          const execution = await pipeline.executeSurfaceWriteNext({
+            source: "cli",
+            idempotencyKey: requestId,
+            bookId,
+            sessionId: `cli-write-${bookId}`,
+            requestId,
+            ownerDirection,
+            authorization: {
+              kind: "confirmed-cli",
+              typedCommandPreviewSha256: previewSha256,
+              confirmationReceiptSha256: hashCanonicalJson({
+                kind: "local-cli-confirmation/v1",
+                requestId,
+                previewSha256,
+                confirmedBy: "typed-command-invocation",
+              }),
+            },
+            ...(targetLength ? { targetLength } : {}),
+          });
+          if (!execution.result) {
+            throw new Error(`Production command ${execution.run.command.commandId} was reused without an in-memory Chapter result.`);
+          }
+          result = execution.result;
+        }
         results.push(result);
 
         if (!opts.json) {

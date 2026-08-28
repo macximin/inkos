@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ActionSourceSchema, RequestedIntentSchema, type ActionSource, type RequestedIntent } from "../interaction/action-envelope.js";
 import { hashCanonicalJson } from "./fiction-content-contract.js";
-import { OwnerDirectionReferenceSchema, Sha256HexSchema, type OwnerDirectionReference } from "./direction-context.js";
+import { ModelMediatedTaskGuidanceReferenceSchema, OwnerDirectionReferenceSchema, Sha256HexSchema, type ModelMediatedTaskGuidanceReference, type OwnerDirectionReference } from "./direction-context.js";
 import { SessionSoulBindingSchema } from "./soul-schema.js";
 
 export const ProductionCommandSourceSchema = z.enum([
@@ -37,20 +37,24 @@ export const ProductionTargetLengthSchema = z.object({
 }).strict();
 export type ProductionTargetLength = z.infer<typeof ProductionTargetLengthSchema>;
 
-const ProductionCommandAuthorizationSchema = z.object({
+const LegacyProductionCommandAuthorizationSchema = z.object({
   source: z.literal("confirmed-action"),
   actionSource: ActionSourceSchema,
   requestedIntent: RequestedIntentSchema,
   ownerDirection: OwnerDirectionReferenceSchema,
 }).strict();
 
-const ProductionCommandArgsSchema = z.object({
+const ProductionCommandArgsV1Schema = z.object({
   chapterCount: z.literal(1),
   targetLength: ProductionTargetLengthSchema.optional(),
   ownerDirectionTextSha256: Sha256HexSchema,
 }).strict();
 
-const ProductionCommandUnsignedSchema = z.object({
+const ProductionCommandArgsV2Schema = ProductionCommandArgsV1Schema.extend({
+  taskGuidance: ModelMediatedTaskGuidanceReferenceSchema.optional(),
+}).strict();
+
+const ProductionCommandV1UnsignedSchema = z.object({
   schemaVersion: z.literal("production-command/v1"),
   commandId: z.string().uuid(),
   idempotencyKey: SafeAuthorityIdSchema,
@@ -58,28 +62,107 @@ const ProductionCommandUnsignedSchema = z.object({
   capability: z.literal("write-next-chapter"),
   source: ProductionCommandSourceSchema,
   binding: ProductionCommandBindingSchema,
-  authorization: ProductionCommandAuthorizationSchema,
-  args: ProductionCommandArgsSchema,
+  authorization: LegacyProductionCommandAuthorizationSchema,
+  args: ProductionCommandArgsV1Schema,
   activatedSkills: z.array(SafeAuthorityIdSchema).default([]),
   disabledSkills: z.array(SafeAuthorityIdSchema).optional(),
   issuedAt: z.string().datetime(),
 }).strict();
 
-export const ProductionCommandSchema = ProductionCommandUnsignedSchema.extend({
-  commandSelfHash: Sha256HexSchema,
-}).strict().superRefine((command, ctx) => {
-  if (!isProductionCommandActionAuthorized(command.authorization)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["authorization"],
-      message: "write-next production requires a typed confirmed action; free text is proposal-only",
-    });
-  }
-  if (command.authorization.ownerDirection.textSha256 !== command.args.ownerDirectionTextSha256) {
+const ProductionAuthorizationBaseSchema = z.object({
+  requestedIntent: z.literal("write_next"),
+  actionSource: ActionSourceSchema,
+  ownerDirection: OwnerDirectionReferenceSchema,
+  argsSha256: Sha256HexSchema,
+}).strict();
+
+export const ProductionCommandAuthorizationV2Schema = z.discriminatedUnion("kind", [
+  ProductionAuthorizationBaseSchema.extend({
+    kind: z.literal("confirmed-ui"),
+    actionEnvelopeSha256: Sha256HexSchema,
+    confirmationReceiptSha256: Sha256HexSchema,
+  }).strict(),
+  ProductionAuthorizationBaseSchema.extend({
+    kind: z.literal("confirmed-cli"),
+    typedCommandPreviewSha256: Sha256HexSchema,
+    confirmationReceiptSha256: Sha256HexSchema,
+  }).strict(),
+  ProductionAuthorizationBaseSchema.extend({
+    kind: z.literal("confirmed-agent-tool"),
+    sessionRequestId: SafeAuthorityIdSchema,
+    proposalReceiptSha256: Sha256HexSchema,
+    confirmationReceiptSha256: Sha256HexSchema,
+    toolArgsSha256: Sha256HexSchema,
+  }).strict(),
+  ProductionAuthorizationBaseSchema.extend({
+    kind: z.literal("authenticated-orchestrator"),
+    workOrderId: SafeAuthorityIdSchema,
+    workOrderSha256: Sha256HexSchema,
+    manifestCapabilitySha256: Sha256HexSchema,
+    ownerDecisionReceiptSha256: Sha256HexSchema,
+  }).strict(),
+]);
+export type ProductionCommandAuthorizationV2 = z.infer<typeof ProductionCommandAuthorizationV2Schema>;
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+export type ProductionAuthorizationEvidenceV2 = DistributiveOmit<
+  ProductionCommandAuthorizationV2,
+  "requestedIntent" | "actionSource" | "ownerDirection" | "argsSha256"
+>;
+
+const ProductionCommandV2UnsignedSchema = z.object({
+  schemaVersion: z.literal("production-command/v2"),
+  commandId: z.string().uuid(),
+  idempotencyKey: SafeAuthorityIdSchema,
+  intentDigest: Sha256HexSchema,
+  capability: z.literal("write-next-chapter"),
+  source: ProductionCommandSourceSchema,
+  binding: ProductionCommandBindingSchema,
+  authorization: ProductionCommandAuthorizationV2Schema,
+  args: ProductionCommandArgsV2Schema,
+  activatedSkills: z.array(SafeAuthorityIdSchema).default([]),
+  disabledSkills: z.array(SafeAuthorityIdSchema).optional(),
+  issuedAt: z.string().datetime(),
+}).strict();
+
+function validateCommonCommand(
+  command: z.infer<typeof ProductionCommandV1UnsignedSchema> | z.infer<typeof ProductionCommandV2UnsignedSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const ownerDirection = command.authorization.ownerDirection;
+  if (ownerDirection.textSha256 !== command.args.ownerDirectionTextSha256) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["args", "ownerDirectionTextSha256"],
       message: "owner direction hash does not match the decision receipt",
+    });
+  }
+  if (command.schemaVersion === "production-command/v2") {
+    if (command.authorization.argsSha256 !== hashCanonicalJson(command.args)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["authorization", "argsSha256"], message: "authorization args hash mismatch" });
+    }
+    const expectedKind = command.source === "studio"
+      ? "confirmed-ui"
+      : command.source === "cli" || command.source === "tui"
+        ? "confirmed-cli"
+        : command.source === "agent"
+          ? "confirmed-agent-tool"
+          : command.source === "hq"
+            ? "authenticated-orchestrator"
+            : command.authorization.kind;
+    if (command.authorization.kind !== expectedKind) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["authorization", "kind"], message: `authorization kind must be ${expectedKind} for ${command.source}` });
+    }
+    if (
+      command.authorization.kind === "authenticated-orchestrator"
+      && command.binding.workOrderId !== command.authorization.workOrderId
+    ) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["binding", "workOrderId"], message: "orchestrator workOrderId does not match the command binding" });
+    }
+  } else if (!isProductionCommandActionAuthorized(command.authorization)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["authorization"],
+      message: "write-next production requires a typed confirmed action; free text is proposal-only",
     });
   }
   if (new Set(command.activatedSkills).size !== command.activatedSkills.length) {
@@ -96,6 +179,12 @@ export const ProductionCommandSchema = ProductionCommandUnsignedSchema.extend({
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["disabledSkills"], message: "disabledSkills must be sorted" });
     }
   }
+}
+
+export const ProductionCommandV1Schema = ProductionCommandV1UnsignedSchema.extend({
+  commandSelfHash: Sha256HexSchema,
+}).strict().superRefine((command, ctx) => {
+  validateCommonCommand(command, ctx);
   if (productionIntentDigest(command) !== command.intentDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["intentDigest"], message: "intent digest mismatch" });
   }
@@ -104,6 +193,23 @@ export const ProductionCommandSchema = ProductionCommandUnsignedSchema.extend({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commandSelfHash"], message: "command self hash mismatch" });
   }
 });
+
+export const ProductionCommandV2Schema = ProductionCommandV2UnsignedSchema.extend({
+  commandSelfHash: Sha256HexSchema,
+}).strict().superRefine((command, ctx) => {
+  validateCommonCommand(command, ctx);
+  if (productionIntentDigest(command) !== command.intentDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["intentDigest"], message: "intent digest mismatch" });
+  }
+  const { commandSelfHash: _self, ...unsigned } = command;
+  if (hashCanonicalJson(unsigned) !== command.commandSelfHash) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commandSelfHash"], message: "command self hash mismatch" });
+  }
+});
+
+export const ProductionCommandSchema = z.union([ProductionCommandV1Schema, ProductionCommandV2Schema]);
+export type ProductionCommandV1 = z.infer<typeof ProductionCommandV1Schema>;
+export type ProductionCommandV2 = z.infer<typeof ProductionCommandV2Schema>;
 export type ProductionCommand = z.infer<typeof ProductionCommandSchema>;
 
 export function isProductionCommandActionAuthorized(input: {
@@ -119,16 +225,19 @@ export function productionIntentDigest(input: Pick<
   "capability" | "source" | "binding" | "authorization" | "args" | "activatedSkills" | "disabledSkills"
 >): string {
   const { workOrderId: _workOrderId, ...stableBinding } = input.binding;
+  const authorization = "source" in input.authorization
+    ? {
+        source: input.authorization.source,
+        actionSource: input.authorization.actionSource,
+        requestedIntent: input.authorization.requestedIntent,
+        ownerDirectionTextSha256: input.authorization.ownerDirection.textSha256,
+      }
+    : input.authorization;
   return hashCanonicalJson({
     capability: input.capability,
     source: input.source,
     binding: stableBinding,
-    authorization: {
-      source: input.authorization.source,
-      actionSource: input.authorization.actionSource,
-      requestedIntent: input.authorization.requestedIntent,
-      ownerDirectionTextSha256: input.authorization.ownerDirection.textSha256,
-    },
+    authorization,
     args: input.args,
     activatedSkills: [...input.activatedSkills],
     ...(input.disabledSkills ? { disabledSkills: [...input.disabledSkills] } : {}),
@@ -175,11 +284,67 @@ export function createWriteNextProductionCommand(input: {
     issuedAt: (input.now ?? new Date()).toISOString(),
   };
   const intentDigest = productionIntentDigest(unsignedWithoutIntent);
-  const unsigned = ProductionCommandUnsignedSchema.parse({ ...unsignedWithoutIntent, intentDigest });
-  return ProductionCommandSchema.parse({
+  const unsigned = ProductionCommandV1UnsignedSchema.parse({ ...unsignedWithoutIntent, intentDigest });
+  return ProductionCommandV1Schema.parse({
     ...unsigned,
     commandSelfHash: hashCanonicalJson(unsigned),
   });
+}
+
+export function createWriteNextProductionCommandV2(input: {
+  readonly idempotencyKey: string;
+  readonly source: ProductionCommandSource;
+  readonly binding: ProductionCommandBinding;
+  readonly ownerDirection: OwnerDirectionReference;
+  readonly authorization: ProductionAuthorizationEvidenceV2;
+  readonly targetLength?: ProductionTargetLength;
+  readonly taskGuidance?: ModelMediatedTaskGuidanceReference;
+  readonly activatedSkills?: ReadonlyArray<string>;
+  readonly disabledSkills?: ReadonlyArray<string>;
+  readonly commandId?: string;
+  readonly now?: Date;
+}): ProductionCommandV2 {
+  const args = ProductionCommandArgsV2Schema.parse({
+    chapterCount: 1,
+    ...(input.targetLength ? { targetLength: ProductionTargetLengthSchema.parse(input.targetLength) } : {}),
+    ownerDirectionTextSha256: input.ownerDirection.textSha256,
+    ...(input.taskGuidance ? { taskGuidance: ModelMediatedTaskGuidanceReferenceSchema.parse(input.taskGuidance) } : {}),
+  });
+  const authorization = ProductionCommandAuthorizationV2Schema.parse({
+    ...input.authorization,
+    requestedIntent: "write_next",
+    actionSource: input.source === "cli" || input.source === "tui"
+      ? "slash"
+      : input.source === "studio" || input.source === "agent"
+        ? "button"
+        : "quick-action",
+    ownerDirection: OwnerDirectionReferenceSchema.parse(input.ownerDirection),
+    argsSha256: hashCanonicalJson(args),
+  });
+  const unsignedWithoutIntent = {
+    schemaVersion: "production-command/v2" as const,
+    commandId: input.commandId ?? randomUUID(),
+    idempotencyKey: input.idempotencyKey,
+    capability: "write-next-chapter" as const,
+    source: input.source,
+    binding: ProductionCommandBindingSchema.parse(input.binding),
+    authorization,
+    args,
+    activatedSkills: [...new Set(input.activatedSkills ?? [])].sort(),
+    ...(input.disabledSkills && input.disabledSkills.length > 0
+      ? { disabledSkills: [...new Set(input.disabledSkills)].sort() }
+      : {}),
+    issuedAt: (input.now ?? new Date()).toISOString(),
+  };
+  const intentDigest = productionIntentDigest(unsignedWithoutIntent);
+  const unsigned = ProductionCommandV2UnsignedSchema.parse({ ...unsignedWithoutIntent, intentDigest });
+  return ProductionCommandV2Schema.parse({ ...unsigned, commandSelfHash: hashCanonicalJson(unsigned) });
+}
+
+export function productionCommandActionSource(command: ProductionCommand): ActionSource | ProductionCommandAuthorizationV2["kind"] {
+  return command.schemaVersion === "production-command/v1"
+    ? command.authorization.actionSource
+    : command.authorization.kind;
 }
 
 /** Reparse serialized command bytes immediately before an authorized execution. */

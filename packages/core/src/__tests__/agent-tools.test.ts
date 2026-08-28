@@ -26,6 +26,7 @@ import {
 import { ingestMaterial } from "../materials/ingest.js";
 import { createPlayDB } from "../play/play-db-factory.js";
 import { PlayStore } from "../play/play-store.js";
+import { createDetachedOwnerDirectionLease } from "../production/detached-payload-store.js";
 
 describe("agent deterministic writing tools", () => {
   let root: string;
@@ -963,6 +964,76 @@ describe("agent deterministic writing tools", () => {
     } as any);
 
     expect(pipeline.writeNextChapter).toHaveBeenCalledWith("harbor", 2600);
+  });
+
+  it("routes an authorized Agent writer call through the Phase-5 surface gateway", async () => {
+    const ownerDirection = await createDetachedOwnerDirectionLease({
+      projectRoot: root,
+      receiptId: "request-phase5-agent",
+      text: "상업성 우선으로 다음 회차를 집필해.",
+    });
+    const executeSurfaceWriteNext = vi.fn(async () => ({
+      run: { command: { commandId: "00000000-0000-4000-8000-000000000001" } },
+      result: { chapterNumber: 4, title: "제4화", wordCount: 2600, status: "ready-for-review" },
+      reused: false,
+    }));
+    const pipeline = {
+      getSurfaceGatewayMode: () => "dual",
+      executeSurfaceWriteNext,
+      writeNextChapter: vi.fn(),
+    };
+    const toolAuthorization = {
+      version: 1 as const,
+      authorizationId: "a".repeat(64),
+      invocationId: "00000000-0000-4000-8000-000000000002",
+      bookId: "harbor",
+      agentName: "main",
+      stage: "agent",
+      operationId: null,
+      productionOperationId: null,
+      attemptId: null,
+      createdAt: "2026-08-28T00:00:00.000Z",
+      assistantOutputSha256: "b".repeat(64),
+      toolCallId: "tool-phase5-agent",
+      toolName: "sub_agent",
+      argumentsSha256: "c".repeat(64),
+      outcomeFileSha256: "d".repeat(64),
+    };
+    const tool = createSubAgentTool(pipeline as never, "harbor", root, {
+      getProductionTurnContext: () => ({
+        sessionId: "session-phase5-agent",
+        requestId: "request-phase5-agent",
+        ownerDirection,
+        toolAuthorization,
+      }),
+    });
+
+    await tool.execute("tool-phase5-agent", {
+      agent: "writer",
+      bookId: "harbor",
+      chapterWordCount: 2600,
+      instruction: "계약서의 함정을 역이용하는 장면으로 써.",
+    } as any);
+
+    expect(executeSurfaceWriteNext).toHaveBeenCalledWith(expect.objectContaining({
+      source: "agent",
+      idempotencyKey: "request-phase5-agent:tool-phase5-agent",
+      bookId: "harbor",
+      sessionId: "session-phase5-agent",
+      requestId: "request-phase5-agent",
+      ownerDirection,
+      taskGuidance: expect.objectContaining({
+        source: "model-mediated",
+        transcriptRef: expect.objectContaining({ toolCallId: "tool-phase5-agent" }),
+      }),
+      authorization: expect.objectContaining({
+        kind: "confirmed-agent-tool",
+        sessionRequestId: "request-phase5-agent",
+        toolArgsSha256: "c".repeat(64),
+      }),
+      targetLength: { count: 2600, unit: "zh-chars" },
+    }));
+    expect(pipeline.writeNextChapter).not.toHaveBeenCalled();
   });
 
   it("runs a requested chapter batch through one writer operation", async () => {

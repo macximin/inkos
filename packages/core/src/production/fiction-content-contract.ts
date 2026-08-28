@@ -805,6 +805,19 @@ export interface FictionContentReceiptAudit {
   }>;
 }
 
+export interface ProductionModelCallReadback {
+  readonly invocationId: string;
+  readonly agentName: string;
+  readonly stage: string;
+  readonly model: string;
+  readonly reasoningEffort: string | null;
+  readonly status: "completed" | "provider-refused" | "failed";
+  readonly receiptPath: string;
+  readonly receiptSha256: string;
+  readonly outcomePath: string;
+  readonly outcomeSha256: string;
+}
+
 interface FictionContentEvidenceEntry<T> {
   readonly value: T;
   readonly fileSha256: string;
@@ -987,6 +1000,41 @@ export async function verifyFictionContentInvocationReceipts(
       };
     }),
   };
+}
+
+export async function readProductionModelCallReadback(input: {
+  readonly projectRoot: string;
+  readonly bookId: string;
+  readonly productionOperationId: string;
+  readonly attemptId: string;
+}): Promise<ReadonlyArray<ProductionModelCallReadback>> {
+  const ledger = await loadFictionContentEvidenceLedger(input.projectRoot, input.bookId);
+  const root = join("story", "runtime", "fiction-content-neutral");
+  return [...ledger.receipts.entries()]
+    .filter(([, entry]) => (
+      entry.value.productionOperationId === input.productionOperationId
+      && entry.value.attemptId === input.attemptId
+    ))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([invocationId, receiptEntry]) => {
+      const trace = ledger.traces.get(invocationId)?.value;
+      const outcomeEntry = ledger.outcomes.get(invocationId);
+      if (!trace || !outcomeEntry) {
+        throw new Error(`Production model call ${invocationId} is missing trace or outcome evidence.`);
+      }
+      return {
+        invocationId,
+        agentName: receiptEntry.value.agentName,
+        stage: receiptEntry.value.stage,
+        model: receiptEntry.value.model,
+        reasoningEffort: receiptEntry.value.reasoningEffort,
+        status: outcomeEntry.value.status,
+        receiptPath: join(root, "receipts", `${invocationId}.json`),
+        receiptSha256: receiptEntry.fileSha256,
+        outcomePath: join(root, "outcomes", `${invocationId}.json`),
+        outcomeSha256: outcomeEntry.fileSha256,
+      };
+    });
 }
 
 async function loadFictionContentEvidenceLedger(

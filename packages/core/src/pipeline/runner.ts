@@ -4,7 +4,7 @@ import { createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, FanficMode, RevisionGate } from "../models/book.js";
 import { ChapterMetaSchema, type ChapterArcProvenance, type ChapterMeta } from "../models/chapter.js";
-import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode, ProductionKernelMode } from "../models/project.js";
+import type { NotifyChannel, LLMConfig, AgentLLMOverride, InputGovernanceMode, ProductionKernelMode, SurfaceGatewayMode } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import {
   ArchitectAgent,
@@ -40,7 +40,7 @@ import { readGenreProfile } from "../agents/rules-reader.js";
 import { analyzeAITells } from "../agents/ai-tells.js";
 import { analyzeSensitiveWords, type SensitiveWordResult } from "../agents/sensitive-words.js";
 import { BookBoundCompletionAgent } from "../agents/book-bound-completion.js";
-import type { ResolvedProductionDirectionContext } from "../production/direction-context.js";
+import type { ModelMediatedTaskGuidanceReference, OwnerDirectionReference, ResolvedProductionDirectionContext } from "../production/direction-context.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
@@ -115,6 +115,7 @@ import {
   sealFictionContentOperationManifest,
   verifyFictionContentOperationEvidence,
   verifyFictionContentOperationManifest,
+  hashCanonicalJson,
   type FictionContentOperationStart,
   type FictionContentOperationManifest,
 } from "../production/fiction-content-contract.js";
@@ -130,7 +131,14 @@ import {
 import type {
   ProductionCommand,
   ProductionCommandBinding,
+  ProductionCommandSource,
+  ProductionTargetLength,
+  ProductionAuthorizationEvidenceV2,
 } from "../production/production-command.js";
+import { createWriteNextProductionCommandV2 } from "../production/production-command.js";
+import { BookSoulStore } from "../production/book-soul-binding.js";
+import type { SessionSoulBinding } from "../production/soul-schema.js";
+import { assertSafeBookId } from "../utils/book-id.js";
 
 const SEQUENCE_LEVEL_CATEGORIES = new Set([
   "Pacing Monotony", "节奏单调",
@@ -431,6 +439,8 @@ export interface PipelineConfig {
   readonly inputGovernanceMode?: InputGovernanceMode;
   /** Phase-3 production kernel flag. Defaults to off for upstream compatibility. */
   readonly productionKernelMode?: ProductionKernelMode;
+  /** Phase-5 ingress convergence flag. Legacy remains the compatibility default. */
+  readonly surfaceGatewayMode?: SurfaceGatewayMode;
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
   readonly onContextCompression?: ContextCompressionCallback;
@@ -465,6 +475,22 @@ export interface ChapterPipelineResult {
   readonly tokenUsage?: TokenUsageSummary;
   readonly productionAttempt?: ProductionAttemptIdentity;
   readonly chapterCommitReceipt?: ChapterCommitReceipt;
+}
+
+export interface SurfaceWriteNextInput {
+  readonly source: ProductionCommandSource;
+  readonly idempotencyKey: string;
+  readonly bookId: string;
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly workOrderId?: string;
+  readonly ownerDirection: OwnerDirectionReference;
+  readonly taskGuidance?: ModelMediatedTaskGuidanceReference;
+  readonly authorization: ProductionAuthorizationEvidenceV2;
+  readonly expectedSoulBinding?: SessionSoulBinding | null;
+  readonly targetLength?: ProductionTargetLength;
+  readonly activatedSkills?: ReadonlyArray<string>;
+  readonly disabledSkills?: ReadonlyArray<string>;
 }
 
 export interface ReferenceHilApplyResult {
@@ -933,6 +959,12 @@ export class PipelineRunner {
 
   private agentCtxFor(agent: string, bookId?: string, evidenceBookDir?: string): AgentContext {
     const { model, client } = this.resolveOverride(agent);
+    const configuredReasoning = client.defaults?.extra?.codexReasoningEffort;
+    const reasoningEffort = typeof configuredReasoning === "string" && configuredReasoning.trim()
+      ? configuredReasoning.trim()
+      : (client.defaults?.thinkingBudget ?? 0) > 0
+        ? `budget:${client.defaults!.thinkingBudget}`
+        : undefined;
     return {
       client,
       model,
@@ -941,6 +973,7 @@ export class PipelineRunner {
       logger: this.config.logger?.child(agent),
       onStreamProgress: this.config.onStreamProgress,
       signal: this.currentAbortSignal(),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       fictionContentStage: bookId ? fictionContentStage(agent) : undefined,
       fictionContentEvidenceBookDir: evidenceBookDir,
     };
@@ -948,6 +981,10 @@ export class PipelineRunner {
 
   public createAgentContext(agent: string, bookId?: string): AgentContext {
     return this.agentCtxFor(agent, bookId);
+  }
+
+  public getSurfaceGatewayMode(): SurfaceGatewayMode {
+    return this.config.surfaceGatewayMode ?? "legacy";
   }
 
   private async pathExists(path: string): Promise<boolean> {
@@ -2524,6 +2561,9 @@ export class PipelineRunner {
     temperatureOverride?: number,
     directionContext?: ResolvedProductionDirectionContext,
   ): Promise<ChapterPipelineResult> {
+    if ((this.config.surfaceGatewayMode ?? "legacy") !== "legacy") {
+      throw new Error("Direct writeNextChapter is disabled while the Phase-5 surface gateway is active; submit a typed ProductionCommand instead.");
+    }
     this.throwIfOperationAborted();
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
@@ -2560,10 +2600,11 @@ export class PipelineRunner {
   async executeProductionWriteNext(
     command: ProductionCommand,
     currentBinding: ProductionCommandBinding,
+    kernelModeOverride?: ProductionKernelMode,
   ): Promise<ProductionKernelWriteNextResult> {
     return executeObserveOnlyWriteNext({
       projectRoot: this.config.projectRoot,
-      kernelMode: this.config.productionKernelMode ?? "off",
+      kernelMode: kernelModeOverride ?? this.config.productionKernelMode ?? "off",
       persistedCommand: command,
       currentBinding,
       signal: this.currentAbortSignal(),
@@ -2578,11 +2619,56 @@ export class PipelineRunner {
     });
   }
 
+  /** The sole Phase-5 write-next ingress used by Studio, CLI, TUI, Agent, and HQ adapters. */
+  async executeSurfaceWriteNext(input: SurfaceWriteNextInput): Promise<ProductionKernelWriteNextResult> {
+    const surfaceMode = this.config.surfaceGatewayMode ?? "legacy";
+    if (surfaceMode === "legacy") {
+      throw new Error("Surface ProductionCommand gateway is disabled in legacy mode.");
+    }
+    const bookId = assertSafeBookId(input.bookId);
+    const activeSoul = await new BookSoulStore(
+      this.config.projectRoot,
+      this.state.bookDir(bookId),
+      bookId,
+    ).resolveActiveInput();
+    const soulBinding = activeSoul?.sessionBinding;
+    if (
+      input.expectedSoulBinding !== undefined
+      && hashCanonicalJson(input.expectedSoulBinding) !== hashCanonicalJson(soulBinding ?? null)
+    ) {
+      throw new Error("Pending production confirmation no longer matches the active Book Soul binding.");
+    }
+    const binding: ProductionCommandBinding = {
+      bookId,
+      sessionId: input.sessionId,
+      requestId: input.requestId,
+      ...(input.workOrderId ? { workOrderId: input.workOrderId } : {}),
+      ...(soulBinding ? { soulBinding } : {}),
+    };
+    const command = createWriteNextProductionCommandV2({
+      idempotencyKey: input.idempotencyKey,
+      source: input.source,
+      binding,
+      ownerDirection: input.ownerDirection,
+      taskGuidance: input.taskGuidance,
+      authorization: input.authorization,
+      targetLength: input.targetLength,
+      activatedSkills: input.activatedSkills,
+      disabledSkills: input.disabledSkills,
+    });
+    const configuredKernel = this.config.productionKernelMode ?? "off";
+    const effectiveKernel = configuredKernel === "off" ? "observe" : configuredKernel;
+    return this.executeProductionWriteNext(command, binding, effectiveKernel);
+  }
+
   async writeChapters(
     bookId: string,
     chapterCount: number,
     options: WriteChaptersOptions = {},
   ): Promise<ReadonlyArray<ChapterPipelineResult>> {
+    if ((this.config.surfaceGatewayMode ?? "legacy") !== "legacy") {
+      throw new Error("Batch writing is disabled while the Phase-5 surface gateway is active; submit one write-next ProductionCommand per Chapter.");
+    }
     if (!Number.isInteger(chapterCount) || chapterCount < 1 || chapterCount > 20) {
       throw new Error(`chapterCount must be an integer between 1 and 20; received ${chapterCount}.`);
     }

@@ -18,6 +18,8 @@ import { safeNonSymlinkChildPath } from "../utils/path-safety.js";
 import { deriveBookIdFromTitle } from "../utils/book-id.js";
 import { normalizePlatformOrOther } from "../models/book.js";
 import type { BookRuleOwnerDecisionInput } from "../models/book-rule-provenance.js";
+import { createDetachedOwnerDirectionLease } from "../production/detached-payload-store.js";
+import { hashCanonicalJson } from "../production/fiction-content-contract.js";
 
 const SAFE_TRUTH_FLAT_FILE_NAMES = new Set([
   "project_pitch.md",
@@ -66,6 +68,8 @@ export function assertSafeTruthFileName(fileName: string): string {
 }
 
 type PipelineLike = Pick<PipelineRunner, "writeNextChapter" | "reviseDraft"> & {
+  readonly getSurfaceGatewayMode?: PipelineRunner["getSurfaceGatewayMode"];
+  readonly executeSurfaceWriteNext?: PipelineRunner["executeSurfaceWriteNext"];
   readonly initBook?: (
     book: BookConfig,
     options?: {
@@ -83,6 +87,7 @@ type InstrumentablePipelineLike = PipelineLike & {
     logger?: Logger;
     client?: LLMClient;
     model?: string;
+    projectRoot?: string;
   };
 };
 
@@ -470,10 +475,47 @@ export function createInteractionToolsFromDeps(
         },
       };
     },
-    writeNextChapter: (bookId) => withPipelineInteractionTelemetry(
+    writeNextChapter: (bookId, context) => withPipelineInteractionTelemetry(
       instrumentedPipeline,
       bookId,
-      () => pipeline.writeNextChapter(bookId),
+      async () => {
+        if (!pipeline.getSurfaceGatewayMode || pipeline.getSurfaceGatewayMode() === "legacy") return pipeline.writeNextChapter(bookId);
+        if (!context) throw new Error("TUI write-next requires typed command context while the surface gateway is active.");
+        if (!pipeline.executeSurfaceWriteNext) throw new Error("Pipeline does not expose the Phase-5 surface gateway.");
+        const projectRoot = instrumentedPipeline.config?.projectRoot;
+        if (!projectRoot) throw new Error("Phase-5 surface gateway requires the Pipeline project root.");
+        const ownerDirection = await createDetachedOwnerDirectionLease({
+          projectRoot,
+          receiptId: context.requestId,
+          text: context.instruction,
+        });
+        const typedCommandPreviewSha256 = hashCanonicalJson({
+          command: "interaction write-next",
+          bookId,
+          sessionId: context.sessionId,
+          requestId: context.requestId,
+          ownerDirectionTextSha256: ownerDirection.textSha256,
+        });
+        const execution = await pipeline.executeSurfaceWriteNext({
+          source: "tui",
+          idempotencyKey: context.requestId,
+          bookId,
+          sessionId: context.sessionId,
+          requestId: context.requestId,
+          ownerDirection,
+          authorization: {
+            kind: "confirmed-cli",
+            typedCommandPreviewSha256,
+            confirmationReceiptSha256: hashCanonicalJson({
+              schemaVersion: "tui-command-confirmation/v1",
+              requestId: context.requestId,
+              typedCommandPreviewSha256,
+            }),
+          },
+        });
+        if (!execution.result) throw new Error("TUI ProductionCommand was reused without an in-memory result.");
+        return execution.result;
+      },
     ),
     reviseDraft: (bookId, chapterNumber, mode) => withPipelineInteractionTelemetry(
       instrumentedPipeline,

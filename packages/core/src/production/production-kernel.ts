@@ -28,9 +28,11 @@ import {
   type ProductionInputReceipt,
 } from "./production-input.js";
 import { resolveWriteNextProductionSkills } from "./production-skill.js";
+import { resolveModelMediatedTaskGuidance } from "./task-guidance-resolver.js";
 import {
   ProductionCommandBindingSchema,
   parsePersistedProductionCommand,
+  productionCommandActionSource,
   type ProductionCommand,
   type ProductionCommandBinding,
 } from "./production-command.js";
@@ -93,6 +95,7 @@ function buildExecutionContext(
   command: ProductionCommand,
   productionAttempt: ProductionAttemptIdentity,
   startedAt: string,
+  mode: "observe" | "enforce",
   productionInputs?: ProductionInputReceipt,
 ): ProductionExecutionContext {
   return ProductionExecutionContextSchema.parse({
@@ -103,9 +106,9 @@ function buildExecutionContext(
     attemptId: productionAttempt.attemptId,
     intentDigest: command.intentDigest,
     capability: command.capability,
-    mode: "observe",
+    mode,
     source: command.source,
-    actionSource: command.authorization.actionSource,
+    actionSource: productionCommandActionSource(command),
     binding: command.binding,
     activatedSkills: productionInputs?.skills.map((skill) => skill.id) ?? command.activatedSkills,
     ...(productionInputs ? { productionInputs } : {}),
@@ -182,11 +185,13 @@ export async function executeObserveOnlyWriteNext(input: {
 }): Promise<ProductionKernelWriteNextResult> {
   const mode = ProductionKernelModeSchema.parse(input.kernelMode);
   if (mode === "off") throw new Error("Production kernel is off.");
-  if (mode === "enforce") throw new Error("Production kernel enforce mode is unavailable before its promotion gate.");
 
   // Serialize and parse again so caller-owned object identity cannot act as
   // authorization. The strict schema and self-hash are checked on these bytes.
   const command = parsePersistedProductionCommand(JSON.parse(JSON.stringify(input.persistedCommand)));
+  if (mode === "enforce" && command.schemaVersion === "production-command/v1") {
+    throw new Error("Production kernel enforce mode requires ProductionCommand v2.");
+  }
   assertCurrentBinding(command, input.currentBinding);
   input.signal?.throwIfAborted();
 
@@ -257,7 +262,7 @@ export async function executeObserveOnlyWriteNext(input: {
     const nextChapterNumber = await state.getNextChapterNumber(command.binding.bookId);
     const productionAttempt = createProductionAttemptIdentity();
     const startedAt = now().toISOString();
-    const context = buildExecutionContext(command, productionAttempt, startedAt, productionInputs);
+    const context = buildExecutionContext(command, productionAttempt, startedAt, mode, productionInputs);
     const canonicalBaseline = await captureChapterPersistenceFingerprint(
       state.bookDir(command.binding.bookId),
       nextChapterNumber,
@@ -310,7 +315,17 @@ export async function executeObserveOnlyWriteNext(input: {
         reference: executableCommand.authorization.ownerDirection,
         now: now(),
       });
-      const directionContext = verifyResolvedProductionDirectionContext({ ownerDirection });
+      const taskGuidance = executableCommand.schemaVersion === "production-command/v2"
+        && executableCommand.args.taskGuidance
+        ? await resolveModelMediatedTaskGuidance({
+            projectRoot: input.projectRoot,
+            reference: executableCommand.args.taskGuidance,
+          })
+        : undefined;
+      const directionContext = verifyResolvedProductionDirectionContext({
+        ownerDirection,
+        ...(taskGuidance ? { taskGuidance } : {}),
+      });
 
       const result = await runWithProductionExecutionContext(context, () => runWithProductionInputBundle({
         bookId: snapshot.command.binding.bookId,

@@ -10,7 +10,7 @@ export {
   ChapterMetaSchema,
   ChapterStatusSchema,
 } from "./models/chapter.js";
-export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, type ProductionConfig, type ProductionKernelMode, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema, ProductionConfigSchema, ProductionKernelModeSchema } from "./models/project.js";
+export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, type ProductionConfig, type ProductionKernelMode, type SurfaceGatewayMode, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema, ProductionConfigSchema, ProductionKernelModeSchema, SurfaceGatewayModeSchema } from "./models/project.js";
 export { type CurrentState, type ParticleLedger, type PendingHooks, type PendingHook, type LedgerEntry } from "./models/state.js";
 export { type GenreProfile, type ParsedGenreProfile, GenreProfileSchema, parseGenreProfile } from "./models/genre-profile.js";
 export {
@@ -877,9 +877,11 @@ export {
   defaultContentIntensityDirective,
   loadContentIntensityDirective,
   appendFictionContentContract,
+  hashCanonicalJson,
   prepareFictionContentInvocation,
   writeFictionContentInvocationOutcome,
   verifyFictionContentInvocationReceipts,
+  readProductionModelCallReadback,
 } from "./production/fiction-content-contract.js";
 export type {
   ContentIntensityDirective,
@@ -888,6 +890,7 @@ export type {
   FictionContentInvocationOutcome,
   PreparedFictionContentInvocation,
   FictionContentReceiptAudit,
+  ProductionModelCallReadback,
 } from "./production/fiction-content-contract.js";
 export {
   createDetachedOwnerDirectionLease,
@@ -900,7 +903,13 @@ export {
   OwnerDirectionReferenceSchema,
   ModelMediatedTaskGuidanceReferenceSchema,
   ResolvedProductionDirectionContextSchema,
+  type OwnerDirectionReference,
+  type ModelMediatedTaskGuidanceReference,
+  type ResolvedOwnerDirection,
+  type ResolvedModelMediatedTaskGuidance,
+  type ResolvedProductionDirectionContext,
 } from "./production/direction-context.js";
+export { resolveModelMediatedTaskGuidance } from "./production/task-guidance-resolver.js";
 export {
   ProductionAttemptIdentitySchema,
   createProductionAttemptIdentity,
@@ -912,14 +921,23 @@ export {
   ProductionCommandBindingSchema,
   ProductionTargetLengthSchema,
   ProductionCommandSchema,
+  ProductionCommandV1Schema,
+  ProductionCommandV2Schema,
+  ProductionCommandAuthorizationV2Schema,
   isProductionCommandActionAuthorized,
   productionIntentDigest,
   createWriteNextProductionCommand,
+  createWriteNextProductionCommandV2,
+  productionCommandActionSource,
   parsePersistedProductionCommand,
   type ProductionCommandSource,
   type ProductionCommandBinding,
   type ProductionTargetLength,
   type ProductionCommand,
+  type ProductionCommandV1,
+  type ProductionCommandV2,
+  type ProductionCommandAuthorizationV2,
+  type ProductionAuthorizationEvidenceV2,
 } from "./production/production-command.js";
 export {
   ProductionExecutionContextSchema,
@@ -1001,13 +1019,6 @@ export {
   type ResolveProductionSkillsInput,
   type ResolvedProductionSkills,
 } from "./production/production-skill.js";
-export type {
-  OwnerDirectionReference,
-  ModelMediatedTaskGuidanceReference,
-  ResolvedOwnerDirection,
-  ResolvedModelMediatedTaskGuidance,
-  ResolvedProductionDirectionContext,
-} from "./production/direction-context.js";
 export { buildWriterSystemPrompt, buildGoldenOpeningDiscipline } from "./agents/writer-prompts.js";
 export { analyzeAITells, type AITellResult, type AITellIssue } from "./agents/ai-tells.js";
 export {
@@ -1080,7 +1091,7 @@ export { arbitrateRuntimeStateDeltaHooks, type HookArbiterDecision } from "./uti
 export { analyzeHookHealth } from "./utils/hook-health.js";
 
 // Pipeline
-export { PipelineRunner, StoryRailProductionGateError, type PipelineConfig, type ChapterPipelineResult, type ReferenceHilApplyResult, type WriteChaptersOptions, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";
+export { PipelineRunner, StoryRailProductionGateError, type PipelineConfig, type ChapterPipelineResult, type SurfaceWriteNextInput, type ReferenceHilApplyResult, type WriteChaptersOptions, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";
 export { Scheduler, type SchedulerConfig } from "./pipeline/scheduler.js";
 export { detectChapter, detectAndRewrite, loadDetectionHistory, type DetectChapterResult, type DetectAndRewriteResult } from "./pipeline/detection-runner.js";
 export { runScriptCreation, runStoryboardCreation, runInteractiveFilmCreation, createStoryboardAssetsManifest, type ScriptCreationRunOptions, type ScriptCreationRunResult, type StoryboardAssetsManifest, type StoryboardCreationRunOptions, type StoryboardCreationRunResult, type InteractiveFilmCreationRunOptions, type InteractiveFilmCreationRunResult, type StoryboardImageAsset, type StoryboardImageAssetVariant } from "./pipeline/script-storyboard-runner.js";

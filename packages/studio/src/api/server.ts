@@ -71,11 +71,14 @@ import {
   normalizeSkillIdList as normalizeCoreSkillIdList,
   isProductionCommandActionAuthorized,
   createWriteNextProductionCommand,
+  hashCanonicalJson,
   loadActiveBookSoulSessionBinding,
   sessionSoulBindingsEqual,
   type ProductionCommand,
   type ProductionCommandBinding,
   type ProductionKernelMode,
+  type SurfaceGatewayMode,
+  type SurfaceWriteNextInput,
   type SessionSoulBinding,
   inferLanguage,
   defaultChapterLength,
@@ -1696,6 +1699,7 @@ function createWriteNextChapterTool(
   ownerDirection?: OwnerDirectionReference,
   productionCommand?: ProductionCommand,
   productionBinding?: ProductionCommandBinding,
+  surfaceGatewayInput?: SurfaceWriteNextInput,
 ): {
   readonly name: "sub_agent";
   readonly execute: (
@@ -1708,7 +1712,7 @@ function createWriteNextChapterTool(
   return {
     name: "sub_agent",
     async execute(_toolCallId, _params, signal, onUpdate) {
-      const directionContext = ownerDirection && !productionCommand
+      const directionContext = ownerDirection && !productionCommand && !surfaceGatewayInput
         ? {
             ownerDirection: await resolveDetachedOwnerDirectionLease({
               projectRoot,
@@ -1783,12 +1787,17 @@ function createWriteNextChapterTool(
           text: pick(lang, `正在为 ${bookId} 写下一章…`, `Writing the next chapter for ${bookId}...`, `${bookId}의 다음 화를 집필하고 있습니다…`),
         }],
       });
-      const kernelExecution = productionCommand && productionBinding
+      const kernelExecution = surfaceGatewayInput
         ? await pipeline.runWithAbortSignal(
+            signal,
+            () => pipeline.executeSurfaceWriteNext(surfaceGatewayInput),
+          )
+        : productionCommand && productionBinding
+          ? await pipeline.runWithAbortSignal(
             signal,
             () => pipeline.executeProductionWriteNext(productionCommand, productionBinding),
           )
-        : undefined;
+          : undefined;
       const projectedChapter = kernelExecution?.run.chapter;
       if (kernelExecution && (!projectedChapter || kernelExecution.run.executionStatus !== "succeeded")) {
         throw new Error(`Production run ${kernelExecution.run.command.commandId} ended ${kernelExecution.run.executionStatus}.`);
@@ -1837,6 +1846,7 @@ async function executeConfirmedProductionAction(args: {
   readonly actionSource: ActionSource;
   readonly actionPayload?: ActionPayload;
   readonly productionKernelMode: ProductionKernelMode;
+  readonly surfaceGatewayMode: SurfaceGatewayMode;
   readonly soulBinding?: SessionSoulBinding;
   readonly requestedSkillIds?: ReadonlyArray<string>;
   readonly disabledSkillIds?: ReadonlyArray<string>;
@@ -1909,7 +1919,8 @@ async function executeConfirmedProductionAction(args: {
         receiptId: args.sourceRequestId ?? args.taskId,
         text: args.instruction,
       });
-    const productionBinding: ProductionCommandBinding | undefined = chapterCount === 1 && args.productionKernelMode !== "off"
+    const useSurfaceGateway = chapterCount === 1 && args.surfaceGatewayMode !== "legacy";
+    const productionBinding: ProductionCommandBinding | undefined = chapterCount === 1 && !useSurfaceGateway && args.productionKernelMode !== "off"
       ? {
           bookId: args.bookId,
           sessionId: args.sessionId,
@@ -1929,6 +1940,41 @@ async function executeConfirmedProductionAction(args: {
           disabledSkills: args.disabledSkillIds,
         })
       : undefined;
+    const actionEnvelopeSha256 = hashCanonicalJson({
+      schemaVersion: "studio-action-envelope/v1",
+      sessionId: args.sessionId,
+      requestId: args.sourceRequestId ?? args.taskId,
+      bookId: args.bookId,
+      requestedIntent: args.requestedIntent,
+      actionSource: args.actionSource,
+      actionPayload: actionPayload ?? null,
+      ownerDirectionTextSha256: ownerDirection.textSha256,
+      soulBinding: args.soulBinding ?? null,
+    });
+    const surfaceGatewayInput: SurfaceWriteNextInput | undefined = useSurfaceGateway
+      ? {
+          source: "studio",
+          idempotencyKey: args.sourceRequestId ?? args.taskId,
+          bookId: args.bookId,
+          sessionId: args.sessionId,
+          requestId: args.sourceRequestId ?? args.taskId,
+          workOrderId: args.sourceRequestId ?? args.taskId,
+          ownerDirection,
+          authorization: {
+            kind: "confirmed-ui",
+            actionEnvelopeSha256,
+            confirmationReceiptSha256: hashCanonicalJson({
+              schemaVersion: "studio-owner-confirmation/v1",
+              actionEnvelopeSha256,
+              confirmedRequestId: args.sourceRequestId ?? args.taskId,
+              actionSource: args.actionSource,
+            }),
+          },
+          expectedSoulBinding: args.soulBinding ?? null,
+          activatedSkills: args.requestedSkillIds,
+          disabledSkills: args.disabledSkillIds,
+        }
+      : undefined;
     tool = createWriteNextChapterTool(
       args.pipeline,
       args.root,
@@ -1938,6 +1984,7 @@ async function executeConfirmedProductionAction(args: {
       ownerDirection,
       productionCommand,
       productionBinding,
+      surfaceGatewayInput,
     );
     agent = "writer";
     params = { agent: "writer", bookId: args.bookId };
@@ -3323,6 +3370,7 @@ export function createStudioServer(
       revisionGate: overrides?.revisionGate ?? revisionGate,
       modelOverrides: currentConfig.modelOverrides,
       productionKernelMode: currentConfig.production?.kernel ?? "off",
+      surfaceGatewayMode: currentConfig.production?.surfaceGateway ?? "legacy",
       notifyChannels: currentConfig.notify,
       logger,
       onContextCompression: (event) => {
@@ -4288,8 +4336,51 @@ export function createStudioServer(
     broadcast("write:start", { bookId: id });
 
     // Fire and forget — progress/completion/errors pushed via SSE
-    const pipeline = new PipelineRunner(await buildPipelineConfig({ bookIdForSettings: id }));
-    pipeline.writeNextChapter(id, body.wordCount).then(
+    const pipelineConfig = await buildPipelineConfig({ bookIdForSettings: id });
+    const pipeline = new PipelineRunner(pipelineConfig);
+    const writePromise = pipeline.getSurfaceGatewayMode() === "legacy"
+      ? pipeline.writeNextChapter(id, body.wordCount)
+      : (async () => {
+          const requestId = randomUUID();
+          const ownerDirection = await createDetachedOwnerDirectionLease({
+            projectRoot: root,
+            receiptId: requestId,
+            text: `Studio write-next action for ${id}.`,
+          });
+          const book = await state.loadBookConfig(id);
+          const targetLength = body.wordCount === undefined ? undefined : {
+            count: body.wordCount,
+            unit: book.language === "ko" ? "ko-chars" as const : book.language === "en" ? "words" as const : "zh-chars" as const,
+          };
+          const actionEnvelopeSha256 = hashCanonicalJson({
+            schemaVersion: "studio-direct-write-envelope/v1",
+            bookId: id,
+            requestId,
+            targetLength: targetLength ?? null,
+            ownerDirectionTextSha256: ownerDirection.textSha256,
+          });
+          const execution = await pipeline.executeSurfaceWriteNext({
+            source: "studio",
+            idempotencyKey: requestId,
+            bookId: id,
+            sessionId: `studio-direct-${id}`,
+            requestId,
+            ownerDirection,
+            authorization: {
+              kind: "confirmed-ui",
+              actionEnvelopeSha256,
+              confirmationReceiptSha256: hashCanonicalJson({
+                schemaVersion: "studio-direct-write-confirmation/v1",
+                requestId,
+                actionEnvelopeSha256,
+              }),
+            },
+            ...(targetLength ? { targetLength } : {}),
+          });
+          if (!execution.result) throw new Error("Studio write-next command was reused without an in-memory result.");
+          return execution.result;
+        })();
+    writePromise.then(
       (result) => {
         broadcast("write:complete", { bookId: id, chapterNumber: result.chapterNumber, status: result.status, title: result.title, wordCount: result.wordCount });
       },
@@ -6122,6 +6213,7 @@ export function createStudioServer(
             actionSource,
             actionPayload,
             productionKernelMode: config.production?.kernel ?? "off",
+            surfaceGatewayMode: config.production?.surfaceGateway ?? "legacy",
             ...(bookSession.soulBinding ? { soulBinding: bookSession.soulBinding } : {}),
             requestedSkillIds: requestedSkills,
             disabledSkillIds: disabledSkills,

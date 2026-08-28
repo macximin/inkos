@@ -17,7 +17,7 @@ import { ProductionAttemptIdentitySchema, type ProductionAttemptIdentity } from 
 import { Sha256HexSchema } from "./direction-context.js";
 import { ProductionExecutionContextSchema, type ProductionExecutionContext } from "./execution-context.js";
 import { hashCanonicalJson } from "./fiction-content-contract.js";
-import { ProductionCommandSchema, type ProductionCommand } from "./production-command.js";
+import { ProductionCommandSchema, productionCommandActionSource, type ProductionCommand } from "./production-command.js";
 
 const RUN_ROOT = join("story", "runtime", "production-runs");
 const SNAPSHOT_DIR = join(RUN_ROOT, "snapshots");
@@ -168,7 +168,7 @@ function validateRunCorrelation(value: RunCorrelation, ctx: z.RefinementCtx): vo
     || value.context.intentDigest !== value.command.intentDigest
     || value.context.capability !== value.command.capability
     || value.context.source !== value.command.source
-    || value.context.actionSource !== value.command.authorization.actionSource
+    || value.context.actionSource !== productionCommandActionSource(value.command)
     || hashCanonicalJson(value.context.binding) !== hashCanonicalJson(value.command.binding)
     || value.context.productionOperationId !== value.productionAttempt.productionOperationId
     || value.context.attemptId !== value.productionAttempt.attemptId

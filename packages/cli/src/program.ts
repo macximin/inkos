@@ -35,6 +35,7 @@ import { consolidateCommand } from "./commands/consolidate.js";
 import { createInteractCommand, type InteractCommandHooks } from "./commands/interact.js";
 import { createTuiCommand } from "./commands/tui.js";
 import { pitchCommand } from "./commands/pitch.js";
+import { productionCommand } from "./commands/production.js";
 import { launchTui } from "./tui/app.js";
 
 const require = createRequire(import.meta.url);
@@ -103,6 +104,7 @@ export function createProgram(hooks: ProgramHooks = {}): Command {
   }));
   program.addCommand(createTuiCommand({ launchTui: hooks.launchTui }));
   program.addCommand(pitchCommand);
+  program.addCommand(productionCommand);
 
   return program;
 }

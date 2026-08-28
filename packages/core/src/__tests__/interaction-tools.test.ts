@@ -79,6 +79,49 @@ describe("interaction tools", () => {
     expect(events).toEqual([]);
   });
 
+  it("routes typed TUI write-next through the Phase-5 surface gateway", async () => {
+    const executeSurfaceWriteNext = vi.fn(async () => ({
+      run: { command: { commandId: "00000000-0000-4000-8000-000000000001" } },
+      result: {
+        chapterNumber: 1,
+        title: "Draft",
+        wordCount: 1000,
+        revised: false,
+        status: "ready-for-review" as const,
+        auditResult: { passed: true, issues: [], summary: "ok" },
+      },
+      reused: false,
+    }));
+    const pipeline = {
+      config: { projectRoot },
+      getSurfaceGatewayMode: () => "dual" as const,
+      executeSurfaceWriteNext,
+      writeNextChapter: vi.fn(),
+    };
+    const state = {
+      listBooks: vi.fn(async () => ["harbor"]),
+      acquireBookLock: noopBookLock(),
+    };
+    const tools = createInteractionToolsFromDeps(pipeline as never, state as never);
+
+    await tools.writeNextChapter("harbor", {
+      sessionId: "project-interaction",
+      requestId: "request-phase5-tui",
+      instruction: "/write",
+    });
+
+    expect(executeSurfaceWriteNext).toHaveBeenCalledWith(expect.objectContaining({
+      source: "tui",
+      idempotencyKey: "request-phase5-tui",
+      bookId: "harbor",
+      sessionId: "project-interaction",
+      requestId: "request-phase5-tui",
+      ownerDirection: expect.objectContaining({ source: "owner-confirmed" }),
+      authorization: expect.objectContaining({ kind: "confirmed-cli" }),
+    }));
+    expect(pipeline.writeNextChapter).not.toHaveBeenCalled();
+  });
+
   it("takes the book lock before deterministic text edit transactions", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-core-interaction-lock-"));
     try {

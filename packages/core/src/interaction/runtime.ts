@@ -4,6 +4,7 @@ import type { InteractionRequest } from "./intents.js";
 import type { ExecutionState, InteractionEvent } from "./events.js";
 import type { PendingDecision, InteractionSession } from "./session.js";
 import type { BookRuleOwnerDecisionInput } from "../models/book-rule-provenance.js";
+import { randomUUID } from "node:crypto";
 import {
   appendInteractionEvent,
   bindActiveBook,
@@ -49,7 +50,11 @@ export interface InteractionRuntimeTools {
       readonly automationMode: AutomationMode;
     },
   ) => Promise<unknown>;
-  readonly writeNextChapter: (bookId: string) => Promise<unknown>;
+  readonly writeNextChapter: (bookId: string, context?: {
+    readonly sessionId: string;
+    readonly requestId: string;
+    readonly instruction: string;
+  }) => Promise<unknown>;
   readonly reviseDraft: (bookId: string, chapterNumber: number, mode: ReviseMode) => Promise<unknown>;
   readonly patchChapterText: (
     bookId: string,
@@ -643,7 +648,11 @@ export async function runInteractionRequest(params: {
           en: "No active book is bound to the interaction session.",
         }));
       }
-      const toolResult = await params.tools.writeNextChapter(bookId);
+      const toolResult = await params.tools.writeNextChapter(bookId, {
+        sessionId: "project-interaction",
+        requestId: randomUUID(),
+        instruction: request.instruction?.trim() || "/write",
+      });
       const metadata = extractToolMetadata(toolResult);
       session = bindActiveBook(session, bookId, metadata.activeChapterNumber);
       session = appendToolEvents(session, metadata.events);
