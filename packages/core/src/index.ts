@@ -114,6 +114,23 @@ export {
   type FireflyReviewPacket,
 } from "./storyyard/review-packet.js";
 export {
+  FireflyReviewCandidateV2Schema,
+  FireflyReviewDecisionV2Schema,
+  FireflyReviewPacketV2Schema,
+  FireflySurfaceClassificationReceiptSchema,
+  FireflySurfaceMatchV2Schema,
+  assertFireflyReviewDecisionV2MatchesPacket,
+  assertFireflyReviewPacketV2Identity,
+  buildFireflyReviewPacketV2,
+  fireflyApplicationBindingSha256,
+  resolveFireflyReviewCandidateV2,
+  type FireflyReviewCandidateV2,
+  type FireflyReviewDecisionV2,
+  type FireflyReviewPacketV2,
+  type FireflyReviewPacketV2Body,
+  type FireflySurfaceMatchV2,
+} from "./storyyard/review-packet-v2.js";
+export {
   type ArcStatus,
   type ArcEpisodeRole,
   type ArcEpisodeBeat,

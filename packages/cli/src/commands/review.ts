@@ -22,7 +22,13 @@ import {
   buildFireflyReviewPackets,
   FireflyReviewDecisionSchema,
   FireflyReviewPacketSchema,
+  FireflyReviewDecisionV2Schema,
+  FireflyReviewPacketV2Schema,
+  assertFireflyReviewDecisionV2MatchesPacket,
+  assertFireflyReviewPacketV2Identity,
   assertFireflyReviewPacketIdentity,
+  buildFireflyReviewPacketV2,
+  resolveFireflyReviewCandidateV2,
   formatLengthCount,
   readGenreProfile,
   resolveLengthCountingMode,
@@ -103,17 +109,83 @@ reviewCommand
   });
 
 reviewCommand
+  .command("export-storyyard-v2")
+  .description("Export one host-prepared independent blind pair after live InkOS candidate readback")
+  .argument("<draft-path>", "Pointer-only firefly_review_packet/v2 body JSON")
+  .argument("[book-id]", "Book ID (auto-detected if only one book)")
+  .option("--out <path>", "Output .json path")
+  .option("--generated-at <timestamp>", "Deterministic packet timestamp")
+  .option("--json", "Output JSON")
+  .action(async (draftPath: string, bookIdArg: string | undefined, opts) => {
+    try {
+      const root = findProjectRoot();
+      const bookId = await resolveBookId(bookIdArg, root);
+      const state = new StateManager(root);
+      const [book, chapters, views, draft] = await Promise.all([
+        state.loadBookConfig(bookId),
+        state.loadChapterIndex(bookId),
+        new ReferenceTransformationHilStore(state.bookDir(bookId)).list(),
+        readFile(resolve(root, draftPath), "utf8").then((raw) => JSON.parse(raw)),
+      ]);
+      const packet = buildFireflyReviewPacketV2({ generatedAt: opts.generatedAt?.trim(), body: draft });
+      if (packet.source.bookId !== bookId || packet.work.id !== bookId) throw new Error("Storyyard v2 draft Book identity does not match InkOS.");
+      if (packet.work.title !== book.title || packet.work.genre !== book.genre || packet.work.status !== book.status
+        || packet.work.targetChapters !== book.targetChapters) {
+        throw new Error("Storyyard v2 draft work metadata drifted from InkOS.");
+      }
+      const chapter = chapters.find((item) => item.number === packet.artifact.chapterNumber);
+      if (!chapter || packet.artifact.id !== `chapter-${String(chapter.number).padStart(4, "0")}`
+        || packet.artifact.title !== chapter.title || packet.artifact.status !== chapter.status) {
+        throw new Error("Storyyard v2 draft chapter metadata drifted from InkOS.");
+      }
+      for (const candidate of packet.candidates) resolveFireflyReviewCandidateV2(packet, candidate, views);
+
+      const requested = resolve(root, opts.out ?? join(".inkos", "exports", "storyyard", bookId, `${packet.packetId}.json`));
+      const relativeOutput = relative(root, requested);
+      if (isAbsolute(relativeOutput) || relativeOutput === ".." || relativeOutput.startsWith(`..${sep}`) || !requested.endsWith(".json")) {
+        throw new Error("Storyyard review packet output must be a .json file inside the InkOS project.");
+      }
+      const serialized = `${JSON.stringify(packet, null, 2)}\n`;
+      await mkdir(dirname(requested), { recursive: true });
+      await writeFile(requested, serialized, "utf8");
+      const output = {
+        repo: "inkos",
+        path: relativeOutput.split(sep).join("/"),
+        sha256: createHash("sha256").update(serialized).digest("hex"),
+        role: "storyyard-review-packet-v2",
+      };
+      if (opts.json) log(JSON.stringify({ bookId, packetId: packet.packetId, artifact: output }));
+      else log(`Storyyard review packet v2 ${packet.packetId}: ${output.path}`);
+    } catch (error) {
+      if (opts.json) log(JSON.stringify({ error: String(error) }));
+      else logError(`Failed to export Storyyard review packet v2: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
+reviewCommand
   .command("apply-storyyard")
   .description("Validate and apply one pending Storyyard decision inside InkOS authority")
-  .argument("<decision-path>", "firefly_review_decision/v1 JSON file")
-  .requiredOption("--packet <path>", "Matching firefly_review_packet/v1 JSON file")
+  .argument("<decision-path>", "firefly_review_decision/v1 or v2 JSON file")
+  .requiredOption("--packet <path>", "Matching firefly_review_packet/v1 or v2 JSON file")
   .option("--json", "Output JSON")
   .action(async (decisionPath: string, opts) => {
     try {
       const root = findProjectRoot();
-      const decision = FireflyReviewDecisionSchema.parse(JSON.parse(await readFile(resolve(root, decisionPath), "utf8")));
-      const packet = FireflyReviewPacketSchema.parse(JSON.parse(await readFile(resolve(root, opts.packet), "utf8")));
-      assertFireflyReviewPacketIdentity(packet);
+      const rawDecision = JSON.parse(await readFile(resolve(root, decisionPath), "utf8"));
+      const rawPacket = JSON.parse(await readFile(resolve(root, opts.packet), "utf8"));
+      const isV2 = rawPacket?.schemaVersion === "firefly_review_packet/v2";
+      const packet = isV2 ? FireflyReviewPacketV2Schema.parse(rawPacket) : FireflyReviewPacketSchema.parse(rawPacket);
+      const decision = isV2 ? FireflyReviewDecisionV2Schema.parse(rawDecision) : FireflyReviewDecisionSchema.parse(rawDecision);
+      if (isV2) {
+        assertFireflyReviewPacketV2Identity(packet as ReturnType<typeof FireflyReviewPacketV2Schema.parse>);
+        assertFireflyReviewDecisionV2MatchesPacket(
+          decision as ReturnType<typeof FireflyReviewDecisionV2Schema.parse>,
+          packet as ReturnType<typeof FireflyReviewPacketV2Schema.parse>,
+        );
+      } else {
+        assertFireflyReviewPacketIdentity(packet as ReturnType<typeof FireflyReviewPacketSchema.parse>);
+      }
       if (decision.status !== "pending") throw new Error(`Storyyard decision is already ${decision.status}.`);
       if (decision.packetId !== packet.packetId || decision.packetSha256 !== packet.packetSha256) {
         throw new Error("Storyyard decision does not match the review packet identity.");
@@ -121,42 +193,51 @@ reviewCommand
       if (decision.workId !== packet.work.id || decision.artifactId !== packet.artifact.id) {
         throw new Error("Storyyard decision work or artifact does not match the review packet.");
       }
-      const candidate = packet.candidates.find((item) => item.id === decision.candidateId);
-      if (!candidate || candidate.sha256 !== decision.candidateSha256) {
+      const publicCandidate = packet.candidates.find((item) => item.id === decision.candidateId);
+      if (!publicCandidate || publicCandidate.sha256 !== decision.candidateSha256) {
         throw new Error("Storyyard decision candidate does not match the review packet.");
       }
       const state = new StateManager(root);
       const bookId = await resolveBookId(decision.workId, root);
+      const store = new ReferenceTransformationHilStore(state.bookDir(bookId));
+      const liveViews = isV2 ? await store.list() : [];
+      const liveCandidate = isV2
+        ? resolveFireflyReviewCandidateV2(
+            packet as ReturnType<typeof FireflyReviewPacketV2Schema.parse>,
+            publicCandidate as ReturnType<typeof FireflyReviewPacketV2Schema.parse>["candidates"][number],
+            liveViews,
+          )
+        : null;
+      const candidateId = liveCandidate?.candidate.candidateId ?? publicCandidate.id;
       let result: unknown;
       if (decision.decision === "approve") {
         const config = await loadConfig();
         result = await new PipelineRunner(buildPipelineConfig(config, root)).applyReferenceHilCandidate({
           bookId,
           chapterNumber: packet.artifact.chapterNumber,
-          candidateId: candidate.id,
+          candidateId,
           actorId: `storyyard:${decision.decisionId}`,
           actorRole: "owner",
           interface: "storyyard",
           expectedCurrentContentSha256: packet.artifact.currentContentSha256,
-          expectedCandidateContentSha256: candidate.sha256,
+          expectedCandidateContentSha256: publicCandidate.sha256,
         });
       } else {
         const release = await state.acquireBookLock(bookId);
         try {
-          const store = new ReferenceTransformationHilStore(state.bookDir(bookId));
-          const current = (await store.list()).find((view) => view.candidate.candidateId === candidate.id);
+          const current = (await store.list()).find((view) => view.candidate.candidateId === candidateId);
           if (!current || current.candidate.chapterNumber !== packet.artifact.chapterNumber) {
             throw new Error("Storyyard decision candidate is missing from the canonical InkOS Book.");
           }
-          if (current.candidate.candidateContentSha256 !== candidate.sha256 || !current.currentChapterMatchesPreparation) {
+          if (current.candidate.candidateContentSha256 !== publicCandidate.sha256 || !current.currentChapterMatchesPreparation) {
             throw new Error("InkOS candidate or current manuscript changed after Storyyard export.");
           }
           if (decision.decision === "polish") {
-            result = await store.requestPolish(packet.artifact.chapterNumber, candidate.id);
+            result = await store.requestPolish(packet.artifact.chapterNumber, candidateId);
           } else if (decision.decision === "reject") {
-            result = await store.reject(packet.artifact.chapterNumber, candidate.id);
+            result = await store.reject(packet.artifact.chapterNumber, candidateId);
           } else {
-            result = { status: "held", candidateId: candidate.id };
+            result = { status: "held", candidateId };
           }
         } finally {
           await release();
