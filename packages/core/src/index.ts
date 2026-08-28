@@ -12,7 +12,15 @@ export {
 } from "./models/chapter.js";
 export { type ProjectConfig, type LLMConfig, type NotifyChannel, type DetectionConfig, type QualityGates, type FoundationConfig, type WritingConfig, type AgentLLMOverride, type InputGovernanceMode, type ResearchSearchConfig, type ProductionConfig, type ProductionKernelMode, type SurfaceGatewayMode, ProjectConfigSchema, LLMConfigSchema, AgentLLMOverrideSchema, DetectionConfigSchema, QualityGatesSchema, FoundationConfigSchema, WritingConfigSchema, InputGovernanceModeSchema, ResearchSearchConfigSchema, ProductionConfigSchema, ProductionKernelModeSchema, SurfaceGatewayModeSchema } from "./models/project.js";
 export { type CurrentState, type ParticleLedger, type PendingHooks, type PendingHook, type LedgerEntry } from "./models/state.js";
-export { type GenreProfile, type ParsedGenreProfile, GenreProfileSchema, parseGenreProfile } from "./models/genre-profile.js";
+export {
+  type GenreProfile,
+  type GenreProfileReadReceipt,
+  type ParsedGenreProfile,
+  type ResolvedGenreProfile,
+  GenreProfileReadReceiptSchema,
+  GenreProfileSchema,
+  parseGenreProfile,
+} from "./models/genre-profile.js";
 export {
   type BookRules,
   type ParsedBookRules,
@@ -867,7 +875,7 @@ export { ReviserAgent, DEFAULT_REVISE_MODE, type ReviseOutput, type ReviseMode }
 export { PolisherAgent, type PolishChapterInput, type PolishChapterOutput } from "./agents/polisher.js";
 export { RadarAgent, type RadarResult, type RadarRecommendation } from "./agents/radar.js";
 export { FanqieRadarSource, QidianRadarSource, TextRadarSource, type RadarSource, type PlatformRankings, type RankingEntry } from "./agents/radar-source.js";
-export { readGenreProfile, readBookRules, listAvailableGenres, getBuiltinGenresDir } from "./agents/rules-reader.js";
+export { readGenreProfile, readGenreProfileWithReceipt, readBookRules, listAvailableGenres, getBuiltinGenresDir } from "./agents/rules-reader.js";
 export {
   FICTION_CONTENT_CONTRACT_ID,
   FICTION_CONTENT_CONTRACT,
@@ -1004,6 +1012,7 @@ export {
   createProductionInputReceipt,
   runWithProductionInputBundle,
   currentProductionInputBundle,
+  assertCurrentProductionGenreProfileReceipt,
   appendProductionInput,
   sha256Bytes,
   type ProductionInputFileReceipt,

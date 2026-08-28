@@ -294,6 +294,12 @@ describe("Phase 3 observe-only write-next kernel", () => {
         productionInputs: {
           soul: null,
           externalContextSha256: f.command.args.ownerDirectionTextSha256,
+          writerGenreProfile: expect.objectContaining({
+            schemaVersion: "genre-profile-read-receipt/v1",
+            requestedGenre: "urban-fantasy",
+            source: "builtin",
+            resolvedProfileId: "other",
+          }),
           skills: [expect.objectContaining({
             id: "inkos-long-writing",
             namespace: "trusted-builtin",

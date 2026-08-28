@@ -42,6 +42,7 @@
     "dist",
     "!dist/__tests__",
     "genres",
+    "souls",
     "skills"
   ],
   "license": "AGPL-3.0-only",

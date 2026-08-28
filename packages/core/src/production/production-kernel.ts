@@ -1,6 +1,7 @@
 import type { ChapterPipelineResult } from "../pipeline/runner.js";
 import { lstat } from "node:fs/promises";
 import { ProductionKernelModeSchema, type ProductionKernelMode } from "../models/project.js";
+import { readGenreProfileWithReceipt } from "../agents/rules-reader.js";
 import { StateManager } from "../state/manager.js";
 import {
   ChapterCommitReceiptSchema,
@@ -251,10 +252,15 @@ export async function executeObserveOnlyWriteNext(input: {
       activeSoul?.promptInput,
       ...resolvedSkills.promptInputs,
     ].filter((value): value is string => Boolean(value)).join("\n\n");
+    const writerGenreProfile = (await readGenreProfileWithReceipt(
+      input.projectRoot,
+      book.genre,
+    )).receipt;
     const productionInputs = createProductionInputReceipt({
       schemaVersion: "production-input-receipt/v1",
       soul: activeSoul?.receipt ?? null,
       skills: [...resolvedSkills.receipts],
+      writerGenreProfile,
       externalContextSha256: command.authorization.ownerDirection.textSha256,
       promptInjectionSha256: sha256Bytes(promptInjection),
     });

@@ -1,7 +1,13 @@
-import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseGenreProfile, type ParsedGenreProfile } from "../models/genre-profile.js";
+import {
+  GenreProfileReadReceiptSchema,
+  parseGenreProfile,
+  type ParsedGenreProfile,
+  type ResolvedGenreProfile,
+} from "../models/genre-profile.js";
 import { parseBookRules, tryParseBookRulesFrontmatter, type ParsedBookRules } from "../models/book-rules.js";
 import { BookConfigSchema } from "../models/book.js";
 
@@ -14,16 +20,35 @@ const KOREAN_GENRE_ALIASES: Readonly<Record<string, string>> = {
   "현대 판타지 재벌물": "chaebol-modern-fantasy-ko",
   "현대판타지 기업물": "chaebol-modern-fantasy-ko",
   "현대 판타지 기업물": "chaebol-modern-fantasy-ko",
+  "현대판타지": "modern-fantasy-ko",
+  "현대 판타지": "modern-fantasy-ko",
+  "현판": "modern-fantasy-ko",
+  "한국 현대판타지": "modern-fantasy-ko",
+  "판타지": "fantasy-ko",
+  "정통 판타지": "fantasy-ko",
+  "한국 판타지": "fantasy-ko",
+  "무협": "murim-ko",
+  "무협물": "murim-ko",
+  "정통 무협": "murim-ko",
+  "한국 무협": "murim-ko",
 };
 
 function hasHangul(value: string): boolean {
   return /[\u3131-\u318e\uac00-\ud7a3]/.test(value);
 }
 
+function isSafeGenreFileId(value: string): boolean {
+  return value.length > 0
+    && value.length <= 240
+    && value !== "."
+    && value !== ".."
+    && !/[\\/\0]/u.test(value);
+}
+
 function resolveGenreProfileIds(genreId: string): ReadonlyArray<string> {
   const requested = genreId.trim();
   const alias = KOREAN_GENRE_ALIASES[requested];
-  const candidates = [requested];
+  const candidates = isSafeGenreFileId(requested) ? [requested] : [];
   if (alias && alias !== requested) candidates.push(alias);
   if ((alias || hasHangul(requested)) && !candidates.includes("other-ko")) {
     candidates.push("other-ko");
@@ -40,6 +65,32 @@ async function tryReadFile(path: string): Promise<string | null> {
   }
 }
 
+async function tryReadGenreFile(path: string): Promise<Buffer | null> {
+  try {
+    const parent = await lstat(dirname(path));
+    if (!parent.isDirectory() || parent.isSymbolicLink()) {
+      throw new Error(`Genre profile parent must be a real directory: ${dirname(path)}`);
+    }
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error(`Genre profile must be a real regular file: ${path}`);
+    }
+    return readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function decodeGenreProfile(bytes: Buffer, path: string): string {
+  if (bytes.includes(0)) throw new Error(`Genre profile contains NUL bytes: ${path}`);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new Error(`Genre profile is not valid UTF-8: ${path}`, { cause: error });
+  }
+}
+
 /**
  * Load genre profile. Lookup order:
  * 1. Exact project/built-in profile
@@ -51,18 +102,43 @@ export async function readGenreProfile(
   projectRoot: string,
   genreId: string,
 ): Promise<ParsedGenreProfile> {
-  let raw: string | null = null;
+  const resolved = await readGenreProfileWithReceipt(projectRoot, genreId);
+  return { profile: resolved.profile, body: resolved.body };
+}
+
+export async function readGenreProfileWithReceipt(
+  projectRoot: string,
+  genreId: string,
+): Promise<ResolvedGenreProfile> {
   for (const candidateId of resolveGenreProfileIds(genreId)) {
-    raw = (await tryReadFile(join(projectRoot, "genres", `${candidateId}.md`)))
-      ?? (await tryReadFile(join(BUILTIN_GENRES_DIR, `${candidateId}.md`)));
-    if (raw) break;
+    if (!isSafeGenreFileId(candidateId)) continue;
+    const candidates = [
+      { source: "project" as const, path: join(projectRoot, "genres", `${candidateId}.md`), profilePath: `genres/${candidateId}.md` },
+      { source: "builtin" as const, path: join(BUILTIN_GENRES_DIR, `${candidateId}.md`), profilePath: `builtin-genres/${candidateId}.md` },
+    ];
+    for (const candidate of candidates) {
+      const bytes = await tryReadGenreFile(candidate.path);
+      if (!bytes) continue;
+      const parsed = parseGenreProfile(decodeGenreProfile(bytes, candidate.path));
+      if (parsed.profile.id !== candidateId) {
+        throw new Error(`Genre profile ID drift: requested file ${candidateId}, parsed ${parsed.profile.id}`);
+      }
+      return {
+        ...parsed,
+        receipt: GenreProfileReadReceiptSchema.parse({
+          schemaVersion: "genre-profile-read-receipt/v1",
+          requestedGenre: genreId,
+          resolvedProfileId: candidateId,
+          source: candidate.source,
+          profilePath: candidate.profilePath,
+          profileSha256: createHash("sha256").update(bytes).digest("hex"),
+          profileSizeBytes: bytes.byteLength,
+          language: parsed.profile.language,
+        }),
+      };
+    }
   }
-
-  if (!raw) {
-    throw new Error(`Genre profile not found for "${genreId}" and fallback "other.md" is missing`);
-  }
-
-  return parseGenreProfile(raw);
+  throw new Error(`Genre profile not found for "${genreId}" and fallback "other.md" is missing`);
 }
 
 /**

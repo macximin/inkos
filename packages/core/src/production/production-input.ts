@@ -2,6 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { LLMMessage } from "../llm/provider.js";
+import {
+  GenreProfileReadReceiptSchema,
+  type GenreProfileReadReceipt,
+} from "../models/genre-profile.js";
 import { Sha256HexSchema } from "./direction-context.js";
 import { SessionSoulBindingSchema } from "./soul-schema.js";
 
@@ -35,6 +39,7 @@ const ProductionInputReceiptUnsignedSchema = z.object({
   schemaVersion: z.literal("production-input-receipt/v1"),
   soul: ProductionSoulInputReceiptSchema.nullable(),
   skills: z.array(ProductionSkillReceiptSchema),
+  writerGenreProfile: GenreProfileReadReceiptSchema.optional(),
   externalContextSha256: Sha256HexSchema,
   promptInjectionSha256: Sha256HexSchema,
 }).strict();
@@ -106,6 +111,25 @@ export function runWithProductionInputBundle<T>(bundle: ProductionInputBundle, t
 
 export function currentProductionInputBundle(): ProductionInputBundle | undefined {
   return productionInputStorage.getStore();
+}
+
+/**
+ * Bind the profile bytes actually loaded by Writer to the host-resolved
+ * production receipt. Legacy non-kernel calls have no production bundle and
+ * remain unchanged; every kernel call must carry the profile receipt.
+ */
+export function assertCurrentProductionGenreProfileReceipt(
+  actual: GenreProfileReadReceipt,
+): void {
+  const bundle = currentProductionInputBundle();
+  if (!bundle) return;
+  const expected = bundle.receipt.writerGenreProfile;
+  if (!expected) {
+    throw new Error("Production input receipt is missing the Writer genre profile binding.");
+  }
+  if (hashCanonical(actual) !== hashCanonical(expected)) {
+    throw new Error("Writer genre profile bytes do not match the host-resolved production receipt.");
+  }
 }
 
 export function appendProductionInput(

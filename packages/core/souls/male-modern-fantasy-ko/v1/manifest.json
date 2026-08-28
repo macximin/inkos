@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "soul-package/v1",
+  "soulId": "male-modern-fantasy-ko",
+  "version": "v1",
+  "promptPath": "SOUL.md",
+  "resources": [
+    "resources/genre.md"
+  ]
+}

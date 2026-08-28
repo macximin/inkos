@@ -1,6 +1,8 @@
 import { z } from "zod";
 import yaml from "js-yaml";
 
+const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+
 export const GenreProfileSchema = z.object({
   name: z.string(),
   id: z.string(),
@@ -20,6 +22,22 @@ export type GenreProfile = z.infer<typeof GenreProfileSchema>;
 export interface ParsedGenreProfile {
   readonly profile: GenreProfile;
   readonly body: string;
+}
+
+export const GenreProfileReadReceiptSchema = z.object({
+  schemaVersion: z.literal("genre-profile-read-receipt/v1"),
+  requestedGenre: z.string().trim().min(1).max(240),
+  resolvedProfileId: z.string().trim().min(1).max(240),
+  source: z.enum(["project", "builtin"]),
+  profilePath: z.string().trim().min(1),
+  profileSha256: Sha256HexSchema,
+  profileSizeBytes: z.number().int().positive(),
+  language: z.enum(["zh", "ko", "en"]),
+}).strict();
+export type GenreProfileReadReceipt = z.infer<typeof GenreProfileReadReceiptSchema>;
+
+export interface ResolvedGenreProfile extends ParsedGenreProfile {
+  readonly receipt: GenreProfileReadReceipt;
 }
 
 export function parseGenreProfile(raw: string): ParsedGenreProfile {

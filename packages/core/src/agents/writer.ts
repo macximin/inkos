@@ -9,7 +9,7 @@ import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prom
 import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-prompts.js";
 import { parseSettlerDeltaOutput } from "./settler-delta-parser.js";
 import { parseSettlementOutput } from "./settler-parser.js";
-import { readGenreProfile } from "./rules-reader.js";
+import { readGenreProfileWithReceipt } from "./rules-reader.js";
 import {
   projectRuleStackToVerifiedBookRules,
   readEffectiveBookRules,
@@ -75,6 +75,7 @@ import {
   verifyResolvedProductionDirectionContext,
   type ResolvedProductionDirectionContext,
 } from "../production/direction-context.js";
+import { assertCurrentProductionGenreProfileReceipt } from "../production/production-input.js";
 
 const LEGACY_WRITER_CONTEXT_BUDGET = {
   storyBible: 14_000,
@@ -351,8 +352,9 @@ export class WriterAgent extends BaseAgent {
     const fingerprintChapters = await this.loadRecentChapters(bookDir, chapterNumber, 5);
 
     // Load genre profile + book rules
-    const { profile: genreProfile, body: genreBody } =
-      await readGenreProfile(this.ctx.projectRoot, book.genre);
+    const resolvedGenreProfile = await readGenreProfileWithReceipt(this.ctx.projectRoot, book.genre);
+    assertCurrentProductionGenreProfileReceipt(resolvedGenreProfile.receipt);
+    const { profile: genreProfile, body: genreBody } = resolvedGenreProfile;
     const effectiveBookRules = await readEffectiveBookRules(bookDir, book.id);
     const bookRules = effectiveBookRules?.automatic ?? null;
     const bookRulesGuidance = effectiveBookRules?.guidance ?? "";
@@ -768,7 +770,9 @@ export class WriterAgent extends BaseAgent {
       this.readFileOrDefault(join(input.bookDir, "story/brief.md")),
     ]);
 
-    const { profile: genreProfile } = await readGenreProfile(this.ctx.projectRoot, input.book.genre);
+    const resolvedGenreProfile = await readGenreProfileWithReceipt(this.ctx.projectRoot, input.book.genre);
+    assertCurrentProductionGenreProfileReceipt(resolvedGenreProfile.receipt);
+    const { profile: genreProfile } = resolvedGenreProfile;
     const effectiveBookRules = await readEffectiveBookRules(input.bookDir, input.book.id);
     const bookRules = effectiveBookRules?.automatic ?? null;
     const verifiedRuleStack = projectRuleStackToVerifiedBookRules(
