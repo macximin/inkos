@@ -232,7 +232,12 @@ productionCommand.command("write-next")
         projectionOrigin: execution.run.projectionOrigin,
       },
       effectiveRuntime: {
-        orchestrator: workOrder.runtime,
+        hermesE2E: false,
+        orchestrator: {
+          ...workOrder.runtime,
+          invoked: false,
+          evidence: "work-order-declaration",
+        },
         inkos: {
           configMode: effective.diagnostics.configMode,
           model: effectiveWriter.model,
