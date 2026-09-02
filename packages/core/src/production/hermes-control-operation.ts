@@ -36,6 +36,20 @@ const SafeBookIdSchema = z.string().refine(isSafeBookId, "Book ID is not filesys
 const AgentWorkOrderIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u);
 const MAX_GUIDANCE_BYTES = 32 * 1024;
 
+export const HERMES_CONTROL_TRANSPORT_POLICY = {
+  apiCallStaleTimeoutSeconds: 600,
+  codexEventStaleTimeoutSeconds: 120,
+  codexTtfbTimeoutSeconds: 120,
+  invocationTimeoutMs: 2_100_000,
+} as const;
+
+const HermesControlTransportPolicySchema = z.object({
+  apiCallStaleTimeoutSeconds: z.literal(HERMES_CONTROL_TRANSPORT_POLICY.apiCallStaleTimeoutSeconds),
+  codexEventStaleTimeoutSeconds: z.literal(HERMES_CONTROL_TRANSPORT_POLICY.codexEventStaleTimeoutSeconds),
+  codexTtfbTimeoutSeconds: z.literal(HERMES_CONTROL_TRANSPORT_POLICY.codexTtfbTimeoutSeconds),
+  invocationTimeoutMs: z.literal(HERMES_CONTROL_TRANSPORT_POLICY.invocationTimeoutMs),
+}).strict();
+
 const ArtifactRefSchema = z.object({
   path: z.string().min(1).superRefine((value, ctx) => {
     const normalized = posix.normalize(value);
@@ -92,6 +106,9 @@ export const HermesInvocationReceiptSchema = z.object({
     transport: z.literal("codex_responses"),
     toolsCount: z.literal(0),
     toolCallCount: z.literal(0),
+    // Historical v1 receipts predate this additive attestation. Whenever the
+    // field exists, the literal schema requires the complete current policy.
+    transportPolicy: HermesControlTransportPolicySchema.optional(),
   }).strict(),
   invocation: z.object({
     sessionId: SafeIdSchema,

@@ -27,6 +27,7 @@ import {
   sealFictionContentOperationManifest,
   writeFictionContentInvocationOutcome,
 } from "../production/fiction-content-contract.js";
+import { HERMES_CONTROL_TRANSPORT_POLICY } from "../production/hermes-control-operation.js";
 import { writeChapterCommitReceipt } from "../state/chapter-commit-receipt.js";
 
 const roots: string[] = [];
@@ -292,6 +293,19 @@ describe("Book-local Hermes control operation", () => {
     const { receiptSelfHash: _self, ...unsigned } = receipt;
     receipt.receiptSelfHash = hashCanonicalJson(unsigned);
     await expect(HermesInvocationReceiptSchema.parseAsync(receipt)).rejects.toThrow();
+
+    const currentReceipt = JSON.parse(f.receiptBytes.toString("utf8"));
+    currentReceipt.runtime.transportPolicy = { ...HERMES_CONTROL_TRANSPORT_POLICY };
+    const { receiptSelfHash: _historicalSelf, ...currentUnsigned } = currentReceipt;
+    currentReceipt.receiptSelfHash = hashCanonicalJson(currentUnsigned);
+    expect(HermesInvocationReceiptSchema.parse(currentReceipt).runtime.transportPolicy)
+      .toEqual(HERMES_CONTROL_TRANSPORT_POLICY);
+
+    const tamperedPolicyReceipt = structuredClone(currentReceipt);
+    tamperedPolicyReceipt.runtime.transportPolicy.invocationTimeoutMs = 1;
+    const { receiptSelfHash: _currentSelf, ...tamperedUnsigned } = tamperedPolicyReceipt;
+    tamperedPolicyReceipt.receiptSelfHash = hashCanonicalJson(tamperedUnsigned);
+    await expect(HermesInvocationReceiptSchema.parseAsync(tamperedPolicyReceipt)).rejects.toThrow();
   });
 
   it("rejects a Hermes action whose ancestor is swapped to a symlink after import", async () => {
