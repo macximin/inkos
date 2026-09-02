@@ -22,13 +22,10 @@ import {
   buildFireflyReviewPackets,
   FireflyReviewDecisionSchema,
   FireflyReviewPacketSchema,
-  FireflyReviewDecisionV2Schema,
-  FireflyReviewPacketV2Schema,
-  assertFireflyReviewDecisionV2MatchesPacket,
-  assertFireflyReviewPacketV2Identity,
   assertFireflyReviewPacketIdentity,
-  buildFireflyReviewPacketV2,
-  resolveFireflyReviewCandidateV2,
+  acknowledgeStoryyardEvaluation,
+  materializeBlindPair,
+  prepareBlindPair,
   formatLengthCount,
   readGenreProfile,
   resolveLengthCountingMode,
@@ -110,55 +107,107 @@ reviewCommand
 
 reviewCommand
   .command("export-storyyard-v2")
-  .description("Export one host-prepared independent blind pair after live InkOS candidate readback")
-  .argument("<draft-path>", "Pointer-only firefly_review_packet/v2 body JSON")
-  .argument("[book-id]", "Book ID (auto-detected if only one book)")
-  .option("--out <path>", "Output .json path")
-  .option("--generated-at <timestamp>", "Deterministic packet timestamp")
+  .description("Deprecated: v2 packets must be materialized from sealed blind-pair evidence")
+  .argument("[draft-path]")
+  .argument("[book-id]")
   .option("--json", "Output JSON")
-  .action(async (draftPath: string, bookIdArg: string | undefined, opts) => {
+  .action(async (_draftPath: string | undefined, _bookIdArg: string | undefined, opts) => {
     try {
-      const root = findProjectRoot();
-      const bookId = await resolveBookId(bookIdArg, root);
-      const state = new StateManager(root);
-      const [book, chapters, views, draft] = await Promise.all([
-        state.loadBookConfig(bookId),
-        state.loadChapterIndex(bookId),
-        new ReferenceTransformationHilStore(state.bookDir(bookId)).list(),
-        readFile(resolve(root, draftPath), "utf8").then((raw) => JSON.parse(raw)),
-      ]);
-      const packet = buildFireflyReviewPacketV2({ generatedAt: opts.generatedAt?.trim(), body: draft });
-      if (packet.source.bookId !== bookId || packet.work.id !== bookId) throw new Error("Storyyard v2 draft Book identity does not match InkOS.");
-      if (packet.work.title !== book.title || packet.work.genre !== book.genre || packet.work.status !== book.status
-        || packet.work.targetChapters !== book.targetChapters) {
-        throw new Error("Storyyard v2 draft work metadata drifted from InkOS.");
-      }
-      const chapter = chapters.find((item) => item.number === packet.artifact.chapterNumber);
-      if (!chapter || packet.artifact.id !== `chapter-${String(chapter.number).padStart(4, "0")}`
-        || packet.artifact.title !== chapter.title || packet.artifact.status !== chapter.status) {
-        throw new Error("Storyyard v2 draft chapter metadata drifted from InkOS.");
-      }
-      for (const candidate of packet.candidates) resolveFireflyReviewCandidateV2(packet, candidate, views);
-
-      const requested = resolve(root, opts.out ?? join(".inkos", "exports", "storyyard", bookId, `${packet.packetId}.json`));
-      const relativeOutput = relative(root, requested);
-      if (isAbsolute(relativeOutput) || relativeOutput === ".." || relativeOutput.startsWith(`..${sep}`) || !requested.endsWith(".json")) {
-        throw new Error("Storyyard review packet output must be a .json file inside the InkOS project.");
-      }
-      const serialized = `${JSON.stringify(packet, null, 2)}\n`;
-      await mkdir(dirname(requested), { recursive: true });
-      await writeFile(requested, serialized, "utf8");
-      const output = {
-        repo: "inkos",
-        path: relativeOutput.split(sep).join("/"),
-        sha256: createHash("sha256").update(serialized).digest("hex"),
-        role: "storyyard-review-packet-v2",
-      };
-      if (opts.json) log(JSON.stringify({ bookId, packetId: packet.packetId, artifact: output }));
-      else log(`Storyyard review packet v2 ${packet.packetId}: ${output.path}`);
+      throw new Error("Storyyard v2 approve/polish/apply drafts are disabled; use review prepare-blind-pair then materialize-blind-pair.");
     } catch (error) {
       if (opts.json) log(JSON.stringify({ error: String(error) }));
       else logError(`Failed to export Storyyard review packet v2: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
+reviewCommand
+  .command("prepare-blind-pair")
+  .description("Seal a successful neutral/Soul canary pair behind a private randomized A/B mapping")
+  .requiredOption("--pair <pairId>", "Source canary pair ID")
+  .requiredOption("--book <bookId>", "Canary Book ID")
+  .requiredOption("--neutral-work-order <workOrderId>", "Successful neutral lane WorkOrder")
+  .requiredOption("--soul-work-order <workOrderId>", "Successful Soul lane WorkOrder")
+  .requiredOption("--common-context <path>", "Project-relative exact common-context UTF-8 file")
+  .option("--round <round>", "Evaluation round 1, 2, or 3", "1")
+  .option("--json", "Output compact JSON")
+  .action(async (opts) => {
+    try {
+      const root = findProjectRoot();
+      const round = Number(opts.round);
+      if (round !== 1 && round !== 2 && round !== 3) throw new Error("Blind pair round must be 1, 2, or 3.");
+      const result = await prepareBlindPair({
+        projectRoot: root,
+        pairId: String(opts.pair),
+        bookId: String(opts.book),
+        neutralWorkOrderId: String(opts.neutralWorkOrder),
+        soulWorkOrderId: String(opts.soulWorkOrder),
+        commonContextPath: String(opts.commonContext),
+        round,
+      });
+      if (opts.json) log(JSON.stringify(result));
+      else log(`Blind pair prepared: ${result.transfer.path} (${result.transfer.sha256})`);
+    } catch (error) {
+      if (opts.json) log(JSON.stringify({ error: String(error) }));
+      else logError(`Blind pair preparation failed: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
+reviewCommand
+  .command("materialize-blind-pair")
+  .description("Materialize one advisory Storyyard v2 packet from sealed RefLab evaluation evidence")
+  .requiredOption("--pair <pairId>", "Source canary pair ID")
+  .requiredOption("--evaluator-input <path>", "Project-relative firefly-blind-pair-evaluation-input/v2 JSON")
+  .requiredOption("--evaluation-result <path>", "Project-relative firefly-blind-pair-evaluator-result/v2 JSON")
+  .requiredOption("--evaluator-host-receipt <path>", "Project-relative raw RefLab blind evaluator host receipt")
+  .requiredOption("--review-receipt <path>", "Project-relative firefly-blind-review-receipt/v2 JSON")
+  .requiredOption("--surface-a <path>", "Project-relative candidate-A surface scan receipt")
+  .requiredOption("--surface-b <path>", "Project-relative candidate-B surface scan receipt")
+  .option("--generated-at <timestamp>", "Deterministic packet timestamp")
+  .option("--json", "Output compact JSON")
+  .action(async (opts) => {
+    try {
+      const root = findProjectRoot();
+      const result = await materializeBlindPair({
+        projectRoot: root,
+        pairId: String(opts.pair),
+        evaluatorInputPath: String(opts.evaluatorInput),
+        evaluatorResultPath: String(opts.evaluationResult),
+        evaluatorHostReceiptPath: String(opts.evaluatorHostReceipt),
+        reviewReceiptPath: String(opts.reviewReceipt),
+        surfaceScanPaths: [String(opts.surfaceA), String(opts.surfaceB)],
+        generatedAt: opts.generatedAt?.trim() || undefined,
+      });
+      if (opts.json) log(JSON.stringify(result));
+      else log(`Storyyard evaluation packet ${result.packet.packetId}: ${result.artifact.path}`);
+    } catch (error) {
+      if (opts.json) log(JSON.stringify({ error: String(error) }));
+      else logError(`Blind pair materialization failed: ${String(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
+reviewCommand
+  .command("acknowledge-storyyard-evaluation")
+  .description("Acknowledge one advisory Storyyard v2 decision without applying manuscript changes")
+  .argument("<decision-path>", "Project-relative firefly_review_decision/v2 JSON")
+  .requiredOption("--packet <path>", "Matching project-relative firefly_review_packet/v2 JSON")
+  .requiredOption("--pair <pairId>", "Source canary pair ID")
+  .option("--json", "Output compact JSON")
+  .action(async (decisionPath: string, opts) => {
+    try {
+      const root = findProjectRoot();
+      const ack = await acknowledgeStoryyardEvaluation({
+        projectRoot: root,
+        pairId: String(opts.pair),
+        packetPath: String(opts.packet),
+        decisionPath,
+      });
+      log(JSON.stringify({ acknowledgment: ack }, null, opts.json ? 0 : 2));
+    } catch (error) {
+      if (opts.json) log(JSON.stringify({ error: String(error) }));
+      else logError(`Storyyard evaluation acknowledgment failed: ${String(error)}`);
       process.exitCode = 1;
     }
   });
@@ -174,18 +223,12 @@ reviewCommand
       const root = findProjectRoot();
       const rawDecision = JSON.parse(await readFile(resolve(root, decisionPath), "utf8"));
       const rawPacket = JSON.parse(await readFile(resolve(root, opts.packet), "utf8"));
-      const isV2 = rawPacket?.schemaVersion === "firefly_review_packet/v2";
-      const packet = isV2 ? FireflyReviewPacketV2Schema.parse(rawPacket) : FireflyReviewPacketSchema.parse(rawPacket);
-      const decision = isV2 ? FireflyReviewDecisionV2Schema.parse(rawDecision) : FireflyReviewDecisionSchema.parse(rawDecision);
-      if (isV2) {
-        assertFireflyReviewPacketV2Identity(packet as ReturnType<typeof FireflyReviewPacketV2Schema.parse>);
-        assertFireflyReviewDecisionV2MatchesPacket(
-          decision as ReturnType<typeof FireflyReviewDecisionV2Schema.parse>,
-          packet as ReturnType<typeof FireflyReviewPacketV2Schema.parse>,
-        );
-      } else {
-        assertFireflyReviewPacketIdentity(packet as ReturnType<typeof FireflyReviewPacketSchema.parse>);
+      if (rawPacket?.schemaVersion === "firefly_review_packet/v2" || rawDecision?.schemaVersion === "firefly_review_decision/v2") {
+        throw new Error("Storyyard v2 is advisory promotion evaluation only; manuscript apply/polish/reject is forbidden. Use acknowledge-storyyard-evaluation.");
       }
+      const packet = FireflyReviewPacketSchema.parse(rawPacket);
+      const decision = FireflyReviewDecisionSchema.parse(rawDecision);
+      assertFireflyReviewPacketIdentity(packet);
       if (decision.status !== "pending") throw new Error(`Storyyard decision is already ${decision.status}.`);
       if (decision.packetId !== packet.packetId || decision.packetSha256 !== packet.packetSha256) {
         throw new Error("Storyyard decision does not match the review packet identity.");
@@ -200,15 +243,7 @@ reviewCommand
       const state = new StateManager(root);
       const bookId = await resolveBookId(decision.workId, root);
       const store = new ReferenceTransformationHilStore(state.bookDir(bookId));
-      const liveViews = isV2 ? await store.list() : [];
-      const liveCandidate = isV2
-        ? resolveFireflyReviewCandidateV2(
-            packet as ReturnType<typeof FireflyReviewPacketV2Schema.parse>,
-            publicCandidate as ReturnType<typeof FireflyReviewPacketV2Schema.parse>["candidates"][number],
-            liveViews,
-          )
-        : null;
-      const candidateId = liveCandidate?.candidate.candidateId ?? publicCandidate.id;
+      const candidateId = publicCandidate.id;
       let result: unknown;
       if (decision.decision === "approve") {
         const config = await loadConfig();

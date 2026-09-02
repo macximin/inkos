@@ -21,6 +21,14 @@ const CommercialEvaluationSchema = z.object({
   styleFidelity: z.number().min(0).max(100),
 }).strict();
 
+export const FireflyCanaryIsolationProjectionSchema = z.object({
+  receiptSha256: Sha256Schema,
+  receiptSelfHash: Sha256Schema,
+  isolationScopeSha256: Sha256Schema,
+  commonSnapshotSha256: Sha256Schema,
+}).strict();
+export type FireflyCanaryIsolationProjection = z.infer<typeof FireflyCanaryIsolationProjectionSchema>;
+
 export const FireflySurfaceMatchV2Schema = z.object({
   matchId: z.string().regex(/^fsm-[0-9a-f]{24}$/u),
   selectorSha256: Sha256Schema,
@@ -55,8 +63,10 @@ const ContentNeutralViolationSchema = z.object({
 }).strict();
 
 export const FireflyReviewCandidateV2Schema = z.object({
-  id: z.string().regex(/^candidate-[A-Z]$/u),
-  applicationBindingSha256: Sha256Schema,
+  id: z.enum(["candidate-A", "candidate-B"]),
+  kind: z.literal("blind-pair-candidate"),
+  evaluationBindingSha256: Sha256Schema,
+  canaryIsolation: FireflyCanaryIsolationProjectionSchema,
   status: z.string().min(1),
   body: z.string(),
   sha256: Sha256Schema,
@@ -88,6 +98,7 @@ export const FireflyReviewCandidateV2Schema = z.object({
 export type FireflyReviewCandidateV2 = z.infer<typeof FireflyReviewCandidateV2Schema>;
 
 const FireflyReviewPacketV2BodySchema = z.object({
+  purpose: z.literal("promotion-evaluation"),
   source: z.object({ system: z.literal("inkos"), bookId: z.string().min(1), sourceRevision: z.string().min(1) }).strict(),
   work: z.object({ id: z.string().min(1), title: z.string().min(1), genre: z.string().min(1), status: z.string().min(1), targetChapters: z.number().int().min(1) }).strict(),
   artifact: z.object({
@@ -96,14 +107,15 @@ const FireflyReviewPacketV2BodySchema = z.object({
   }).strict(),
   comparison: z.object({
     reviewKind: z.literal("independent-blind-comparison"),
-    pairId: z.string().min(1),
+    pairId: z.string().regex(/^bp-[0-9a-f]{24}$/u),
     round: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-    blindRunId: z.string().min(1),
-    blindSessionId: z.string().min(1),
+    blindRunId: z.string().regex(/^br-[0-9a-f]{24}$/u),
+    blindSessionId: z.string().regex(/^br-[0-9a-f]{24}$/u),
     commonInputReceiptSha256: Sha256Schema,
     pairedGenerationReceiptSha256: Sha256Schema,
     labelAssignmentReceiptSha256: Sha256Schema,
     runtimeReceiptSha256: Sha256Schema,
+    canaryIsolation: FireflyCanaryIsolationProjectionSchema,
     candidateLabelsShuffled: z.literal(true),
     generatorMetadataExcluded: z.literal(true),
     runtime: z.object({
@@ -117,9 +129,10 @@ const FireflyReviewPacketV2BodySchema = z.object({
     contentNeutralReceiptSha256s: z.tuple([Sha256Schema, Sha256Schema]),
   }).strict(),
   recommendation: z.null(),
-  actions: z.tuple([z.literal("approve"), z.literal("polish"), z.literal("hold"), z.literal("reject")]),
+  actions: z.tuple([z.literal("select"), z.literal("tie"), z.literal("invalid")]),
   authority: z.object({
-    canon: z.literal("inkos"), decisionSurface: z.literal("storyyard"), apply: z.literal("inkos"), reverseSync: z.literal(false),
+    canon: z.literal("inkos"), decisionSurface: z.literal("storyyard"),
+    decisionEffect: z.literal("advisory"), manuscriptApply: z.literal(false), reverseSync: z.literal(false),
   }).strict(),
 }).strict();
 export type FireflyReviewPacketV2Body = z.infer<typeof FireflyReviewPacketV2BodySchema>;
@@ -144,21 +157,32 @@ export const FireflySurfaceClassificationReceiptSchema = z.object({
 
 export const FireflyReviewDecisionV2Schema = z.object({
   schemaVersion: z.literal("firefly_review_decision/v2"),
-  decisionId: z.string().min(1),
+  decisionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u),
   packetId: z.string().regex(/^frp-[0-9a-f]{24}$/u),
   packetSha256: Sha256Schema,
   workId: z.string().min(1),
   artifactId: z.string().min(1),
-  candidateId: z.string().regex(/^candidate-[A-Z]$/u),
-  candidateSha256: Sha256Schema,
-  decision: z.enum(["approve", "polish", "hold", "reject"]),
+  candidateId: z.enum(["candidate-A", "candidate-B"]).nullable(),
+  candidateSha256: Sha256Schema.nullable(),
+  decision: z.enum(["select", "tie", "invalid"]),
   comment: z.string().max(2_000),
+  purpose: z.literal("promotion-evaluation"),
+  decisionEffect: z.literal("advisory"),
+  manuscriptApply: z.literal(false),
   surfaceClassifications: z.array(FireflySurfaceClassificationReceiptSchema),
-  status: z.enum(["pending", "applied", "superseded", "failed"]),
+  status: z.literal("pending"),
   createdAt: z.string().datetime(),
-  appliedAt: z.string().datetime().nullable().optional(),
-  applyReceiptPath: z.string().nullable().optional(),
-}).strict();
+  acknowledgedAt: z.null(),
+  ackReceiptPath: z.null(),
+}).strict().superRefine((decision, ctx) => {
+  const selected = decision.decision === "select";
+  if (selected !== (decision.candidateId !== null && decision.candidateSha256 !== null)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["candidateId"], message: "select requires one candidate; tie/invalid require null candidate fields" });
+  }
+  if (!selected && !decision.comment.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["comment"], message: "tie/invalid require a non-empty reason" });
+  }
+});
 export type FireflyReviewDecisionV2 = z.infer<typeof FireflyReviewDecisionV2Schema>;
 
 function sha256(value: string | Uint8Array): string {
@@ -204,7 +228,7 @@ export function fireflyApplicationBindingSha256(input: {
 }
 
 export function assertFireflyReviewPacketV2Identity(packet: FireflyReviewPacketV2): void {
-  const { schemaVersion: _schemaVersion, packetId, packetSha256, generatedAt: _generatedAt, ...body } = packet;
+  const { schemaVersion: _schemaVersion, packetId, packetSha256, ...body } = packet;
   const actual = sha256(JSON.stringify(body));
   if (actual !== packetSha256 || packetId !== `frp-${actual.slice(0, 24)}`) {
     throw new Error("Firefly review packet v2 identity or SHA-256 mismatch.");
@@ -212,9 +236,17 @@ export function assertFireflyReviewPacketV2Identity(packet: FireflyReviewPacketV
   if (sha256(packet.artifact.currentContent) !== packet.artifact.currentContentSha256) {
     throw new Error("Firefly review packet v2 current manuscript SHA-256 mismatch.");
   }
-  if (packet.candidates[0].id === packet.candidates[1].id) throw new Error("Blind candidate labels must be unique.");
+  if (packet.comparison.blindRunId === packet.comparison.blindSessionId) {
+    throw new Error("Blind comparison run and session identifiers must be distinct.");
+  }
+  if (packet.candidates[0].id !== "candidate-A" || packet.candidates[1].id !== "candidate-B") {
+    throw new Error("Blind candidate labels must be ordered exactly candidate-A then candidate-B.");
+  }
   const seenMatches = new Set<string>();
   for (const candidate of packet.candidates) {
+    if (JSON.stringify(candidate.canaryIsolation) !== JSON.stringify(packet.comparison.canaryIsolation)) {
+      throw new Error(`Blind candidate ${candidate.id} canary isolation differs from its comparison.`);
+    }
     if (sha256(candidate.body) !== candidate.sha256) throw new Error(`Blind candidate ${candidate.id} body SHA-256 mismatch.`);
     if (scoreCommercialEvaluation(candidate.commercialEvaluation as CommercialEvaluation) !== candidate.commercialScore) {
       throw new Error(`Blind candidate ${candidate.id} commercial score does not match dopamine70-reference30-v1.`);
@@ -254,12 +286,13 @@ export function assertFireflyReviewPacketV2Identity(packet: FireflyReviewPacketV
 
 export function buildFireflyReviewPacketV2(input: { readonly generatedAt?: string; readonly body: unknown }): FireflyReviewPacketV2 {
   const body = FireflyReviewPacketV2BodySchema.parse(input.body);
-  const packetSha256 = sha256(JSON.stringify(body));
+  const generatedAt = input.generatedAt ?? new Date().toISOString();
+  const packetSha256 = sha256(JSON.stringify({ generatedAt, ...body }));
   const packet = FireflyReviewPacketV2Schema.parse({
     schemaVersion: "firefly_review_packet/v2",
     packetId: `frp-${packetSha256.slice(0, 24)}`,
     packetSha256,
-    generatedAt: input.generatedAt ?? new Date().toISOString(),
+    generatedAt,
     ...body,
   });
   assertFireflyReviewPacketV2Identity(packet);
@@ -271,22 +304,10 @@ export function resolveFireflyReviewCandidateV2(
   publicCandidate: FireflyReviewCandidateV2,
   views: ReadonlyArray<ReferenceTransformationHilCandidateView>,
 ): ReferenceTransformationHilCandidateView {
-  const matches = views.filter((view) => view.candidate.chapterNumber === packet.artifact.chapterNumber
-    && view.candidate.candidateContentSha256 === publicCandidate.sha256
-    && fireflyApplicationBindingSha256({
-      bookId: packet.work.id,
-      artifactId: packet.artifact.id,
-      candidateId: view.candidate.candidateId,
-      candidateSha256: view.candidate.candidateContentSha256,
-    }) === publicCandidate.applicationBindingSha256);
-  if (matches.length !== 1) throw new Error("Blind review application binding did not resolve exactly one InkOS candidate.");
-  const [view] = matches;
-  if (!view || view.candidate.status !== "prepared" || !view.currentChapterMatchesPreparation
-    || view.candidate.currentContentSha256 !== packet.artifact.currentContentSha256
-    || view.candidateContent !== publicCandidate.body) {
-    throw new Error("Blind review candidate no longer matches the canonical InkOS HIL state.");
-  }
-  return view;
+  void packet;
+  void publicCandidate;
+  void views;
+  throw new Error("Storyyard v2 is evaluation-only and cannot resolve an InkOS manuscript-apply candidate.");
 }
 
 export function assertFireflyReviewDecisionV2MatchesPacket(
@@ -298,14 +319,19 @@ export function assertFireflyReviewDecisionV2MatchesPacket(
     throw new Error("Storyyard v2 decision does not match the review packet identity.");
   }
   const candidate = packet.candidates.find((item) => item.id === decision.candidateId);
-  if (!candidate || candidate.sha256 !== decision.candidateSha256) throw new Error("Storyyard v2 decision candidate does not match the packet.");
+  if (decision.decision === "select") {
+    if (!candidate || candidate.sha256 !== decision.candidateSha256) throw new Error("Storyyard v2 selection does not match the packet candidate.");
+  } else if (decision.candidateId !== null || decision.candidateSha256 !== null) {
+    throw new Error("Storyyard v2 tie/invalid decisions must not select a candidate.");
+  }
   const matches = packet.candidates.flatMap((item) => item.review.surfaceComparison.surfaceMatches);
   if (decision.surfaceClassifications.length !== matches.length) throw new Error("Storyyard v2 decision must classify every surface match.");
   const receipts = new Map(decision.surfaceClassifications.map((receipt) => [receipt.matchId, receipt]));
   if (receipts.size !== matches.length || matches.some((match) => receipts.get(match.matchId)?.selectorSha256 !== match.selectorSha256)) {
     throw new Error("Storyyard v2 surface classifications do not match the packet selectors.");
   }
-  if (decision.decision === "approve" && decision.surfaceClassifications.some((receipt) => receipt.classification === "canon-leak")) {
-    throw new Error("A candidate classified with canon-leak cannot be approved.");
+  const selectedMatchIds = new Set(candidate?.review.surfaceComparison.surfaceMatches.map((match) => match.matchId) ?? []);
+  if (decision.decision === "select" && decision.surfaceClassifications.some((receipt) => selectedMatchIds.has(receipt.matchId) && receipt.classification === "canon-leak")) {
+    throw new Error("A candidate classified with canon-leak cannot be selected.");
   }
 }
