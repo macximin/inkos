@@ -29,7 +29,8 @@ export function parseCodexReasoningEffort(value: unknown): CodexReasoningEffort 
     : undefined;
 }
 
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const MAX_STDERR_BYTES = 256 * 1024;
 
@@ -144,10 +145,15 @@ function codexBinary(explicit?: string): string {
   return explicit?.trim() || process.env.INKOS_CODEX_BIN?.trim() || "codex";
 }
 
-function timeoutFrom(input?: number): number {
-  if (Number.isFinite(input) && input! > 0) return Math.min(input!, 30 * 60 * 1000);
-  const envTimeout = Number.parseInt(process.env.INKOS_CODEX_TIMEOUT_MS ?? "", 10);
-  if (Number.isFinite(envTimeout) && envTimeout > 0) return Math.min(envTimeout, 30 * 60 * 1000);
+export function resolveCodexCliTimeoutMs(
+  input?: number,
+  environment: NodeJS.ProcessEnv = process.env,
+): number {
+  if (typeof input === "number" && Number.isFinite(input) && input > 0) {
+    return Math.min(input, MAX_TIMEOUT_MS);
+  }
+  const envTimeout = Number.parseInt(environment.INKOS_CODEX_TIMEOUT_MS ?? "", 10);
+  if (Number.isFinite(envTimeout) && envTimeout > 0) return Math.min(envTimeout, MAX_TIMEOUT_MS);
   return DEFAULT_TIMEOUT_MS;
 }
 
@@ -562,7 +568,7 @@ export async function runCodexCliCompletion(input: CodexCliCompletionInput): Pro
       args,
       stdin: buildCodexCliPrompt(input.context),
       signal: input.signal,
-      timeoutMs: timeoutFrom(input.timeoutMs),
+      timeoutMs: resolveCodexCliTimeoutMs(input.timeoutMs),
       onStdoutLine: assertCodexJsonlLineSafe,
     });
     if (result.exitCode !== 0) {

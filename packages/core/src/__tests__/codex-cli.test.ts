@@ -10,8 +10,20 @@ import {
   buildCodexCliPrompt,
   parseCodexJsonl,
   probeCodexCli,
+  resolveCodexCliTimeoutMs,
   runCodexCliCompletion,
 } from "../llm/codex-cli.js";
+
+describe("Codex CLI timeout policy", () => {
+  it("uses a ten-minute default while preserving explicit, environment, and hard-cap precedence", () => {
+    expect(resolveCodexCliTimeoutMs(undefined, {})).toBe(10 * 60 * 1000);
+    expect(resolveCodexCliTimeoutMs(45_000, { INKOS_CODEX_TIMEOUT_MS: "90000" })).toBe(45_000);
+    expect(resolveCodexCliTimeoutMs(undefined, { INKOS_CODEX_TIMEOUT_MS: "90000" })).toBe(90_000);
+    expect(resolveCodexCliTimeoutMs(60 * 60 * 1000, {})).toBe(30 * 60 * 1000);
+    expect(resolveCodexCliTimeoutMs(undefined, { INKOS_CODEX_TIMEOUT_MS: String(60 * 60 * 1000) })).toBe(30 * 60 * 1000);
+    expect(resolveCodexCliTimeoutMs(undefined, { INKOS_CODEX_TIMEOUT_MS: "invalid" })).toBe(10 * 60 * 1000);
+  });
+});
 
 describe("Codex CLI subscription adapter", () => {
   let root: string;
