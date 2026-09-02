@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, readdir, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
@@ -11,6 +11,7 @@ import {
   loadAgentOperationTerminal,
   type AgentOperationTerminalReceiptV2,
 } from "../production/hermes-control-operation.js";
+import { acquireProductionCanaryBlindReviewLease } from "../production/canary-isolation.js";
 import { hashCanonicalJson } from "../production/fiction-content-contract.js";
 import { ChapterCommitReceiptSchema, type ChapterCommitReceipt } from "../state/chapter-commit-receipt.js";
 import { StateManager } from "../state/manager.js";
@@ -670,19 +671,7 @@ export async function prepareBlindPair(input: PrepareBlindPairInput): Promise<Pr
   const transferPath = blindPairTransferRelativePath(pairId);
   const lockPath = posix.join(".inkos", "canaries", pairId, "review", ".prepare-blind-pair.lock");
   await ensureDirectory(projectRoot, posix.dirname(lockPath));
-  const lockAbsolute = absoluteContainedPath(projectRoot, lockPath);
-  let lockHandle: FileHandle;
-  try {
-    lockHandle = await open(
-      lockAbsolute,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
-      0o600,
-    );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`Blind pair ${pairId} is already being prepared.`);
-    throw error;
-  }
-  const ownedLock = await lockHandle.stat();
+  const releasePrepareLease = await acquireProductionCanaryBlindReviewLease({ projectRoot, pairId });
   try {
     const existing = await readOptionalRegular(projectRoot, mappingPath);
     if (existing) {
@@ -706,10 +695,8 @@ export async function prepareBlindPair(input: PrepareBlindPairInput): Promise<Pr
       };
     }
 
-    const [neutral, soul] = await Promise.all([
-      loadLaneCandidate(projectRoot, pairId, "neutral", input.bookId, neutralWorkOrderId),
-      loadLaneCandidate(projectRoot, pairId, "soul", input.bookId, soulWorkOrderId),
-    ]);
+    const neutral = await loadLaneCandidate(projectRoot, pairId, "neutral", input.bookId, neutralWorkOrderId);
+    const soul = await loadLaneCandidate(projectRoot, pairId, "soul", input.bookId, soulWorkOrderId);
     if (neutral.chapter.chapterNumber !== soul.chapter.chapterNumber) {
       throw new Error("Blind pair lanes committed different chapter numbers.");
     }
@@ -772,11 +759,7 @@ export async function prepareBlindPair(input: PrepareBlindPairInput): Promise<Pr
       replayed: false,
     };
   } finally {
-    await lockHandle.close().catch(() => undefined);
-    const current = await lstat(lockAbsolute).catch(() => undefined);
-    if (current && current.dev === ownedLock.dev && current.ino === ownedLock.ino) {
-      await unlink(lockAbsolute).catch(() => undefined);
-    }
+    await releasePrepareLease();
   }
 }
 
@@ -1039,17 +1022,26 @@ function buildEvaluationTransfer(mapping: BlindPairPrivateMappingReceipt, mappin
 }
 
 async function loadMappedPair(projectRoot: string, mapping: BlindPairPrivateMappingReceipt): Promise<[LoadedCandidate, LoadedCandidate]> {
-  const loaded = await Promise.all(mapping.mappings.map((candidate) => loadLaneCandidate(
+  const firstMapping = mapping.mappings[0];
+  const secondMapping = mapping.mappings[1];
+  const first = await loadLaneCandidate(
     projectRoot,
     mapping.sourcePairId,
-    candidate.lane,
+    firstMapping.lane,
     mapping.bookId,
-    candidate.workOrderId,
-  )));
-  return loaded.map((candidate, index) => ({
-    ...candidate,
-    mapping: { ...candidate.mapping, candidateId: mapping.mappings[index]!.candidateId },
-  })) as [LoadedCandidate, LoadedCandidate];
+    firstMapping.workOrderId,
+  );
+  const second = await loadLaneCandidate(
+    projectRoot,
+    mapping.sourcePairId,
+    secondMapping.lane,
+    mapping.bookId,
+    secondMapping.workOrderId,
+  );
+  return [
+    { ...first, mapping: { ...first.mapping, candidateId: firstMapping.candidateId } },
+    { ...second, mapping: { ...second.mapping, candidateId: secondMapping.candidateId } },
+  ];
 }
 
 async function loadLaneCandidate(

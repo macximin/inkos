@@ -494,6 +494,83 @@ afterEach(async () => {
 });
 
 describe("blind-pair materialization", () => {
+  it("serializes terminal verification for initial preparation and exact replay without clobbering artifacts", async () => {
+    const fixture = await pairFixture();
+    let activeLoads = 0;
+    let maxConcurrentLoads = 0;
+    mocks.loadTerminal.mockImplementation(async ({ projectRoot }: { projectRoot: string }) => {
+      activeLoads += 1;
+      maxConcurrentLoads = Math.max(maxConcurrentLoads, activeLoads);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      try {
+        return projectRoot.endsWith("/neutral") ? fixture.terminals.neutral : fixture.terminals.soul;
+      } finally {
+        activeLoads -= 1;
+      }
+    });
+    const prepare = () => prepareBlindPair({
+      projectRoot: fixture.root,
+      pairId: PAIR_ID,
+      bookId: BOOK_ID,
+      neutralWorkOrderId: "wo-neutral-001",
+      soulWorkOrderId: "wo-soul-001",
+      commonContextBytes: Buffer.from("동일한 공통 입력", "utf8"),
+      now: () => new Date(NOW),
+    });
+
+    const initial = await prepare();
+    const mappingPath = join(fixture.root, ...initial.mapping.path.split("/"));
+    const transferPath = join(fixture.root, ...initial.transfer.path.split("/"));
+    const [mappingBefore, transferBefore] = await Promise.all([
+      readFile(mappingPath),
+      readFile(transferPath),
+    ]);
+    const replay = await prepare();
+
+    expect(initial.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(replay.mapping.sha256).toBe(initial.mapping.sha256);
+    expect(replay.transfer.sha256).toBe(initial.transfer.sha256);
+    expect(await readFile(mappingPath)).toEqual(mappingBefore);
+    expect(await readFile(transferPath)).toEqual(transferBefore);
+    expect(mocks.loadTerminal).toHaveBeenCalledTimes(4);
+    expect(maxConcurrentLoads).toBe(1);
+  });
+
+  it("recovers a blind-review preparation lease left by a dead process", async () => {
+    const fixture = await pairFixture();
+    const lockPath = join(
+      fixture.root,
+      ".inkos",
+      "canaries",
+      PAIR_ID,
+      "review",
+      ".prepare-blind-pair.lock",
+    );
+    await writeJson(lockPath, {
+      schemaVersion: "inkos-canary-lease/v1",
+      kind: "prepare",
+      pairId: PAIR_ID,
+      lane: null,
+      pid: 2_147_483_647,
+      token: randomUUID(),
+      startedAt: NOW,
+    });
+
+    const prepared = await prepareBlindPair({
+      projectRoot: fixture.root,
+      pairId: PAIR_ID,
+      bookId: BOOK_ID,
+      neutralWorkOrderId: "wo-neutral-001",
+      soulWorkOrderId: "wo-soul-001",
+      commonContextBytes: Buffer.from("동일한 공통 입력", "utf8"),
+      now: () => new Date(NOW),
+    });
+
+    expect(prepared.replayed).toBe(false);
+    await expect(readFile(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("accepts the exact RefLab insertion order for a non-empty surface match receipt", async () => {
     const fixture = await pairFixture();
     const prepared = await prepareBlindPair({

@@ -1106,6 +1106,7 @@ async function acquireCanaryLease(input: {
   readonly pairId: string;
   readonly lane: CanaryLeaseMetadata["lane"];
   readonly busyMessage: string;
+  readonly strictRelease?: boolean;
 }): Promise<() => Promise<void>> {
   const lockKey = resolve(input.lockPath);
   if (processCanaryLeases.has(lockKey)) throw new Error(input.busyMessage);
@@ -1180,14 +1181,20 @@ async function acquireCanaryLease(input: {
       if (released) return;
       released = true;
       if (processCanaryLeases.get(lockKey) === metadata.token) processCanaryLeases.delete(lockKey);
-      await moveOwnedLeaseAside({
-        lockPath: input.lockPath,
-        expectedBytes: bytes,
-        token: metadata.token,
-        reason: "release",
-      }).catch((error) => {
+      try {
+        const retired = await moveOwnedLeaseAside({
+          lockPath: input.lockPath,
+          expectedBytes: bytes,
+          token: metadata.token,
+          reason: "release",
+        });
+        if (!retired && input.strictRelease) {
+          throw new Error(`Canary lease ownership changed before release: ${input.lockPath}`);
+        }
+      } catch (error) {
+        if (input.strictRelease) throw error;
         console.warn(`[inkos] Failed to release canary lease ${input.lockPath}: ${String(error)}`);
-      });
+      }
     };
   } catch (error) {
     if (processCanaryLeases.get(lockKey) === metadata.token) processCanaryLeases.delete(lockKey);
@@ -1221,6 +1228,38 @@ export async function acquireProductionCanaryAgentOperationLease(input: {
     pairId: input.pairId,
     lane: input.lane,
     busyMessage: `Canary ${input.pairId}/${input.lane} is already running an Agent operation.`,
+  });
+}
+
+/**
+ * Serialize creation or exact replay of one blind-review mapping. The review
+ * lease uses the same ownership and dead-process recovery protocol as Canary
+ * production leases, but lives outside both sealed lane manifests.
+ */
+export async function acquireProductionCanaryBlindReviewLease(input: {
+  readonly projectRoot: string;
+  readonly pairId: string;
+}): Promise<() => Promise<void>> {
+  if (!SAFE_PAIR_ID.test(input.pairId)) throw new Error("Canary pair ID is not filesystem-safe.");
+  const sourceRoot = resolve(input.projectRoot);
+  const pairRoot = await assertNoSymlinkComponents(
+    sourceRoot,
+    join(".inkos", "canaries", input.pairId),
+    "Canary blind-review pair root",
+  );
+  const reviewRoot = join(pairRoot, "review");
+  await ensureRealDirectory(reviewRoot, "Canary blind-review root");
+  const [pairReal, reviewReal] = await Promise.all([realpath(pairRoot), realpath(reviewRoot)]);
+  if (dirname(reviewReal) !== pairReal) {
+    throw new Error("Canary blind-review root is not inside its real pair root.");
+  }
+  return acquireCanaryLease({
+    lockPath: join(reviewRoot, ".prepare-blind-pair.lock"),
+    kind: "prepare",
+    pairId: input.pairId,
+    lane: null,
+    busyMessage: `Blind pair ${input.pairId} is already being prepared.`,
+    strictRelease: true,
   });
 }
 
