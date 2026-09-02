@@ -137,6 +137,7 @@ export {
   BlindPairPrivateMappingReceiptSchema,
   FireflyReviewEvaluationAckSchema,
   RefLabBlindPairEvaluationInputV2Schema,
+  RefLabBlindPairEvaluatorInputV2Schema,
   RefLabBlindPairEvaluatorResultV2Schema,
   RefLabBlindReviewReceiptV2Schema,
   RefLabBlindSurfaceScanReceiptSchema,
@@ -155,6 +156,7 @@ export {
   type PrepareBlindPairInput,
   type PrepareBlindPairResult,
   type RefLabBlindPairEvaluationInputV2,
+  type RefLabBlindPairEvaluatorInputV2,
   type RefLabBlindPairEvaluatorResultV2,
   type RefLabBlindReviewReceiptV2,
   type RefLabBlindSurfaceScanReceipt,
@@ -1121,6 +1123,13 @@ export {
   type VerifyProductionCanaryTerminalReplayRootInput,
   type ProductionCanaryExecutionRootVerification,
 } from "./production/canary-isolation.js";
+export {
+  ProductionCanaryCommonContextSchema,
+  materializeProductionCanaryCommonContext,
+  type ProductionCanaryCommonContext,
+  type MaterializeProductionCanaryCommonContextInput,
+  type MaterializeProductionCanaryCommonContextResult,
+} from "./production/canary-common-context.js";
 export {
   ProductionInputFileReceiptSchema,
   ProductionSkillReceiptSchema,

@@ -17,6 +17,7 @@ import {
   blindPairMappingRelativePath,
   materializeBlindPair,
   prepareBlindPair,
+  RefLabBlindSurfaceScanReceiptSchema,
   storyyardEvaluationAckRelativePath,
   type BlindPairEvaluationTransfer,
 } from "../storyyard/blind-pair-materialization.js";
@@ -230,8 +231,7 @@ async function pairFixture(options: { sameBody?: boolean; terminalPairId?: strin
 
 function exactSpan(body: string) {
   const bytes = Buffer.from(body, "utf8");
-  const endByte = Buffer.from([...body][0]!, "utf8").byteLength;
-  return { coordinateKind: "utf8-byte" as const, startByte: 0, endByte, sliceSha256: sha(bytes.subarray(0, endByte)) };
+  return { coordinateKind: "utf8-byte" as const, startByte: 0, endByte: bytes.byteLength, sliceSha256: sha(bytes) };
 }
 
 function evaluation(transfer: BlindPairEvaluationTransfer, bodies: Record<"candidate-A" | "candidate-B", string>, canonLeak = false) {
@@ -268,8 +268,36 @@ function evaluation(transfer: BlindPairEvaluationTransfer, bodies: Record<"candi
   };
 }
 
-function surfaceScan(transfer: BlindPairEvaluationTransfer, id: "candidate-A" | "candidate-B") {
+function surfaceScan(transfer: BlindPairEvaluationTransfer, id: "candidate-A" | "candidate-B", withMatch = false) {
   const candidate = transfer.candidates.find((item) => item.id === id)!;
+  const candidateSelector = {
+    coordinateKind: "utf8-byte" as const,
+    candidateContentSha256: candidate.sha256,
+    startByte: 0,
+    endByte: candidate.byteLength,
+    candidateSliceSha256: candidate.sha256,
+  };
+  const sourceSelector = {
+    coordinateKind: "utf8-byte" as const,
+    sourceId: "fixture-source",
+    sourceSha256: sha("fixture-source"),
+    startByte: 0,
+    endByte: 16,
+    sliceSha256: sha("fixture-source-slice"),
+  };
+  const selectorBody = {
+    provenanceBridgeReceiptSha256: sha("fixture-provenance"),
+    matchMethod: "exact-byte-120" as const,
+    candidate: candidateSelector,
+    source: sourceSelector,
+  };
+  const selectorSha256 = sha(JSON.stringify(selectorBody));
+  const matches = withMatch ? [{
+    matchId: `fsm-${selectorSha256.slice(0, 24)}`,
+    selectorSha256,
+    ...selectorBody,
+    classification: "pending" as const,
+  }] : [];
   const unsigned = {
     schemaVersion: "firefly-blind-pair-surface-scan/v1" as const,
     candidateId: id,
@@ -281,9 +309,9 @@ function surfaceScan(transfer: BlindPairEvaluationTransfer, id: "candidate-A" | 
       observedSourceSetSha256: sha("sources"), surfaceIndexSha256: sha(`index-${id}`),
     },
     upstreamScanSha256: sha(`upstream-${id}`),
-    status: "completed-no-match" as const,
-    matchCount: 0,
-    matches: [],
+    status: (withMatch ? "completed-with-matches" : "completed-no-match") as "completed-with-matches" | "completed-no-match",
+    matchCount: matches.length,
+    matches,
     truncated: false as const,
     automaticRewriteApplied: false as const,
     automaticRejectApplied: false as const,
@@ -297,7 +325,7 @@ async function writeRefLabEvidence(
   transfer: BlindPairEvaluationTransfer,
   result: ReturnType<typeof evaluation>,
 ) {
-  const input = {
+  const reviewInput = {
     schemaVersion: "firefly-blind-pair-evaluation-input/v2",
     genre: "modern-fantasy-ko",
     pairId: transfer.pairId,
@@ -322,32 +350,91 @@ async function writeRefLabEvidence(
     contentContract: { id: "fiction-content-neutral-ko/v1", sha256: sha("contract"), intensityDirectiveSha256: sha("directive") },
     authority: { scope: "analysis-only", mayWriteInkOSCanon: false, mayPromoteSoul: false, ownerDecisionRequired: true },
   };
-  const inputBytes = await writeJson(join(root, "evidence", "input.json"), input);
+  const reviewInputBytes = await writeJson(join(root, "evidence", "review-input.json"), reviewInput);
+  const evaluatorInput = {
+    schemaVersion: "private-firefly-blind-pair-evaluator-input/v2",
+    genre: reviewInput.genre,
+    pairId: reviewInput.pairId,
+    round: reviewInput.round,
+    blindRunId: reviewInput.blindRunId,
+    pairedGenerationReceiptSha256: reviewInput.pairedGenerationReceiptSha256,
+    commonContext: reviewInput.commonContext,
+    reviewerRuntime: { configSha256: reviewInput.reviewer.configSha256, soulSha256: reviewInput.reviewer.soulSha256 },
+    candidates: transfer.candidates.map(({ id, sha256: candidateSha256, byteLength, body }) => ({
+      id,
+      sha256: candidateSha256,
+      byteLength,
+      body,
+      evidenceSpans: [{ coordinateKind: "utf8-byte", startByte: 0, endByte: byteLength, sliceSha256: sha(body) }],
+    })),
+    contentContract: reviewInput.contentContract,
+    authority: reviewInput.authority,
+  };
+  const evaluatorInputBytes = await writeJson(join(root, "evidence", "evaluator-input.json"), evaluatorInput);
   const resultBytes = await writeJson(join(root, "evidence", "result.json"), result);
   const scanA = surfaceScan(transfer, "candidate-A");
   const scanB = surfaceScan(transfer, "candidate-B");
   const scanABytes = await writeJson(join(root, "evidence", "scan-a.json"), scanA);
   const scanBBytes = await writeJson(join(root, "evidence", "scan-b.json"), scanB);
   const hostReceipt = {
+    schemaVersion: "private-hermes-structured-run-receipt/v1",
     role: "blind-pair-commercial-evaluator",
     runId: "review-run-001",
     profileId: "inkos_blind_evaluator",
-    profileConfigSha256: input.reviewer.configSha256,
-    soulSha256: input.reviewer.soulSha256,
-    provider: "openai-codex",
     model: "gpt-5.6-sol",
+    provider: "openai-codex",
+    readCapabilitySha256: sha("read-capability"),
+    readCapabilityTool: "firefly_read_source", readCapabilityToolset: "firefly-source-read",
+    readExecutionEnvironmentSha256: sha("read-environment"),
+    readExecutionRuntimeIdentitySha256: sha("read-runtime"),
+    readManifestSha256: sha("read-manifest"),
     reasoningEffort: "high",
-    inputDigest: sha("sealed-evaluator-input"),
+    runtimeAttestation: "current-attested",
+    promptSha256: sha("prompt"),
+    inputDigest: sha(reviewInputBytes),
     inputSha256: sha("harness-input"),
+    profileConfigSha256: evaluatorInput.reviewerRuntime.configSha256,
+    soulSha256: evaluatorInput.reviewerRuntime.soulSha256,
+    contentNeutralContractId: "fiction-content-neutral-ko/v1",
+    contentNeutralContractSha256: "c5b531577cbfbfb1dfc4cd2b5cb82d7ce796c6958e0bc00c3e180b0e5440e199",
+    contentNeutralSoulSectionSha256: sha("content-neutral-soul-section"),
+    effectiveSystemPromptSha256: sha("effective-system-prompt"),
+    contextLimitEntrySha256: sha("context-limit-entry"),
+    hermesExecutableSha256: sha("hermes-executable"),
+    hermesDelegatedExecutableSha256: sha("hermes-delegated-executable"),
+    hermesVersionSha256: sha("hermes-version"),
+    hermesImplementationSha256: sha("hermes-implementation"),
+    hermesDependencySha256: sha("hermes-dependency"),
+    hermesProfileContextSha256: sha("hermes-profile-context"),
+    hermesProjectContextSha256: sha("hermes-project-context"),
+    hermesRuntimeIdentitySha256: sha("hermes-runtime-identity"),
+    contextBudgetUpperBoundTokens: 200,
+    contextInputProxyTokens: 100,
+    contextLimit: 100000,
+    contextOutputReserveTokens: 100,
+    cumulativeCacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    compaction: false,
+    compression: false,
+    truncation: false,
     expectedReadCount: 1,
     exactReadCount: 1,
-    exactReadSha256s: [sha(inputBytes)],
+    exactReadSha256s: [sha(evaluatorInputBytes)],
+    candidateOutputSha256: sha("candidate-output"),
     resultSha256: sha(resultBytes),
+    usageSha256: sha("usage"),
+    traceSha256: sha("trace"),
+    inputTokens: 10,
+    outputTokens: 4,
+    reasoningTokens: 3,
+    totalTokens: 14,
+    apiCalls: 1,
     completedAt: NOW,
+    completed: true,
   };
   const hostReceiptBytes = await writeJson(join(root, "evidence", "host-receipt.json"), hostReceipt);
   const triple = {
-    evaluatorInputSha256: sha(inputBytes), evaluatorResultSha256: sha(resultBytes), hostReceiptSha256: sha(hostReceiptBytes),
+    evaluatorInputSha256: sha(evaluatorInputBytes), evaluatorResultSha256: sha(resultBytes), hostReceiptSha256: sha(hostReceiptBytes),
   };
   const bindings = Object.fromEntries((["candidate-A", "candidate-B"] as const).map((id, index) => {
     const scan = index === 0 ? scanA : scanB;
@@ -362,12 +449,12 @@ async function writeRefLabEvidence(
   }));
   const unsigned = {
     schemaVersion: "firefly-blind-review-receipt/v2",
-    genre: input.genre, pairId: input.pairId, round: input.round, blindRunId: input.blindRunId, blindSessionId: input.blindSessionId,
-    sealedInputSha256: sha(inputBytes), commonContextSha256: input.commonContext.sha256, commonContextByteLength: input.commonContext.byteLength,
-    evaluatorBinding: { ...triple, tripleBindingSha256: sha(jsonBytes(triple)) }, reviewPacketSha256: input.reviewPacket.sha256,
-    commonInputReceiptSha256: input.commonInputReceiptSha256, pairedGenerationReceiptSha256: input.pairedGenerationReceiptSha256,
-    labelAssignmentReceiptSha256: input.labelAssignmentReceiptSha256,
-    reviewer: { actorId: input.reviewer.actorId, profileId: input.reviewer.profileId, configSha256: input.reviewer.configSha256, soulSha256: input.reviewer.soulSha256, model: "gpt-5.6-sol", reasoning: "high", actorDistinctFromProducers: true, runId: "review-run-001" },
+    genre: reviewInput.genre, pairId: reviewInput.pairId, round: reviewInput.round, blindRunId: reviewInput.blindRunId, blindSessionId: reviewInput.blindSessionId,
+    sealedInputSha256: sha(reviewInputBytes), commonContextSha256: reviewInput.commonContext.sha256, commonContextByteLength: reviewInput.commonContext.byteLength,
+    evaluatorBinding: { ...triple, tripleBindingSha256: sha(jsonBytes(triple)) }, reviewPacketSha256: reviewInput.reviewPacket.sha256,
+    commonInputReceiptSha256: reviewInput.commonInputReceiptSha256, pairedGenerationReceiptSha256: reviewInput.pairedGenerationReceiptSha256,
+    labelAssignmentReceiptSha256: reviewInput.labelAssignmentReceiptSha256,
+    reviewer: { actorId: reviewInput.reviewer.actorId, profileId: reviewInput.reviewer.profileId, configSha256: reviewInput.reviewer.configSha256, soulSha256: reviewInput.reviewer.soulSha256, model: "gpt-5.6-sol", reasoning: "high", actorDistinctFromProducers: true, runId: "review-run-001" },
     candidateBindings: bindings,
     outcome: {
       winner: result.winner,
@@ -378,7 +465,7 @@ async function writeRefLabEvidence(
       hardContradictionCount: 0, canonLeakCount: Object.values(result.evaluations).reduce((count, value) => count + value.canonLeaks.length, 0), humanDecision: "pending",
     },
     storyyardProjection: { purpose: "promotion-evaluation", actions: ["select", "tie", "invalid"], decisionEffect: "advisory", manuscriptApply: false, canonLeakPolicy: "block-on-nonzero" },
-    authority: input.authority, createdAt: NOW,
+    authority: reviewInput.authority, createdAt: NOW,
   };
   await writeJson(join(root, "evidence", "review-receipt.json"), { ...unsigned, receiptSelfHash: sha(jsonBytes(unsigned)) });
 }
@@ -407,11 +494,30 @@ afterEach(async () => {
 });
 
 describe("blind-pair materialization", () => {
+  it("accepts the exact RefLab insertion order for a non-empty surface match receipt", async () => {
+    const fixture = await pairFixture();
+    const prepared = await prepareBlindPair({
+      projectRoot: fixture.root,
+      pairId: PAIR_ID,
+      bookId: BOOK_ID,
+      neutralWorkOrderId: "wo-neutral-001",
+      soulWorkOrderId: "wo-soul-001",
+      commonContextBytes: Buffer.from("공통 컨텍스트", "utf8"),
+      round: 1,
+    });
+    expect(RefLabBlindSurfaceScanReceiptSchema.parse(surfaceScan(prepared.transfer.value, "candidate-A", true)).matchCount).toBe(1);
+  });
+
   it("roundtrips exact terminal manuscripts into an opaque, evaluation-only packet and immutable ACK", async () => {
     const fixture = await pairFixture();
+    const canonicalBody = "정본 1화는 아직 후보를 적용하지 않은 현재 원고다.";
+    await mkdir(join(fixture.root, "books", BOOK_ID, "chapters"), { recursive: true });
+    await writeFile(join(fixture.root, "books", BOOK_ID, "chapters", "0001_현재_원고.md"), canonicalBody, "utf8");
     const sourceBookBefore = await readFile(join(fixture.root, "books", BOOK_ID, "book.json"));
     const laneBodiesBefore = await Promise.all(Object.values(fixture.artifactPaths).map((path) => readFile(path)));
     const { prepared, transfer, mapping } = await prepareAndEvidence(fixture);
+    expect(await readFile(join(fixture.root, "evidence", "review-input.json")))
+      .not.toEqual(await readFile(join(fixture.root, "evidence", "evaluator-input.json")));
     const publicJson = JSON.stringify(transfer);
     for (const secret of [PAIR_ID, "wo-neutral-001", "wo-soul-001", "neutral-baseline-ko", "male-modern-fantasy-ko", "session-neutral", "session-soul"]) {
       expect(publicJson).not.toContain(secret);
@@ -427,20 +533,43 @@ describe("blind-pair materialization", () => {
     const materialized = await materializeBlindPair({
       projectRoot: fixture.root,
       pairId: PAIR_ID,
-      evaluatorInputPath: "evidence/input.json",
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
       evaluatorResultPath: "evidence/result.json",
       evaluatorHostReceiptPath: "evidence/host-receipt.json",
       reviewReceiptPath: "evidence/review-receipt.json",
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
-      generatedAt: NOW,
+    });
+    expect(materialized.packet.generatedAt).toBe(NOW);
+    expect(materialized.packet.artifact).toMatchObject({
+      title: "현재 원고",
+      status: "ready-for-review",
+      currentContent: canonicalBody,
+      currentContentSha256: sha(canonicalBody),
     });
     expect(materialized.packet.purpose).toBe("promotion-evaluation");
     expect(materialized.packet.actions).toEqual(["select", "tie", "invalid"]);
     expect(materialized.packet.authority.manuscriptApply).toBe(false);
+    for (const candidate of materialized.packet.candidates) {
+      expect(candidate.review.surfaceComparison).toMatchObject({
+        soulId: "male-modern-fantasy-ko",
+        soulVersion: "v1",
+      });
+    }
     expect(materialized.packet.candidates.map((candidate) => candidate.body).sort()).toEqual(Object.values(fixture.bodies).sort());
     for (const secret of [PAIR_ID, "wo-neutral-001", "wo-soul-001", "neutral-baseline-ko", "male-modern-fantasy-ko"]) {
-      expect(JSON.stringify(materialized.packet)).not.toContain(secret);
+      if (secret !== "male-modern-fantasy-ko") expect(JSON.stringify(materialized.packet)).not.toContain(secret);
     }
+    const replay = await materializeBlindPair({
+      projectRoot: fixture.root,
+      pairId: PAIR_ID,
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
+      evaluatorResultPath: "evidence/result.json",
+      evaluatorHostReceiptPath: "evidence/host-receipt.json",
+      reviewReceiptPath: "evidence/review-receipt.json",
+      surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.packet).toEqual(materialized.packet);
     const decision = {
       schemaVersion: "firefly_review_decision/v2",
       decisionId: "decision-001",
@@ -496,13 +625,30 @@ describe("blind-pair materialization", () => {
     })).rejects.toThrow("same candidate manuscript");
   });
 
+  it("accepts exactly 500,000 common-context bytes and rejects 500,001", async () => {
+    const exact = await pairFixture();
+    const prepared = await prepareBlindPair({
+      projectRoot: exact.root, pairId: PAIR_ID, bookId: BOOK_ID,
+      neutralWorkOrderId: "wo-neutral-001", soulWorkOrderId: "wo-soul-001",
+      commonContextBytes: Buffer.alloc(500_000, 0x61),
+    });
+    expect(prepared.transfer.value.commonContext.byteLength).toBe(500_000);
+
+    const over = await pairFixture();
+    await expect(prepareBlindPair({
+      projectRoot: over.root, pairId: PAIR_ID, bookId: BOOK_ID,
+      neutralWorkOrderId: "wo-neutral-001", soulWorkOrderId: "wo-soul-001",
+      commonContextBytes: Buffer.alloc(500_001, 0x61),
+    })).rejects.toThrow(/1-500000 raw bytes/u);
+  });
+
   it("fails closed on candidate tamper and symlink replacement", async () => {
     const tampered = await pairFixture();
     await prepareAndEvidence(tampered);
     await writeFile(tampered.artifactPaths.neutral, "변조된 원고");
     await expect(materializeBlindPair({
       projectRoot: tampered.root, pairId: PAIR_ID, evaluatorResultPath: "evidence/result.json",
-      evaluatorInputPath: "evidence/input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow(/SHA-256 mismatch|changed after preparation/u);
 
@@ -514,9 +660,51 @@ describe("blind-pair materialization", () => {
     await symlink(outside, linked.artifactPaths.soul);
     await expect(materializeBlindPair({
       projectRoot: linked.root, pairId: PAIR_ID, evaluatorResultPath: "evidence/result.json",
-      evaluatorInputPath: "evidence/input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow(/symlink/u);
+  });
+
+  it("requires separately sealed public review and private evaluator inputs", async () => {
+    const fixture = await pairFixture();
+    await prepareAndEvidence(fixture);
+    await expect(materializeBlindPair({
+      projectRoot: fixture.root, pairId: PAIR_ID,
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/review-input.json",
+      evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/host-receipt.json",
+      reviewReceiptPath: "evidence/review-receipt.json", surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
+    })).rejects.toThrow(/private-firefly-blind-pair-evaluator-input/i);
+  });
+
+  it("requires the exact RefLab line-span catalog and catalog-member evaluator evidence", async () => {
+    const catalogDrift = await pairFixture();
+    await prepareAndEvidence(catalogDrift);
+    const evaluatorInputPath = join(catalogDrift.root, "evidence", "evaluator-input.json");
+    const evaluatorInput = JSON.parse(await readFile(evaluatorInputPath, "utf8"));
+    evaluatorInput.candidates[0].evidenceSpans = [];
+    await writeJson(evaluatorInputPath, evaluatorInput);
+    await expect(materializeBlindPair({
+      projectRoot: catalogDrift.root, pairId: PAIR_ID, reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
+      evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
+    })).rejects.toThrow(/evidenceSpans/i);
+
+    const resultDrift = await pairFixture();
+    await prepareAndEvidence(resultDrift);
+    const resultPath = join(resultDrift.root, "evidence", "result.json");
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
+    const privateInput = JSON.parse(await readFile(join(resultDrift.root, "evidence", "evaluator-input.json"), "utf8"));
+    const body = privateInput.candidates.find((candidate: { id: string }) => candidate.id === "candidate-A").body as string;
+    const first = Buffer.from([...body][0]!, "utf8");
+    result.evaluations["candidate-A"].emotionalCoherence.evidence = [{
+      coordinateKind: "utf8-byte", startByte: 0, endByte: first.byteLength, sliceSha256: sha(first),
+    }];
+    await writeJson(resultPath, result);
+    await expect(materializeBlindPair({
+      projectRoot: resultDrift.root, pairId: PAIR_ID, reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
+      evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
+    })).rejects.toThrow(/catalog member/i);
   });
 
   it("rejects cross-pair evaluator results and duplicate surface candidates", async () => {
@@ -525,14 +713,14 @@ describe("blind-pair materialization", () => {
     await writeJson(join(fixture.root, "evidence", "result.json"), { ...evaluation(transfer, bodies), pairId: "bp-ffffffffffffffffffffffff" });
     await expect(materializeBlindPair({
       projectRoot: fixture.root, pairId: PAIR_ID, evaluatorResultPath: "evidence/result.json",
-      evaluatorInputPath: "evidence/input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow(/opaque IDs\/digests/u);
     await writeJson(join(fixture.root, "evidence", "result.json"), evaluation(transfer, bodies));
     await writeJson(join(fixture.root, "evidence", "scan-b.json"), surfaceScan(transfer, "candidate-A"));
     await expect(materializeBlindPair({
       projectRoot: fixture.root, pairId: PAIR_ID, evaluatorResultPath: "evidence/result.json",
-      evaluatorInputPath: "evidence/input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow("cover candidate-A and candidate-B");
   });
@@ -541,7 +729,7 @@ describe("blind-pair materialization", () => {
     const missing = await pairFixture();
     await prepareAndEvidence(missing);
     await expect(materializeBlindPair({
-      projectRoot: missing.root, pairId: PAIR_ID, evaluatorInputPath: "evidence/input.json",
+      projectRoot: missing.root, pairId: PAIR_ID, reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
       evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/missing-host-receipt.json",
       reviewReceiptPath: "evidence/review-receipt.json", surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow(/ENOENT/u);
@@ -552,7 +740,7 @@ describe("blind-pair materialization", () => {
     const hostReceipt = JSON.parse(await readFile(hostReceiptPath, "utf8"));
     await writeJson(hostReceiptPath, { ...hostReceipt, completedAt: "2026-09-02T12:01:00.000Z" });
     await expect(materializeBlindPair({
-      projectRoot: drifted.root, pairId: PAIR_ID, evaluatorInputPath: "evidence/input.json",
+      projectRoot: drifted.root, pairId: PAIR_ID, reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
       evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/host-receipt.json",
       reviewReceiptPath: "evidence/review-receipt.json", surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow("host receipt does not bind the exact evaluator input/result/review evidence");
@@ -565,7 +753,7 @@ describe("blind-pair materialization", () => {
     await unlink(linkedHostReceipt);
     await symlink(outside, linkedHostReceipt);
     await expect(materializeBlindPair({
-      projectRoot: linked.root, pairId: PAIR_ID, evaluatorInputPath: "evidence/input.json",
+      projectRoot: linked.root, pairId: PAIR_ID, reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
       evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/host-receipt.json",
       reviewReceiptPath: "evidence/review-receipt.json", surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow(/symlink/u);
@@ -576,7 +764,7 @@ describe("blind-pair materialization", () => {
     await prepareAndEvidence(fixture, true);
     await expect(materializeBlindPair({
       projectRoot: fixture.root, pairId: PAIR_ID, evaluatorResultPath: "evidence/result.json",
-      evaluatorInputPath: "evidence/input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json", evaluatorHostReceiptPath: "evidence/host-receipt.json", reviewReceiptPath: "evidence/review-receipt.json",
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     })).rejects.toThrow("reported 1 canon leak");
   });

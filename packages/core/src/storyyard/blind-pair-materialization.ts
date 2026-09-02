@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
@@ -19,7 +19,6 @@ import {
   FireflyCanaryIsolationProjectionSchema,
   FireflyReviewDecisionV2Schema,
   FireflyReviewPacketV2Schema,
-  FireflySurfaceMatchV2Schema,
   assertFireflyReviewDecisionV2MatchesPacket,
   assertFireflyReviewPacketV2Identity,
   buildFireflyReviewPacketV2,
@@ -38,6 +37,11 @@ const MAX_REVIEW_ARTIFACT_BYTES = 10 * 1024 * 1024;
 // evaluator while preserving the public schema shape.
 const BLIND_EVALUATOR_CONFIG_SHA256 = "4124e16bc40d28732d1dd02f9f2e8b78127a202313e1ace21021f16fca809f46";
 const BLIND_EVALUATOR_SOUL_SHA256 = "5c4cca60c9971312682f7b71cac5d4d61b6f9e2c42d19af99c8fe6daedacd94b";
+const SURFACE_CORPUS_BY_GENRE = {
+  "modern-fantasy-ko": { soulId: "male-modern-fantasy-ko", soulVersion: "v1" },
+  "fantasy-ko": { soulId: "male-fantasy-ko", soulVersion: "v1" },
+  "murim-ko": { soulId: "male-murim-ko", soulVersion: "v1" },
+} as const;
 
 const Sha256Schema = z.string().regex(SHA256);
 const SafePairIdSchema = z.string().regex(SAFE_PAIR_ID);
@@ -205,6 +209,75 @@ export const RefLabBlindPairEvaluationInputV2Schema = z.object({
 });
 export type RefLabBlindPairEvaluationInputV2 = z.infer<typeof RefLabBlindPairEvaluationInputV2Schema>;
 
+const RefLabBlindPairEvaluatorCandidateWithSpansInputV2Schema = z.object({
+  id: CandidateIdSchema,
+  sha256: Sha256Schema,
+  byteLength: z.number().int().positive(),
+  body: z.string().min(1),
+  evidenceSpans: z.array(CandidateSpanSchema).min(1),
+}).strict().superRefine((candidate, ctx) => {
+  const bytes = Buffer.from(candidate.body, "utf8");
+  if (bytes.toString("utf8") !== candidate.body || bytes.byteLength !== candidate.byteLength || sha256Bytes(bytes) !== candidate.sha256) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["body"], message: "private evaluator candidate body does not match its exact bytes" });
+  }
+});
+
+/** Private, body-bearing RefLab evaluator ingress; it is distinct from the public sealed review input. */
+export const RefLabBlindPairEvaluatorInputV2Schema = z.object({
+  schemaVersion: z.literal("private-firefly-blind-pair-evaluator-input/v2"),
+  genre: z.enum(["modern-fantasy-ko", "fantasy-ko", "murim-ko"]),
+  pairId: z.string().regex(OPAQUE_PAIR_ID),
+  round: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  blindRunId: z.string().regex(OPAQUE_BLIND_ID),
+  pairedGenerationReceiptSha256: Sha256Schema,
+  commonContext: z.object({ text: z.string().min(1), sha256: Sha256Schema, byteLength: z.number().int().positive() }).strict(),
+  reviewerRuntime: z.object({ configSha256: Sha256Schema, soulSha256: Sha256Schema }).strict(),
+  candidates: z.tuple([RefLabBlindPairEvaluatorCandidateWithSpansInputV2Schema, RefLabBlindPairEvaluatorCandidateWithSpansInputV2Schema]),
+  contentContract: z.object({ id: z.literal("fiction-content-neutral-ko/v1"), sha256: Sha256Schema, intensityDirectiveSha256: Sha256Schema }).strict(),
+  authority: RefLabAuthoritySchema,
+}).strict().superRefine((input, ctx) => {
+  if (input.candidates[0].sha256 === input.candidates[1].sha256) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "RefLab private evaluator input candidates must be distinct" });
+  }
+  const commonBytes = Buffer.from(input.commonContext.text, "utf8");
+  if (commonBytes.toString("utf8") !== input.commonContext.text || commonBytes.byteLength !== input.commonContext.byteLength
+    || sha256Bytes(commonBytes) !== input.commonContext.sha256) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commonContext"], message: "RefLab private evaluator common context byte binding mismatch" });
+  }
+  for (const candidate of input.candidates) {
+    const bytes = Buffer.from(candidate.body, "utf8");
+    try { assertCandidateEvidenceSpanCatalog(candidate.evidenceSpans, bytes, `private evaluator input ${candidate.id}`); }
+    catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates", candidate.id, "evidenceSpans"], message: String(error) }); }
+  }
+});
+export type RefLabBlindPairEvaluatorInputV2 = z.infer<typeof RefLabBlindPairEvaluatorInputV2Schema>;
+
+// RefLab emits `classification` after the selector body. Keep this producer
+// order here because its receipt self-hash is over canonical insertion-order
+// JSON, while the Storyyard packet schema is free to normalize its own copy.
+const RefLabSurfaceMatchV2Schema = z.object({
+  matchId: z.string().regex(/^fsm-[0-9a-f]{24}$/u),
+  selectorSha256: Sha256Schema,
+  provenanceBridgeReceiptSha256: Sha256Schema,
+  matchMethod: z.enum(["exact-token-12", "exact-byte-120", "long-common-substring", "near-string"]),
+  candidate: z.object({
+    coordinateKind: z.literal("utf8-byte"),
+    candidateContentSha256: Sha256Schema,
+    startByte: z.number().int().min(0),
+    endByte: z.number().int().positive(),
+    candidateSliceSha256: Sha256Schema,
+  }).strict(),
+  source: z.object({
+    coordinateKind: z.literal("utf8-byte"),
+    sourceId: z.string().min(1),
+    sourceSha256: Sha256Schema,
+    startByte: z.number().int().min(0),
+    endByte: z.number().int().positive(),
+    sliceSha256: Sha256Schema,
+  }).strict(),
+  classification: z.literal("pending"),
+}).strict();
+
 export const RefLabBlindSurfaceScanReceiptSchema = z.object({
   schemaVersion: z.literal("firefly-blind-pair-surface-scan/v1"),
   candidateId: CandidateIdSchema,
@@ -224,7 +297,7 @@ export const RefLabBlindSurfaceScanReceiptSchema = z.object({
   upstreamScanSha256: Sha256Schema,
   status: z.enum(["completed-no-match", "completed-with-matches"]),
   matchCount: z.number().int().min(0),
-  matches: z.array(FireflySurfaceMatchV2Schema),
+  matches: z.array(RefLabSurfaceMatchV2Schema),
   truncated: z.literal(false),
   automaticRewriteApplied: z.literal(false),
   automaticRejectApplied: z.literal(false),
@@ -325,22 +398,35 @@ export type RefLabBlindReviewReceiptV2 = z.infer<typeof RefLabBlindReviewReceipt
 // evaluator.  InkOS must re-read this raw artifact rather than accepting only
 // the digest embedded in the derived review receipt.
 const RefLabBlindEvaluatorHostReceiptSchema = z.object({
-  role: z.literal("blind-pair-commercial-evaluator"),
-  runId: z.string().min(1),
-  profileId: z.literal("inkos_blind_evaluator"),
-  profileConfigSha256: Sha256Schema,
-  soulSha256: Sha256Schema,
-  provider: z.literal("openai-codex"),
-  model: z.literal("gpt-5.6-sol"),
-  reasoningEffort: z.literal("high"),
-  inputDigest: Sha256Schema,
-  inputSha256: Sha256Schema,
-  expectedReadCount: z.literal(1),
-  exactReadCount: z.literal(1),
-  exactReadSha256s: z.tuple([Sha256Schema]),
-  resultSha256: Sha256Schema,
-  completedAt: z.string().datetime(),
-}).strict();
+  schemaVersion: z.literal("private-hermes-structured-run-receipt/v1"),
+  role: z.literal("blind-pair-commercial-evaluator"), runId: z.string().min(1), profileId: z.literal("inkos_blind_evaluator"),
+  model: z.literal("gpt-5.6-sol"), provider: z.literal("openai-codex"),
+  readCapabilitySha256: Sha256Schema, readCapabilityTool: z.literal("firefly_read_source"), readCapabilityToolset: z.literal("firefly-source-read"),
+  readExecutionEnvironmentSha256: Sha256Schema, readExecutionRuntimeIdentitySha256: Sha256Schema, readManifestSha256: Sha256Schema,
+  reasoningEffort: z.literal("high"), runtimeAttestation: z.literal("current-attested"), promptSha256: Sha256Schema,
+  inputDigest: Sha256Schema, inputSha256: Sha256Schema, profileConfigSha256: Sha256Schema, soulSha256: Sha256Schema,
+  contentNeutralContractId: z.literal("fiction-content-neutral-ko/v1"),
+  contentNeutralContractSha256: z.literal("c5b531577cbfbfb1dfc4cd2b5cb82d7ce796c6958e0bc00c3e180b0e5440e199"),
+  contentNeutralSoulSectionSha256: Sha256Schema, effectiveSystemPromptSha256: Sha256Schema, contextLimitEntrySha256: Sha256Schema,
+  hermesExecutableSha256: Sha256Schema, hermesDelegatedExecutableSha256: Sha256Schema, hermesVersionSha256: Sha256Schema,
+  hermesImplementationSha256: Sha256Schema, hermesDependencySha256: Sha256Schema, hermesProfileContextSha256: Sha256Schema,
+  hermesProjectContextSha256: Sha256Schema, hermesRuntimeIdentitySha256: Sha256Schema,
+  contextBudgetUpperBoundTokens: z.number().int().nonnegative(), contextInputProxyTokens: z.number().int().nonnegative(),
+  contextLimit: z.number().int().min(100_000), contextOutputReserveTokens: z.number().int().positive(),
+  cumulativeCacheReadTokens: z.number().int().nonnegative(), cacheWriteTokens: z.number().int().nonnegative(),
+  compaction: z.literal(false), compression: z.literal(false), truncation: z.literal(false),
+  expectedReadCount: z.literal(1), exactReadCount: z.literal(1), exactReadSha256s: z.tuple([Sha256Schema]),
+  candidateOutputSha256: Sha256Schema, resultSha256: Sha256Schema, usageSha256: Sha256Schema, traceSha256: Sha256Schema,
+  inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(), reasoningTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(), apiCalls: z.number().int().nonnegative(), completedAt: z.string().datetime(), completed: z.literal(true),
+}).strict().superRefine((receipt, ctx) => {
+  if (
+    receipt.totalTokens !== receipt.inputTokens + receipt.outputTokens + receipt.cumulativeCacheReadTokens + receipt.cacheWriteTokens
+    || receipt.contextBudgetUpperBoundTokens !== receipt.contextInputProxyTokens + receipt.contextOutputReserveTokens
+    || receipt.contextBudgetUpperBoundTokens >= receipt.contextLimit
+    || receipt.outputTokens > receipt.contextOutputReserveTokens
+  ) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "RefLab full Hermès host receipt context accounting drifted" });
+});
 type RefLabBlindEvaluatorHostReceipt = z.infer<typeof RefLabBlindEvaluatorHostReceiptSchema>;
 
 const PrivateCandidateMappingSchema = z.object({
@@ -527,6 +613,9 @@ export interface PrepareBlindPairResult {
 export interface MaterializeBlindPairInput {
   readonly projectRoot: string;
   readonly pairId: string;
+  /** Public firefly-blind-pair-evaluation-input/v2 sealed by reviewReceipt.sealedInputSha256. */
+  readonly reviewInputPath: string;
+  /** Private body-bearing evaluator input read by the RefLab evaluator host. */
   readonly evaluatorInputPath: string;
   readonly evaluatorResultPath: string;
   /** Project-relative raw RefLab Hermès receipt for the blind evaluator run. */
@@ -707,8 +796,10 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
   const loaded = await loadMappedPair(projectRoot, mapping);
   assertLoadedCandidatesMatchMapping(mapping, loaded);
 
+  const reviewInputBytes = await readRegularStable(projectRoot, input.reviewInputPath);
+  const reviewInput = parseCanonicalRefLabJson(reviewInputBytes, RefLabBlindPairEvaluationInputV2Schema, "Reference Lab public review input v2");
   const evaluatorInputBytes = await readRegularStable(projectRoot, input.evaluatorInputPath);
-  const evaluatorInput = parseCanonicalRefLabJson(evaluatorInputBytes, RefLabBlindPairEvaluationInputV2Schema, "Reference Lab evaluator input v2");
+  const evaluatorInput = parseCanonicalRefLabJson(evaluatorInputBytes, RefLabBlindPairEvaluatorInputV2Schema, "Reference Lab private evaluator input v2");
   const evaluatorResultBytes = await readRegularStable(projectRoot, input.evaluatorResultPath);
   const evaluatorResult = parseCanonicalRefLabJson(evaluatorResultBytes, RefLabBlindPairEvaluatorResultV2Schema, "Reference Lab evaluator result v2");
   const evaluatorHostReceiptBytes = await readRegularStable(projectRoot, input.evaluatorHostReceiptPath);
@@ -721,8 +812,17 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
   const reviewReceipt = parseCanonicalRefLabJson(reviewReceiptBytes, RefLabBlindReviewReceiptV2Schema, "Reference Lab blind review receipt v2");
   const state = new StateManager(projectRoot);
   const book = await state.loadBookConfig(mapping.bookId);
-  assertEvaluatorInputMatchesTransfer(evaluatorInput, transfer, book.genre);
+  const currentChapter = await loadCurrentCanonicalChapter({
+    projectRoot,
+    state,
+    bookId: mapping.bookId,
+    chapterNumber: mapping.chapterNumber,
+  });
+  const surfaceCorpus = surfaceCorpusForGenre(book.genre);
+  assertReviewInputMatchesTransfer(reviewInput, transfer, book.genre);
+  assertPrivateEvaluatorInputMatchesReviewInput(evaluatorInput, reviewInput, transfer);
   assertEvaluatorResultMatchesTransfer(evaluatorResult, transfer, loaded);
+  assertEvaluatorResultMatchesPrivateEvaluatorInput(evaluatorResult, evaluatorInput);
   const canonLeakCount = Object.values(evaluatorResult.evaluations)
     .reduce((count, evaluation) => count + evaluation.canonLeaks.length, 0);
   if (canonLeakCount !== 0) {
@@ -744,12 +844,15 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
   assertEvaluatorHostReceiptMatchesEvidence({
     hostReceipt: evaluatorHostReceipt,
     hostReceiptBytes: evaluatorHostReceiptBytes,
+    reviewInputBytes,
     evaluatorInputBytes,
     evaluatorResultBytes,
     receipt: reviewReceipt,
   });
   assertReviewReceiptMatchesEvidence({
     receipt: reviewReceipt,
+    reviewInputBytes,
+    reviewInput,
     evaluatorInput,
     evaluatorInputBytes,
     evaluatorResult,
@@ -798,10 +901,10 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
         canonContradictions: evaluation.canonContradictions,
         surfaceComparison: {
           schemaVersion: "soul_corpus_comparison/v2" as const,
-          // The corpus is intentionally named generically here: a concrete Soul
-          // ID would reveal the private producer lane through the public packet.
-          soulId: "blind-evaluation-corpus",
-          soulVersion: "v2",
+          // This is the public, genre-derived comparison corpus used for both
+          // candidates. It does not disclose which candidate came from a Soul lane.
+          soulId: surfaceCorpus.soulId,
+          soulVersion: surfaceCorpus.soulVersion,
           surfaceIndexSha256: scanEvidence.scan.corpus.surfaceIndexSha256,
           surfaceMatches: scanEvidence.scan.matches,
           similarityPenaltyApplied: false as const,
@@ -813,7 +916,7 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
     };
   }) as unknown as [Record<string, unknown>, Record<string, unknown>];
   const packet = buildFireflyReviewPacketV2({
-    generatedAt: input.generatedAt,
+    generatedAt: input.generatedAt ?? reviewReceipt.createdAt,
     body: {
       purpose: "promotion-evaluation",
       source: { system: "inkos", bookId: mapping.bookId, sourceRevision: book.updatedAt },
@@ -822,10 +925,10 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
         id: `chapter-${String(mapping.chapterNumber).padStart(4, "0")}`,
         kind: "chapter",
         chapterNumber: mapping.chapterNumber,
-        title: "",
-        status: "promotion-evaluation",
-        currentContent: transfer.commonContext.text,
-        currentContentSha256: transfer.commonContext.sha256,
+        title: currentChapter.title,
+        status: currentChapter.status,
+        currentContent: currentChapter.body,
+        currentContentSha256: currentChapter.sha256,
       },
       comparison: {
         reviewKind: "independent-blind-comparison",
@@ -849,7 +952,7 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
       authority: { canon: "inkos", decisionSurface: "storyyard", decisionEffect: "advisory", manuscriptApply: false, reverseSync: false },
     },
   });
-  assertNoPublicGeneratorLeaks(packet, mapping);
+  assertNoPublicGeneratorLeaks(packet, mapping, new Set([surfaceCorpus.soulId, surfaceCorpus.soulVersion]));
   const outputPath = posix.join(".inkos", "canaries", pairId, "review", "public", `${packet.packetId}.json`);
   const packetBytes = serializeJson(packet);
   const stored = await writeExclusiveOrVerify(projectRoot, outputPath, packetBytes, 0o644);
@@ -1127,41 +1230,95 @@ function assertEvaluatorResultMatchesTransfer(
   }
 }
 
-function assertEvaluatorInputMatchesTransfer(
-  evaluatorInput: RefLabBlindPairEvaluationInputV2,
+function assertReviewInputMatchesTransfer(
+  reviewInput: RefLabBlindPairEvaluationInputV2,
   transfer: BlindPairEvaluationTransfer,
   genre: string,
 ): void {
-  if (evaluatorInput.genre !== genre || evaluatorInput.pairId !== transfer.pairId || evaluatorInput.round !== transfer.round
-    || evaluatorInput.blindRunId !== transfer.blindRunId || evaluatorInput.blindSessionId !== transfer.blindSessionId
-    || evaluatorInput.commonInputReceiptSha256 !== transfer.commonInputReceiptSha256
-    || evaluatorInput.pairedGenerationReceiptSha256 !== transfer.pairedGenerationReceiptSha256
-    || evaluatorInput.labelAssignmentReceiptSha256 !== transfer.labelAssignmentReceiptSha256
-    || hashCanonicalJson(evaluatorInput.commonContext) !== hashCanonicalJson(transfer.commonContext)) {
-    throw new Error("Reference Lab evaluator input does not exactly bind the sealed blind transfer.");
+  if (reviewInput.genre !== genre || reviewInput.pairId !== transfer.pairId || reviewInput.round !== transfer.round
+    || reviewInput.blindRunId !== transfer.blindRunId || reviewInput.blindSessionId !== transfer.blindSessionId
+    || reviewInput.commonInputReceiptSha256 !== transfer.commonInputReceiptSha256
+    || reviewInput.pairedGenerationReceiptSha256 !== transfer.pairedGenerationReceiptSha256
+    || reviewInput.labelAssignmentReceiptSha256 !== transfer.labelAssignmentReceiptSha256
+    || hashCanonicalJson(reviewInput.commonContext) !== hashCanonicalJson(transfer.commonContext)) {
+    throw new Error("Reference Lab public review input does not exactly bind the sealed blind transfer.");
   }
   for (const id of ["candidate-A", "candidate-B"] as const) {
     const expected = transfer.candidates.find((candidate) => candidate.id === id)!;
-    const actual = evaluatorInput.candidates.find((candidate) => candidate.id === id);
+    const actual = reviewInput.candidates.find((candidate) => candidate.id === id);
     if (!actual || actual.sha256 !== expected.sha256 || actual.byteLength !== expected.byteLength) {
-      throw new Error(`Reference Lab evaluator input ${id} does not bind exact transferred candidate bytes.`);
+      throw new Error(`Reference Lab public review input ${id} does not bind exact transferred candidate bytes.`);
     }
   }
-  if (evaluatorInput.reviewer.profileId !== "inkos_blind_evaluator"
-    || evaluatorInput.reviewer.configSha256 !== BLIND_EVALUATOR_CONFIG_SHA256
-    || evaluatorInput.reviewer.soulSha256 !== BLIND_EVALUATOR_SOUL_SHA256) {
-    throw new Error("Reference Lab evaluator input does not use the audited blind evaluator profile bytes.");
+  if (reviewInput.reviewer.profileId !== "inkos_blind_evaluator"
+    || reviewInput.reviewer.configSha256 !== BLIND_EVALUATOR_CONFIG_SHA256
+    || reviewInput.reviewer.soulSha256 !== BLIND_EVALUATOR_SOUL_SHA256) {
+    throw new Error("Reference Lab public review input does not use the audited blind evaluator profile bytes.");
+  }
+}
+
+function assertPrivateEvaluatorInputMatchesReviewInput(
+  evaluatorInput: RefLabBlindPairEvaluatorInputV2,
+  reviewInput: RefLabBlindPairEvaluationInputV2,
+  transfer: BlindPairEvaluationTransfer,
+): void {
+  if (
+    evaluatorInput.genre !== reviewInput.genre
+    || evaluatorInput.pairId !== reviewInput.pairId
+    || evaluatorInput.round !== reviewInput.round
+    || evaluatorInput.blindRunId !== reviewInput.blindRunId
+    || evaluatorInput.pairedGenerationReceiptSha256 !== reviewInput.pairedGenerationReceiptSha256
+    || hashCanonicalJson(evaluatorInput.commonContext) !== hashCanonicalJson(reviewInput.commonContext)
+    || hashCanonicalJson(evaluatorInput.contentContract) !== hashCanonicalJson(reviewInput.contentContract)
+    || hashCanonicalJson(evaluatorInput.authority) !== hashCanonicalJson(reviewInput.authority)
+    || evaluatorInput.reviewerRuntime.configSha256 !== reviewInput.reviewer.configSha256
+    || evaluatorInput.reviewerRuntime.soulSha256 !== reviewInput.reviewer.soulSha256
+  ) {
+    throw new Error("Reference Lab private evaluator input does not match the public review input's shared contract.");
+  }
+  for (const candidate of evaluatorInput.candidates) {
+    const transferred = transfer.candidates.find((item) => item.id === candidate.id);
+    if (!transferred || candidate.body !== transferred.body || candidate.sha256 !== transferred.sha256 || candidate.byteLength !== transferred.byteLength) {
+      throw new Error(`Reference Lab private evaluator input ${candidate.id} does not bind exact transferred candidate body bytes.`);
+    }
+    const publicCandidate = reviewInput.candidates.find((item) => item.id === candidate.id);
+    if (!publicCandidate || publicCandidate.sha256 !== candidate.sha256 || publicCandidate.byteLength !== candidate.byteLength) {
+      throw new Error(`Reference Lab private evaluator input ${candidate.id} does not match the public review candidate digest.`);
+    }
+    const bytes = Buffer.from(candidate.body, "utf8");
+    for (const span of candidate.evidenceSpans) assertCandidateSpan(span, bytes, `${candidate.id} private evaluator input span`);
+  }
+}
+
+function assertEvaluatorResultMatchesPrivateEvaluatorInput(
+  result: RefLabBlindPairEvaluatorResultV2,
+  evaluatorInput: RefLabBlindPairEvaluatorInputV2,
+): void {
+  for (const id of ["candidate-A", "candidate-B"] as const) {
+    const candidate = evaluatorInput.candidates.find((item) => item.id === id);
+    const evaluation = result.evaluations[id];
+    if (!candidate || evaluation.candidateSha256 !== candidate.sha256) {
+      throw new Error(`Reference Lab evaluator result ${id} does not match the private evaluator input.`);
+    }
+    const bytes = Buffer.from(candidate.body, "utf8");
+    assertCandidateEvidenceSpanCatalog(candidate.evidenceSpans, bytes, `${id} private evaluator input`);
+    const catalog = new Set(candidate.evidenceSpans.map((span) => JSON.stringify(span)));
+    for (const span of collectEvaluationSpans(evaluation)) {
+      assertCandidateSpan(span, bytes, `${id} private evaluator evidence`);
+      if (!catalog.has(JSON.stringify(span))) throw new Error(`${id} evaluator evidence is not a sealed candidate-local catalog member.`);
+    }
   }
 }
 
 function assertEvaluatorHostReceiptMatchesEvidence(input: {
   readonly hostReceipt: RefLabBlindEvaluatorHostReceipt;
   readonly hostReceiptBytes: Buffer;
+  readonly reviewInputBytes: Buffer;
   readonly evaluatorInputBytes: Buffer;
   readonly evaluatorResultBytes: Buffer;
   readonly receipt: RefLabBlindReviewReceiptV2;
 }): void {
-  const { hostReceipt, hostReceiptBytes, evaluatorInputBytes, evaluatorResultBytes, receipt } = input;
+  const { hostReceipt, hostReceiptBytes, reviewInputBytes, evaluatorInputBytes, evaluatorResultBytes, receipt } = input;
   const evaluatorInputSha256 = sha256Bytes(evaluatorInputBytes);
   const evaluatorResultSha256 = sha256Bytes(evaluatorResultBytes);
   const hostReceiptSha256 = sha256Bytes(hostReceiptBytes);
@@ -1169,6 +1326,7 @@ function assertEvaluatorHostReceiptMatchesEvidence(input: {
     || hostReceipt.soulSha256 !== receipt.reviewer.soulSha256
     || hostReceipt.runId !== receipt.reviewer.runId
     || hostReceipt.completedAt !== receipt.createdAt
+    || hostReceipt.inputDigest !== sha256Bytes(reviewInputBytes)
     || hostReceipt.exactReadSha256s[0] !== evaluatorInputSha256
     || hostReceipt.resultSha256 !== evaluatorResultSha256
     || hostReceiptSha256 !== receipt.evaluatorBinding.hostReceiptSha256) {
@@ -1178,7 +1336,9 @@ function assertEvaluatorHostReceiptMatchesEvidence(input: {
 
 function assertReviewReceiptMatchesEvidence(input: {
   readonly receipt: RefLabBlindReviewReceiptV2;
-  readonly evaluatorInput: RefLabBlindPairEvaluationInputV2;
+  readonly reviewInputBytes: Buffer;
+  readonly reviewInput: RefLabBlindPairEvaluationInputV2;
+  readonly evaluatorInput: RefLabBlindPairEvaluatorInputV2;
   readonly evaluatorInputBytes: Buffer;
   readonly evaluatorResult: RefLabBlindPairEvaluatorResultV2;
   readonly evaluatorResultBytes: Buffer;
@@ -1188,26 +1348,26 @@ function assertReviewReceiptMatchesEvidence(input: {
   readonly transfer: BlindPairEvaluationTransfer;
 }): void {
   const {
-    receipt, evaluatorInput, evaluatorInputBytes, evaluatorResult, evaluatorResultBytes,
+    receipt, reviewInputBytes, reviewInput, evaluatorInput, evaluatorInputBytes, evaluatorResult, evaluatorResultBytes,
     evaluatorHostReceiptBytes, scans, scanBytes, transfer,
   } = input;
   const evaluatorInputSha256 = sha256Bytes(evaluatorInputBytes);
   const evaluatorResultSha256 = sha256Bytes(evaluatorResultBytes);
   const evaluatorHostReceiptSha256 = sha256Bytes(evaluatorHostReceiptBytes);
-  if (receipt.genre !== evaluatorInput.genre || receipt.pairId !== transfer.pairId || receipt.round !== transfer.round
+  if (receipt.genre !== reviewInput.genre || receipt.pairId !== transfer.pairId || receipt.round !== transfer.round
     || receipt.blindRunId !== transfer.blindRunId || receipt.blindSessionId !== transfer.blindSessionId
-    || receipt.sealedInputSha256 !== evaluatorInputSha256 || receipt.commonContextSha256 !== transfer.commonContext.sha256
+    || receipt.sealedInputSha256 !== sha256Bytes(reviewInputBytes) || receipt.commonContextSha256 !== transfer.commonContext.sha256
     || receipt.commonContextByteLength !== transfer.commonContext.byteLength
-    || receipt.reviewPacketSha256 !== evaluatorInput.reviewPacket.sha256
+    || receipt.reviewPacketSha256 !== reviewInput.reviewPacket.sha256
     || receipt.commonInputReceiptSha256 !== transfer.commonInputReceiptSha256
     || receipt.pairedGenerationReceiptSha256 !== transfer.pairedGenerationReceiptSha256
     || receipt.labelAssignmentReceiptSha256 !== transfer.labelAssignmentReceiptSha256
     || receipt.evaluatorBinding.evaluatorInputSha256 !== evaluatorInputSha256
     || receipt.evaluatorBinding.evaluatorResultSha256 !== evaluatorResultSha256
     || receipt.evaluatorBinding.hostReceiptSha256 !== evaluatorHostReceiptSha256
-    || receipt.reviewer.profileId !== evaluatorInput.reviewer.profileId
-    || receipt.reviewer.configSha256 !== evaluatorInput.reviewer.configSha256
-    || receipt.reviewer.soulSha256 !== evaluatorInput.reviewer.soulSha256) {
+    || receipt.reviewer.profileId !== reviewInput.reviewer.profileId
+    || receipt.reviewer.configSha256 !== reviewInput.reviewer.configSha256
+    || receipt.reviewer.soulSha256 !== reviewInput.reviewer.soulSha256) {
     throw new Error("Reference Lab blind review receipt does not bind the exact input/result/transfer evidence.");
   }
   const triple = {
@@ -1314,6 +1474,36 @@ function assertCandidateSpan(span: z.infer<typeof CandidateSpanSchema>, bytes: B
   if (sha256Bytes(slice) !== span.sliceSha256) throw new Error(`${label} slice SHA-256 mismatch.`);
 }
 
+/** Reproduce RefLab's sealed catalog: every non-whitespace physical UTF-8 line, in source order. */
+function buildCandidateEvidenceSpanCatalog(body: string): z.infer<typeof CandidateSpanSchema>[] {
+  const spans: z.infer<typeof CandidateSpanSchema>[] = [];
+  for (const match of body.matchAll(/[^\r\n]+/gu)) {
+    const raw = match[0];
+    const leading = raw.match(/^\s*/u)?.[0].length ?? 0;
+    const trailing = raw.match(/\s*$/u)?.[0].length ?? 0;
+    const startCodeUnit = (match.index ?? 0) + leading;
+    const endCodeUnit = (match.index ?? 0) + raw.length - trailing;
+    if (endCodeUnit <= startCodeUnit) continue;
+    const startByte = Buffer.byteLength(body.slice(0, startCodeUnit), "utf8");
+    const slice = Buffer.from(body.slice(startCodeUnit, endCodeUnit), "utf8");
+    spans.push({ coordinateKind: "utf8-byte", startByte, endByte: startByte + slice.byteLength, sliceSha256: sha256Bytes(slice) });
+  }
+  if (spans.length === 0) throw new Error("Blind evaluator candidate requires at least one non-whitespace evidence span.");
+  return spans;
+}
+
+function assertCandidateEvidenceSpanCatalog(
+  actual: readonly z.infer<typeof CandidateSpanSchema>[],
+  bytes: Buffer,
+  label: string,
+): void {
+  const body = decodeBoundedUtf8(bytes, label, MAX_REVIEW_ARTIFACT_BYTES);
+  const expected = buildCandidateEvidenceSpanCatalog(body);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label} evidence span catalog does not equal RefLab's deterministic non-whitespace line catalog.`);
+  }
+}
+
 function assertCommonCanaryIsolation(
   neutral: AgentOperationTerminalReceiptV2 & { status: "succeeded" },
   soul: AgentOperationTerminalReceiptV2 & { status: "succeeded" },
@@ -1333,7 +1523,11 @@ function projectCanaryIsolation(terminal: AgentOperationTerminalReceiptV2): Fire
   });
 }
 
-function assertNoPublicGeneratorLeaks(value: unknown, mapping: BlindPairPrivateMappingReceipt): void {
+function assertNoPublicGeneratorLeaks(
+  value: unknown,
+  mapping: BlindPairPrivateMappingReceipt,
+  allowedPublicStrings: ReadonlySet<string> = new Set(),
+): void {
   const forbiddenKeys = new Set([
     "lane", "profileId", "sessionId", "workOrderId", "laneProjectRoot", "expectedSoulBinding",
     "terminal", "chapterCommit", "chapterArtifact", "producerActors", "producerEvidence", "labelMap", "hiddenLane",
@@ -1348,7 +1542,7 @@ function assertNoPublicGeneratorLeaks(value: unknown, mapping: BlindPairPrivateM
       candidate.expectedSoulBinding?.soulId ?? "",
       candidate.expectedSoulBinding?.soulVersion ?? "",
     ]),
-  ].filter((item) => item.length >= 3));
+  ].filter((item) => item.length >= 3 && !allowedPublicStrings.has(item)));
   const visit = (item: unknown): void => {
     if (typeof item === "string") {
       for (const secret of forbidden) {
@@ -1368,6 +1562,13 @@ function assertNoPublicGeneratorLeaks(value: unknown, mapping: BlindPairPrivateM
     }
   };
   visit(value);
+}
+
+function surfaceCorpusForGenre(genre: string): (typeof SURFACE_CORPUS_BY_GENRE)[keyof typeof SURFACE_CORPUS_BY_GENRE] {
+  if (!Object.prototype.hasOwnProperty.call(SURFACE_CORPUS_BY_GENRE, genre)) {
+    throw new Error(`Blind surface corpus is not configured for genre ${genre}.`);
+  }
+  return SURFACE_CORPUS_BY_GENRE[genre as keyof typeof SURFACE_CORPUS_BY_GENRE];
 }
 
 function commonInputReceiptSha256(commonContext: { readonly text: string; readonly sha256: string; readonly byteLength: number }): string {
@@ -1421,11 +1622,21 @@ function parseRawJson<T>(bytes: Buffer, schema: z.ZodType<T>, label: string): T 
 }
 
 function parseCanonicalRefLabJson<T>(bytes: Buffer, schema: z.ZodType<T>, label: string): T {
-  const value = parseRawJson(bytes, schema, label);
-  if (!bytes.equals(serializeJson(value))) {
+  const decoded = decodeBoundedUtf8(bytes, label, MAX_REVIEW_ARTIFACT_BYTES);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(decoded);
+  } catch (error) {
+    throw new Error(`${label} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || !bytes.equals(serializeJson(raw))) {
     throw new Error(`${label} must use exact canonical JSON bytes from Firefly Reference Lab.`);
   }
-  return value;
+  schema.parse(raw);
+  // Zod object parsing reorders known fields before passthrough fields. Return
+  // the canonical raw object after validation so hash/self-hash consumers keep
+  // the producer's exact insertion order.
+  return raw as T;
 }
 
 function canonicalRelativePath(path: string): string {
@@ -1520,6 +1731,55 @@ async function readOptionalRegular(root: string, relativePath: string): Promise<
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+}
+
+async function loadCurrentCanonicalChapter(input: {
+  readonly projectRoot: string;
+  readonly state: StateManager;
+  readonly bookId: string;
+  readonly chapterNumber: number;
+}): Promise<{ readonly title: string; readonly status: string; readonly body: string; readonly sha256: string }> {
+  const directoryPath = posix.join("books", input.bookId, "chapters");
+  const absoluteDirectory = absoluteContainedPath(input.projectRoot, directoryPath);
+  let before;
+  try {
+    before = await lstat(absoluteDirectory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { title: "", status: "not-written", body: "", sha256: sha256Bytes(Buffer.alloc(0)) };
+    }
+    throw error;
+  }
+  if (before.isSymbolicLink() || !before.isDirectory()) {
+    throw new Error("Canonical chapter directory must be a real directory.");
+  }
+  const names = await readdir(absoluteDirectory);
+  const after = await lstat(absoluteDirectory);
+  if (after.isSymbolicLink() || !after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino
+    || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+    throw new Error("Canonical chapter directory changed during stable lookup.");
+  }
+  const matches = names.flatMap((name) => {
+    const match = name.match(/^(\d+)[_-]?(.*?)\.md$/u);
+    if (!match || Number.parseInt(match[1]!, 10) !== input.chapterNumber) return [];
+    return [{ name, fallbackTitle: match[2]!.replace(/_/gu, " ").trim() }];
+  });
+  const chapterIndex = await input.state.loadChapterIndex(input.bookId);
+  const metadata = chapterIndex.find((chapter) => chapter.number === input.chapterNumber);
+  if (matches.length === 0) {
+    if (metadata) throw new Error("Canonical chapter index points to a missing manuscript file.");
+    return { title: "", status: "not-written", body: "", sha256: sha256Bytes(Buffer.alloc(0)) };
+  }
+  if (matches.length !== 1) throw new Error("Canonical chapter lookup is ambiguous for the requested chapter number.");
+  const match = matches[0]!;
+  const bytes = await readRegularStable(input.projectRoot, posix.join(directoryPath, match.name));
+  const body = decodeBoundedUtf8(bytes, "Canonical current chapter", MAX_REVIEW_ARTIFACT_BYTES);
+  return {
+    title: metadata?.title ?? match.fallbackTitle,
+    status: metadata?.status ?? "ready-for-review",
+    body,
+    sha256: sha256Bytes(bytes),
+  };
 }
 
 async function readExpectedArtifact(

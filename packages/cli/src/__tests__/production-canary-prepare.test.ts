@@ -3,11 +3,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   prepareProductionCanaryPair: vi.fn(),
+  materializeProductionCanaryCommonContext: vi.fn(),
 }));
 
 vi.mock("@actalk/inkos-core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actalk/inkos-core")>();
-  return { ...actual, prepareProductionCanaryPair: mocks.prepareProductionCanaryPair };
+  return {
+    ...actual,
+    prepareProductionCanaryPair: mocks.prepareProductionCanaryPair,
+    materializeProductionCanaryCommonContext: mocks.materializeProductionCanaryCommonContext,
+  };
 });
 
 import { productionCommand } from "../commands/production.js";
@@ -15,6 +20,31 @@ import { productionCommand } from "../commands/production.js";
 afterEach(() => {
   vi.restoreAllMocks();
   mocks.prepareProductionCanaryPair.mockReset();
+  mocks.materializeProductionCanaryCommonContext.mockReset();
+});
+
+describe("production canary-context CLI", () => {
+  it("requires only a prepared pair and emits the public-safe materialization receipt", async () => {
+    const result = {
+      schemaVersion: "inkos-canary-common-context-result/v1" as const,
+      pairId: "pair-001",
+      bookId: "book-001",
+      commonSnapshotSha256: "a".repeat(64),
+      context: { path: ".inkos/canaries/pair-001/review/common-context.json", sha256: "b".repeat(64), byteLength: 1234 },
+      replayed: false,
+    };
+    mocks.materializeProductionCanaryCommonContext.mockResolvedValue(result);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const command = productionCommand.commands.find((candidate) => candidate.name() === "canary-context");
+    if (!command) throw new Error("canary-context command is missing");
+    await command.parseAsync(["--pair", "pair-001", "--json"], { from: "user" });
+
+    expect(mocks.materializeProductionCanaryCommonContext).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      pairId: "pair-001",
+    });
+    expect(write).toHaveBeenCalledWith(`${JSON.stringify(result)}\n`);
+  });
 });
 
 describe("production canary-prepare CLI", () => {

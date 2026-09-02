@@ -15,6 +15,7 @@ import {
   importHermesControlOperation,
   isSafeBookId,
   loadActiveBookSoulBinding,
+  materializeProductionCanaryCommonContext,
   prepareProductionCanaryPair,
   loadAgentOperationTerminal,
   readProductionModelCallReadback,
@@ -717,6 +718,27 @@ productionCommand.command("canary-prepare")
       `Genre Soul root: ${result.lanes.genreSoul.projectRoot}`,
       `Receipt: ${result.receipt.path} (${result.receipt.sha256})`,
       result.replayed ? "Existing immutable pair replayed." : "New immutable pair created.",
+      "",
+    ].join("\n"));
+  });
+
+productionCommand.command("canary-context")
+  .description("Materialize one deterministic public-safe context from a prepared canary pair")
+  .requiredOption("--pair <pairId>")
+  .option("--json", "Emit the exact context materialization result")
+  .action(async (opts) => {
+    const result = await materializeProductionCanaryCommonContext({
+      projectRoot: findProjectRoot(),
+      pairId: String(opts.pair),
+    });
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+    process.stdout.write([
+      `Materialized canary common context for ${result.pairId}/${result.bookId}.`,
+      `Context: ${result.context.path} (${result.context.sha256})`,
+      result.replayed ? "Existing exact context bytes reused." : "New immutable context created.",
       "",
     ].join("\n"));
   });

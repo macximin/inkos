@@ -78,7 +78,7 @@ describe("review blind-pair CLI", () => {
       replayed: false,
     });
     await command("materialize-blind-pair").parseAsync([
-      "--pair", "pair-001", "--evaluator-input", "evidence/input.json", "--evaluation-result", "evidence/result.json",
+      "--pair", "pair-001", "--review-input", "evidence/review-input.json", "--evaluator-input", "evidence/evaluator-input.json", "--evaluation-result", "evidence/result.json",
       "--evaluator-host-receipt", "evidence/host-receipt.json",
       "--review-receipt", "evidence/review-receipt.json",
       "--surface-a", "evidence/a.json", "--surface-b", "evidence/b.json",
@@ -87,7 +87,8 @@ describe("review blind-pair CLI", () => {
     expect(mocks.materialize).toHaveBeenCalledWith({
       projectRoot: mocks.root,
       pairId: "pair-001",
-      evaluatorInputPath: "evidence/input.json",
+      reviewInputPath: "evidence/review-input.json",
+      evaluatorInputPath: "evidence/evaluator-input.json",
       evaluatorResultPath: "evidence/result.json",
       evaluatorHostReceiptPath: "evidence/host-receipt.json",
       reviewReceiptPath: "evidence/review-receipt.json",

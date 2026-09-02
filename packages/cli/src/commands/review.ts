@@ -158,7 +158,8 @@ reviewCommand
   .command("materialize-blind-pair")
   .description("Materialize one advisory Storyyard v2 packet from sealed RefLab evaluation evidence")
   .requiredOption("--pair <pairId>", "Source canary pair ID")
-  .requiredOption("--evaluator-input <path>", "Project-relative firefly-blind-pair-evaluation-input/v2 JSON")
+  .requiredOption("--review-input <path>", "Project-relative public firefly-blind-pair-evaluation-input/v2 JSON")
+  .requiredOption("--evaluator-input <path>", "Project-relative private firefly-blind-pair-evaluator-input/v2 JSON")
   .requiredOption("--evaluation-result <path>", "Project-relative firefly-blind-pair-evaluator-result/v2 JSON")
   .requiredOption("--evaluator-host-receipt <path>", "Project-relative raw RefLab blind evaluator host receipt")
   .requiredOption("--review-receipt <path>", "Project-relative firefly-blind-review-receipt/v2 JSON")
@@ -172,6 +173,7 @@ reviewCommand
       const result = await materializeBlindPair({
         projectRoot: root,
         pairId: String(opts.pair),
+        reviewInputPath: String(opts.reviewInput),
         evaluatorInputPath: String(opts.evaluatorInput),
         evaluatorResultPath: String(opts.evaluationResult),
         evaluatorHostReceiptPath: String(opts.evaluatorHostReceipt),

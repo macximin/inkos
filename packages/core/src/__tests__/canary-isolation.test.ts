@@ -41,6 +41,7 @@ import {
   verifyProductionCanaryTerminalReplayRoot,
   type PrepareProductionCanaryPairInput,
 } from "../production/canary-isolation.js";
+import { materializeProductionCanaryCommonContext } from "../production/canary-common-context.js";
 import { hashCanonicalJson } from "../production/fiction-content-contract.js";
 
 const NOW = new Date("2026-09-02T12:00:00.000Z");
@@ -138,6 +139,76 @@ async function regularFiles(root: string): Promise<Record<string, string>> {
   };
   await walk(root);
   return output;
+}
+
+async function addReadyCommonContext(input: PrepareProductionCanaryPairInput): Promise<void> {
+  const bookDir = join(input.projectRoot, "books", input.bookId);
+  const activeArc = {
+    version: 1,
+    id: "arc-active",
+    bookId: input.bookId,
+    title: "Active Canary Arc",
+    status: "ready",
+    episodeCount: 1,
+    chapterNumbers: [1],
+    openingState: "An opening state.",
+    promise: "A promise.",
+    goal: "A goal.",
+    obstacle: "An obstacle.",
+    pressure: "Pressure rises.",
+    turn: "A turn.",
+    payoff: "A payoff.",
+    irreversibleChange: "A change.",
+    nextHook: "A next hook.",
+    episodeBeats: [{ chapterNumber: 1, role: "promise", beats: ["A visible beat."], endingHook: "A hook." }],
+    characterChanges: [],
+    relationshipChanges: [],
+    worldChanges: [],
+    hookOperations: [],
+    mustKeep: [],
+    mustAvoid: [],
+    styleEmphasis: [],
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+  };
+  const anchors = Array.from({ length: 6 }, (_, index) => ({
+    id: `A0${index + 1}`,
+    routeOrder: (index + 1) * 100,
+    title: `Anchor ${index + 1}`,
+    detailLevel: index < 2 ? "compound" : "sparse",
+    state: "planned",
+    entryState: `Entry ${index + 1}`,
+    trigger: `Trigger ${index + 1}`,
+    irreversibleChange: `Change ${index + 1}`,
+    humanAftermath: `Aftermath ${index + 1}`,
+    readerDebt: `Debt ${index + 1}`,
+    payoffAxis: `Payoff ${index + 1}`,
+    nextPressure: `Pressure ${index + 1}`,
+  }));
+  await writeJson(join(bookDir, "story", "arcs", "active.json"), { arcId: activeArc.id, updatedAt: NOW.toISOString() });
+  await writeJson(join(bookDir, "story", "arcs", `${activeArc.id}.json`), activeArc);
+  await writeJson(join(bookDir, "story", "rails", "plan.json"), {
+    version: 1,
+    bookId: input.bookId,
+    anchorRail: { status: "ready", anchors },
+    arcRouteRail: {
+      status: "ready",
+      entries: anchors.map((anchor, index) => ({
+        bId: `B00${index + 1}`,
+        routeOrder: (index + 1) * 100,
+        status: index === 0 ? "active" : index === 1 ? "provisional" : "hypothesis",
+        targetAnchorId: anchor.id,
+        ...(index === 0 ? { arcId: activeArc.id } : {}),
+        narrativeFunction: `Function ${index + 1}`,
+        payoffAxis: `Payoff ${index + 1}`,
+        carriedReaderDebt: `Debt ${index + 1}`,
+        contrastRequirement: `Contrast ${index + 1}`,
+      })),
+    },
+    routeCapacity: { targetChaptersSnapshot: 18, arcEpisodeCap: 3 },
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+  });
 }
 
 beforeEach(() => {
@@ -244,6 +315,48 @@ describe("production canary isolation", () => {
     await writeFile(join(input.projectRoot, "books", input.bookId, "story", "brief.md"), "changed source\n", "utf8");
     await expect(prepareProductionCanaryPair(input)).rejects.toThrow(/immutable prepare request|source snapshot/i);
     expect(await readFile(join(input.projectRoot, first.receipt.path))).toEqual(receiptBefore);
+  });
+
+  it("materializes one deterministic public-safe common context from the sealed neutral Book", async () => {
+    const input = await fixture();
+    await addReadyCommonContext(input);
+    const prepared = await prepareProductionCanaryPair(input);
+
+    const first = await materializeProductionCanaryCommonContext({ projectRoot: input.projectRoot, pairId: input.pairId });
+    const contextPath = join(input.projectRoot, first.context.path);
+    const bytes = await readFile(contextPath);
+    const context = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+    expect(first.replayed).toBe(false);
+    expect(first.commonSnapshotSha256).toBe(prepared.commonSnapshotSha256);
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    expect(context).toMatchObject({
+      schemaVersion: "inkos-canary-common-context/v1",
+      bookId: input.bookId,
+      commonSnapshotSha256: prepared.commonSnapshotSha256,
+      brief: "same source bytes\n",
+      activeArcPointer: { arcId: "arc-active" },
+      activeArc: { id: "arc-active", status: "ready" },
+    });
+    expect(JSON.stringify(context)).not.toContain(input.pairId);
+    expect(JSON.stringify(context)).not.toContain("male-modern-fantasy-ko");
+    expect(JSON.stringify(context)).not.toContain("genreSoul");
+
+    const replay = await materializeProductionCanaryCommonContext({ projectRoot: input.projectRoot, pairId: input.pairId });
+    expect(replay).toEqual({ ...first, replayed: true });
+    expect(await readFile(contextPath)).toEqual(bytes);
+
+    await writeFile(join(input.projectRoot, prepared.lanes.neutral.projectRoot, "books", input.bookId, "story", "brief.md"), "drift\n", "utf8");
+    await expect(materializeProductionCanaryCommonContext({ projectRoot: input.projectRoot, pairId: input.pairId }))
+      .rejects.toThrow(/does not match the sealed source snapshot/i);
+  });
+
+  it("caps public common context below the 500KB consumer boundary", async () => {
+    const input = await fixture();
+    await addReadyCommonContext(input);
+    await writeFile(join(input.projectRoot, "books", input.bookId, "story", "brief.md"), "가".repeat(166_667), "utf8");
+    await prepareProductionCanaryPair(input);
+    await expect(materializeProductionCanaryCommonContext({ projectRoot: input.projectRoot, pairId: input.pairId }))
+      .rejects.toThrow(/must be 1-500000 bytes/i);
   });
 
   it("rejects symlinks before cloning any lane", async () => {
