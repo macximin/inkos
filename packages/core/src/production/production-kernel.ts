@@ -29,7 +29,7 @@ import {
   type ProductionInputReceipt,
 } from "./production-input.js";
 import { resolveWriteNextProductionSkills } from "./production-skill.js";
-import { resolveModelMediatedTaskGuidance } from "./task-guidance-resolver.js";
+import { resolveTaskGuidance } from "./task-guidance-resolver.js";
 import {
   ProductionCommandBindingSchema,
   parsePersistedProductionCommand,
@@ -330,7 +330,7 @@ export async function executeObserveOnlyWriteNext(input: {
       });
       const taskGuidance = executableCommand.schemaVersion === "production-command/v2"
         && executableCommand.args.taskGuidance
-        ? await resolveModelMediatedTaskGuidance({
+        ? await resolveTaskGuidance({
             projectRoot: input.projectRoot,
             reference: executableCommand.args.taskGuidance,
           })

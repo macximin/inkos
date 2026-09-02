@@ -934,15 +934,40 @@ export {
   directionTextSha256,
   verifyResolvedProductionDirectionContext,
   OwnerDirectionReferenceSchema,
+  HermesControlTaskGuidanceReferenceSchema,
   ModelMediatedTaskGuidanceReferenceSchema,
+  TaskGuidanceReferenceSchema,
   ResolvedProductionDirectionContextSchema,
   type OwnerDirectionReference,
+  type HermesControlTaskGuidanceReference,
   type ModelMediatedTaskGuidanceReference,
+  type TaskGuidanceReference,
   type ResolvedOwnerDirection,
+  type ResolvedHermesControlTaskGuidance,
   type ResolvedModelMediatedTaskGuidance,
+  type ResolvedTaskGuidance,
   type ResolvedProductionDirectionContext,
 } from "./production/direction-context.js";
-export { resolveModelMediatedTaskGuidance } from "./production/task-guidance-resolver.js";
+export {
+  resolveHermesControlTaskGuidance,
+  resolveModelMediatedTaskGuidance,
+  resolveTaskGuidance,
+} from "./production/task-guidance-resolver.js";
+export {
+  HermesControlActionSchema,
+  HermesInvocationReceiptSchema,
+  HermesControlImportReceiptSchema,
+  AgentOperationTerminalReceiptSchema,
+  hermesControlOperationPaths,
+  importHermesControlOperation,
+  loadAgentOperationTerminal,
+  finalizeAgentOperation,
+  type HermesControlAction,
+  type HermesInvocationReceipt,
+  type HermesControlArtifactRef,
+  type HermesControlImportReceipt,
+  type AgentOperationTerminalReceipt,
+} from "./production/hermes-control-operation.js";
 export {
   ProductionAttemptIdentitySchema,
   createProductionAttemptIdentity,

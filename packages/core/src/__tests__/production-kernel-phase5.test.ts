@@ -77,6 +77,62 @@ describe("Phase-5 ProductionCommand v2", () => {
     expect(() => parsePersistedProductionCommand({ ...command, binding: { ...command.binding, workOrderId: "wo-2" } })).toThrow();
   });
 
+  it("binds Hermes task guidance to the exact safe Book and WorkOrder", () => {
+    const taskGuidance = {
+      source: "hermes-control-action" as const,
+      bookId: "demo",
+      workOrderId: "wo-1",
+      actionRef: {
+        path: "story/runtime/hermes-control/wo-1/action.json",
+        sha256: "f".repeat(64),
+        byteLength: 123,
+      },
+      textSha256: "9".repeat(64),
+    };
+    expect(() => createWriteNextProductionCommandV2({
+      idempotencyKey: "idem-hermes-mismatch",
+      source: "hq",
+      binding: { bookId: "other", sessionId: "session-1", requestId: "request-1", workOrderId: "wo-1" },
+      ownerDirection: ownerDirection(),
+      taskGuidance,
+      authorization: cases[4]!.authorization,
+    })).toThrow(/task guidance bookId/i);
+    expect(() => createWriteNextProductionCommandV2({
+      idempotencyKey: "idem-hermes-traversal",
+      source: "hq",
+      binding: { bookId: "demo", sessionId: "session-1", requestId: "request-1", workOrderId: "wo-1" },
+      ownerDirection: ownerDirection(),
+      taskGuidance: { ...taskGuidance, bookId: "../demo" },
+      authorization: cases[4]!.authorization,
+    })).toThrow(/safe path segment/i);
+  });
+
+  it("keeps V2 retry identity stable across detached owner lease rotation", () => {
+    const firstOwner = ownerDirection();
+    const secondOwner: OwnerDirectionReference = {
+      ...firstOwner,
+      sourceRef: {
+        ...firstOwner.sourceRef,
+        leaseId: "00000000-0000-4000-8000-000000000099",
+        expiresAt: "2099-02-01T00:00:00.000Z",
+        leaseReceiptSha256: "f".repeat(64),
+      },
+    };
+    const create = (owner: OwnerDirectionReference) => createWriteNextProductionCommandV2({
+      idempotencyKey: "idem-stable-lease",
+      source: "hq",
+      binding: { bookId: "demo", sessionId: "session-1", requestId: "request-1", workOrderId: "wo-1" },
+      ownerDirection: owner,
+      authorization: cases[4]!.authorization,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    expect(create(secondOwner).intentDigest).toBe(create(firstOwner).intentDigest);
+    expect(create({
+      ...firstOwner,
+      receiptId: "different-owner-decision",
+    }).intentDigest).not.toBe(create(firstOwner).intentDigest);
+  });
+
   it("fails closed on direct writer entry while the surface gateway is active", async () => {
     const runner = new PipelineRunner({
       projectRoot: "/nonexistent-phase5",

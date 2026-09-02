@@ -1,12 +1,19 @@
 import { Command } from "commander";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import {
   PipelineRunner,
+  HermesControlActionSchema,
+  ProductionExecutionTerminalError,
   createDetachedOwnerDirectionLease,
   directionTextSha256,
+  finalizeAgentOperation,
   hashCanonicalJson,
+  hermesControlOperationPaths,
+  importHermesControlOperation,
+  loadActiveBookSoulBinding,
+  loadAgentOperationTerminal,
   readProductionModelCallReadback,
   toPosixPath,
 } from "@actalk/inkos-core";
@@ -59,11 +66,45 @@ type WorkOrderV2 = {
   readonly timeoutMs?: number;
 };
 
+type AgentExecutionMode = "promotion-canary" | "production";
+type AgentModeEvidence = {
+  readonly lane: "genre-soul" | "neutral-baseline";
+  readonly profileId: string;
+  readonly profileConfigSha256: string;
+  readonly profileLifecycle: "candidate" | "promoted" | "baseline";
+  readonly productionEnabled: boolean;
+  readonly adoptionRegistrySha256: string;
+  readonly activeMatchingCount: 0 | 1;
+  readonly soulId: string;
+  readonly soulVersion: string;
+  readonly soulSha256: string;
+  readonly promotionDecisionSha256: string | null;
+  readonly isolationReceiptSha256?: string;
+};
+type AgentWorkOrderV2 = Omit<WorkOrderV2, "capability"> & {
+  readonly capability: "agent-operate";
+  readonly executionMode: AgentExecutionMode;
+  readonly modeEvidence: AgentModeEvidence;
+};
+
+type Base64ArtifactEnvelope = {
+  readonly encoding: "base64";
+  readonly bytes: string;
+  readonly sha256: string;
+  readonly byteLength: number;
+};
+type AgentOperationIpcEnvelope = {
+  readonly schemaVersion: "inkos-agent-operation-request/v1";
+  readonly workOrder: Base64ArtifactEnvelope;
+  readonly hermesAction: Base64ArtifactEnvelope & { readonly textSha256: string };
+  readonly hermesReceipt: Base64ArtifactEnvelope;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseWorkOrderV2(value: unknown): WorkOrderV2 {
+function parseWriteNextWorkOrderV2(value: unknown): WorkOrderV2 {
   if (!isRecord(value)) throw new Error("WorkOrder v2 must be an object.");
   const unknown = Object.keys(value).filter((key) => !WORK_ORDER_KEYS.has(key));
   if (unknown.length > 0) throw new Error(`WorkOrder v2 has unknown field: ${unknown[0]}`);
@@ -146,6 +187,198 @@ function parseWorkOrderV2(value: unknown): WorkOrderV2 {
   return parsed;
 }
 
+const AGENT_WORK_ORDER_KEYS = new Set([...WORK_ORDER_KEYS, "executionMode", "modeEvidence"]);
+const MODE_EVIDENCE_KEYS = new Set([
+  "lane", "profileId", "profileConfigSha256", "profileLifecycle", "productionEnabled",
+  "adoptionRegistrySha256", "activeMatchingCount", "soulId", "soulVersion", "soulSha256",
+  "promotionDecisionSha256", "isolationReceiptSha256",
+]);
+
+export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
+  if (!isRecord(value)) throw new Error("Agent WorkOrder v2 must be an object.");
+  const unknown = Object.keys(value).filter((key) => !AGENT_WORK_ORDER_KEYS.has(key));
+  if (unknown.length > 0) throw new Error(`Agent WorkOrder v2 has unknown field: ${unknown[0]}`);
+  if (value.schemaVersion !== 2 || value.repo !== "inkos" || value.capability !== "agent-operate") {
+    throw new Error("Agent operation only accepts InkOS agent-operate WorkOrder v2.");
+  }
+  if (value.executionMode !== "promotion-canary" && value.executionMode !== "production") {
+    throw new Error("Agent WorkOrder executionMode is invalid.");
+  }
+  if (!isRecord(value.modeEvidence)) throw new Error("Agent WorkOrder modeEvidence must be an object.");
+  const evidenceUnknown = Object.keys(value.modeEvidence).filter((key) => !MODE_EVIDENCE_KEYS.has(key));
+  if (evidenceUnknown.length > 0) throw new Error(`Agent WorkOrder modeEvidence has unknown field: ${evidenceUnknown[0]}`);
+  const evidence = value.modeEvidence;
+  if (evidence.lane !== "genre-soul" && evidence.lane !== "neutral-baseline") throw new Error("modeEvidence.lane is invalid.");
+  for (const key of ["profileId", "profileConfigSha256", "adoptionRegistrySha256"] as const) {
+    if (typeof evidence[key] !== "string" || !evidence[key].trim()) throw new Error(`modeEvidence.${key} is required.`);
+  }
+  if (!SHA256.test(String(evidence.profileConfigSha256)) || !SHA256.test(String(evidence.adoptionRegistrySha256))) {
+    throw new Error("modeEvidence profile/registry hashes are invalid.");
+  }
+  if (!(["candidate", "promoted", "baseline"] as const).includes(evidence.profileLifecycle as never)) {
+    throw new Error("modeEvidence.profileLifecycle is invalid.");
+  }
+  if (typeof evidence.productionEnabled !== "boolean" || (evidence.activeMatchingCount !== 0 && evidence.activeMatchingCount !== 1)) {
+    throw new Error("modeEvidence production/registry state is invalid.");
+  }
+  const requiredIdentity = (key: "soulId" | "soulVersion") => {
+    if (typeof evidence[key] !== "string" || !evidence[key].trim() || evidence[key].length > 240) {
+      throw new Error(`modeEvidence.${key} is invalid.`);
+    }
+  };
+  requiredIdentity("soulId");
+  requiredIdentity("soulVersion");
+  if (!SHA256.test(String(evidence.soulSha256))) throw new Error("modeEvidence.soulSha256 is invalid.");
+  if (evidence.promotionDecisionSha256 !== null && !SHA256.test(String(evidence.promotionDecisionSha256))) {
+    throw new Error("modeEvidence.promotionDecisionSha256 is invalid.");
+  }
+  if (value.executionMode === "promotion-canary") {
+    if (!SHA256.test(String(evidence.isolationReceiptSha256))) throw new Error("promotion-canary requires isolationReceiptSha256.");
+    if (evidence.productionEnabled !== false || evidence.activeMatchingCount !== 0 || evidence.promotionDecisionSha256 !== null) {
+      throw new Error("promotion-canary must be disabled, inactive, and unpromoted.");
+    }
+    if (evidence.lane === "genre-soul" && evidence.profileLifecycle !== "candidate") {
+      throw new Error("Genre promotion-canary requires a candidate profile.");
+    }
+    if (evidence.lane === "neutral-baseline" && evidence.profileLifecycle !== "baseline") {
+      throw new Error("Neutral promotion-canary requires a baseline profile.");
+    }
+    if (!Array.isArray(value.approvedInputs) || value.approvedInputs.length !== 1 || !isRecord(value.approvedInputs[0])) {
+      throw new Error("promotion-canary requires exactly one isolation approvedInput.");
+    }
+    const isolation = value.approvedInputs[0];
+    if (
+      Object.keys(isolation).some((key) => !["repo", "commit", "path", "sha256", "role"].includes(key))
+      || typeof isolation.repo !== "string" || !isolation.repo.trim()
+      || !/^[0-9a-f]{40}$/u.test(String(isolation.commit))
+      || typeof isolation.path !== "string" || !isolation.path.trim()
+      || posix.isAbsolute(isolation.path) || isolation.path.includes("\\")
+      || posix.normalize(isolation.path) !== isolation.path || isolation.path === ".." || isolation.path.startsWith("../")
+      || isolation.sha256 !== evidence.isolationReceiptSha256
+      || isolation.role !== "promotion-canary-isolation"
+    ) throw new Error("promotion-canary isolation approvedInput is invalid.");
+  } else {
+    if ("isolationReceiptSha256" in evidence) throw new Error("production mode forbids isolationReceiptSha256.");
+    if (
+      evidence.lane !== "genre-soul"
+      || evidence.profileLifecycle !== "promoted"
+      || evidence.productionEnabled !== true
+      || evidence.activeMatchingCount !== 1
+      || !SHA256.test(String(evidence.promotionDecisionSha256))
+    ) throw new Error("production mode requires one active promoted genre Soul.");
+    if (!Array.isArray(value.approvedInputs) || value.approvedInputs.length !== 0) {
+      throw new Error("production Agent operation does not accept approvedInputs.");
+    }
+  }
+  if (!Array.isArray(value.privateInputs) || value.privateInputs.length !== 0) {
+    throw new Error("Agent operation privateInputs must be an explicit empty array.");
+  }
+  if (evidence.lane === "neutral-baseline") {
+    if (evidence.promotionDecisionSha256 !== null) throw new Error("Neutral baseline mode forbids a promotion decision.");
+    if (value.expectedSoulBinding !== null) throw new Error("Neutral baseline mode requires expectedSoulBinding=null.");
+  } else {
+    if (
+      !isRecord(value.expectedSoulBinding)
+      || value.expectedSoulBinding.soulId !== evidence.soulId
+      || value.expectedSoulBinding.soulVersion !== evidence.soulVersion
+    ) throw new Error("Genre Soul mode evidence must match expectedSoulBinding.");
+  }
+  const expectedSessionId = `hq-agent-${hashCanonicalJson({
+    v: 1,
+    bookId: value.bookId,
+    lane: evidence.lane,
+    profileId: evidence.profileId,
+    soulId: evidence.soulId,
+    soulVersion: evidence.soulVersion,
+    bindingSha256: isRecord(value.expectedSoulBinding) ? value.expectedSoulBinding.bindingSha256 : null,
+  }).slice(0, 40)}`;
+  if (value.sessionId !== expectedSessionId) {
+    throw new Error("Agent WorkOrder sessionId is not the deterministic Book/profile/Soul session.");
+  }
+
+  // Reuse the proven strict base parser with a synthetic write-next args hash;
+  // the real agent-operate hash is checked immediately below.
+  if (!isRecord(value.ownerDecision)) throw new Error("ownerDecision must be strict.");
+  const { executionMode: _mode, modeEvidence: _evidence, ...base } = value;
+  const instructionSha256 = directionTextSha256(String(value.instruction));
+  const syntheticArgsSha256 = hashCanonicalJson({
+    capability: "write-next",
+    bookId: value.bookId,
+    sessionId: value.sessionId,
+    args: value.args,
+    expectedSoulBinding: value.expectedSoulBinding,
+    instructionSha256,
+  });
+  parseWriteNextWorkOrderV2({
+    ...base,
+    capability: "write-next",
+    approvedInputs: [],
+    privateInputs: [],
+    ownerDecision: { ...value.ownerDecision, argsSha256: syntheticArgsSha256 },
+  });
+  const exactArgsSha256 = hashCanonicalJson({
+    capability: "agent-operate",
+    bookId: value.bookId,
+    sessionId: value.sessionId,
+    args: value.args,
+    expectedSoulBinding: value.expectedSoulBinding,
+    executionMode: value.executionMode,
+    modeEvidence: value.modeEvidence,
+    instructionSha256,
+  });
+  if (value.ownerDecision.argsSha256 !== exactArgsSha256) throw new Error("Agent WorkOrder ownerDecision args hash mismatch.");
+  return value as unknown as AgentWorkOrderV2;
+}
+
+function decodeBase64Artifact(
+  value: unknown,
+  label: string,
+  maxBytes: number,
+  allowTextSha256 = false,
+): { readonly envelope: Base64ArtifactEnvelope; readonly bytes: Buffer } {
+  const allowed = allowTextSha256
+    ? ["encoding", "bytes", "sha256", "byteLength", "textSha256"]
+    : ["encoding", "bytes", "sha256", "byteLength"];
+  if (!isRecord(value) || Object.keys(value).some((key) => !allowed.includes(key))) {
+    throw new Error(`${label} envelope must be strict.`);
+  }
+  if (value.encoding !== "base64" || typeof value.bytes !== "string" || !value.bytes || typeof value.sha256 !== "string" || !SHA256.test(value.sha256)) {
+    throw new Error(`${label} envelope is invalid.`);
+  }
+  if (!Number.isInteger(value.byteLength) || Number(value.byteLength) < 1 || Number(value.byteLength) > maxBytes) {
+    throw new Error(`${label} byteLength is invalid.`);
+  }
+  const bytes = Buffer.from(value.bytes, "base64");
+  if (bytes.toString("base64") !== value.bytes || bytes.byteLength !== value.byteLength || sha256(bytes) !== value.sha256) {
+    throw new Error(`${label} base64 bytes/hash/length mismatch.`);
+  }
+  return { envelope: value as unknown as Base64ArtifactEnvelope, bytes };
+}
+
+export function parseAgentOperationIpcEnvelope(value: unknown): {
+  readonly envelope: AgentOperationIpcEnvelope;
+  readonly workOrderBytes: Buffer;
+  readonly actionBytes: Buffer;
+  readonly receiptBytes: Buffer;
+} {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["schemaVersion", "workOrder", "hermesAction", "hermesReceipt"].includes(key))) {
+    throw new Error("Agent operation IPC envelope must be strict.");
+  }
+  if (value.schemaVersion !== "inkos-agent-operation-request/v1") throw new Error("Agent operation IPC schemaVersion is invalid.");
+  const workOrder = decodeBase64Artifact(value.workOrder, "workOrder", 1024 * 1024);
+  const action = decodeBase64Artifact(value.hermesAction, "hermesAction", 256 * 1024, true);
+  const receipt = decodeBase64Artifact(value.hermesReceipt, "hermesReceipt", 1024 * 1024);
+  if (!isRecord(value.hermesAction) || !SHA256.test(String(value.hermesAction.textSha256))) {
+    throw new Error("hermesAction.textSha256 is invalid.");
+  }
+  return {
+    envelope: value as unknown as AgentOperationIpcEnvelope,
+    workOrderBytes: workOrder.bytes,
+    actionBytes: action.bytes,
+    receiptBytes: receipt.bytes,
+  };
+}
+
 async function readStdinBytes(): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -154,6 +387,164 @@ async function readStdinBytes(): Promise<Buffer> {
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function assertAgentModeGate(projectRoot: string, workOrder: AgentWorkOrderV2): Promise<void> {
+  const evidence = workOrder.modeEvidence;
+  if (
+    workOrder.runtime.hermesProfile !== evidence.profileId
+    || workOrder.runtime.model !== "gpt-5.6-sol"
+    || workOrder.runtime.reasoning !== "high"
+  ) throw new Error("Agent WorkOrder runtime does not match the owner-approved Executor Soul profile.");
+  const binding = await loadActiveBookSoulBinding(projectRoot, workOrder.bookId);
+  if (evidence.lane === "neutral-baseline") {
+    if (binding !== null || workOrder.expectedSoulBinding !== null) {
+      throw new Error("Neutral baseline lane requires a Book with no active Writer Soul binding.");
+    }
+    return;
+  }
+  if (!binding || binding.schemaVersion !== "book-soul-binding/v2") {
+    throw new Error("Genre Soul Agent operation requires an active evidence-bound Book Soul v2.");
+  }
+  if (
+    binding.soulId !== evidence.soulId
+    || binding.version !== evidence.soulVersion
+    || binding.bindingSha256 !== workOrder.expectedSoulBinding?.bindingSha256
+    || binding.adoptionEvidence.executorSoul.profileId !== evidence.profileId
+    || binding.adoptionEvidence.executorSoul.configSha256 !== evidence.profileConfigSha256
+    || binding.adoptionEvidence.executorSoul.soulSha256 !== evidence.soulSha256
+  ) throw new Error("Active Book Soul does not match the Agent WorkOrder mode evidence.");
+  if (workOrder.executionMode === "promotion-canary") {
+    if (binding.status !== "candidate" || binding.adoptionEvidence.hqAdoption !== null) {
+      throw new Error("Genre promotion-canary requires an unpromoted candidate Book Soul.");
+    }
+    return;
+  }
+  const hqAdoption = binding.adoptionEvidence.hqAdoption;
+  if (
+    binding.status !== "promoted"
+    || !hqAdoption
+    || hqAdoption.decision.sha256 !== evidence.promotionDecisionSha256
+    || hqAdoption.activeRegistry.sha256 !== evidence.adoptionRegistrySha256
+  ) throw new Error("Production Agent operation requires exact promoted HQ adoption evidence.");
+}
+
+export function assertAgentOperateWriterRuntime(input: {
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}): void {
+  if (input.model !== "gpt-5.6-sol" || input.reasoningEffort !== "high") {
+    throw new Error("Agent operation requires the InkOS Writer runtime gpt-5.6-sol/high.");
+  }
+}
+
+const AGENT_OPERATE_MODEL_ROLES = [
+  "planner",
+  "composer",
+  "writer",
+  "length-normalizer",
+  "auditor",
+  "reviser",
+  "state-validator",
+] as const;
+
+export function assertAgentOperatePipelineRuntime(
+  pipeline: Pick<PipelineRunner, "createAgentContext">,
+  bookId: string,
+): ReturnType<PipelineRunner["createAgentContext"]> {
+  let writer: ReturnType<PipelineRunner["createAgentContext"]> | undefined;
+  for (const role of AGENT_OPERATE_MODEL_ROLES) {
+    const context = pipeline.createAgentContext(role, bookId);
+    try {
+      assertAgentOperateWriterRuntime(context);
+    } catch {
+      throw new Error(`Agent operation requires the InkOS ${role} runtime gpt-5.6-sol/high.`);
+    }
+    if (role === "writer") writer = context;
+  }
+  return writer!;
+}
+
+async function buildAgentOperationOutput(input: {
+  readonly root: string;
+  readonly workOrder: AgentWorkOrderV2;
+  readonly workOrderSha256: string;
+  readonly terminal: Awaited<ReturnType<typeof finalizeAgentOperation>>;
+  readonly importReceipt: Awaited<ReturnType<typeof importHermesControlOperation>>["importReceipt"];
+  readonly hermesSessionId: string;
+  readonly configMode: string;
+  readonly inkosModel: string;
+  readonly inkosReasoning: string;
+}): Promise<Record<string, unknown>> {
+  const paths = hermesControlOperationPaths(input.workOrder.workOrderId);
+  const [terminalBytes, importBytes, actionBytes, hermesReceiptBytes, runBytes] = await Promise.all([
+    readFile(join(input.root, "books", input.workOrder.bookId, paths.terminal)),
+    readFile(join(input.root, "books", input.workOrder.bookId, paths.importReceipt)),
+    readFile(join(input.root, "books", input.workOrder.bookId, paths.action)),
+    readFile(join(input.root, "books", input.workOrder.bookId, paths.hermesReceipt)),
+    readFile(join(input.root, "books", input.workOrder.bookId, input.terminal.productionRun.path)),
+  ]);
+  const modelCalls = await readProductionModelCallReadback({
+    projectRoot: input.root,
+    bookId: input.workOrder.bookId,
+    productionOperationId: input.terminal.productionRun.productionOperationId,
+    attemptId: input.terminal.productionRun.attemptId,
+  }).then((calls) => calls.map((call) => ({
+    ...call,
+    receiptPath: toPosixPath(join("books", input.workOrder.bookId, call.receiptPath)),
+    outcomePath: toPosixPath(join("books", input.workOrder.bookId, call.outcomePath)),
+  })));
+  const run = JSON.parse(runBytes.toString("utf8")) as Record<string, unknown>;
+  return {
+    schemaVersion: "inkos-agent-operation-result/v1",
+    workOrder: { id: input.workOrder.workOrderId, sha256: input.workOrderSha256 },
+    agentOperation: {
+      status: input.terminal.status,
+      executionMode: input.workOrder.executionMode,
+      receipt: { path: toPosixPath(join("books", input.workOrder.bookId, paths.terminal)), sha256: sha256(terminalBytes) },
+      importReceipt: { path: toPosixPath(join("books", input.workOrder.bookId, paths.importReceipt)), sha256: sha256(importBytes) },
+      action: {
+        path: toPosixPath(join("books", input.workOrder.bookId, paths.action)),
+        sha256: sha256(actionBytes),
+        textSha256: input.importReceipt.taskGuidance.textSha256,
+      },
+      hermesReceipt: { path: toPosixPath(join("books", input.workOrder.bookId, paths.hermesReceipt)), sha256: sha256(hermesReceiptBytes) },
+    },
+    productionRun: {
+      commandId: input.terminal.productionRun.commandId,
+      productionOperationId: input.terminal.productionRun.productionOperationId,
+      attemptId: input.terminal.productionRun.attemptId,
+      path: toPosixPath(join("books", input.workOrder.bookId, input.terminal.productionRun.path)),
+      sha256: sha256(runBytes),
+      executionStatus: run.executionStatus,
+      approvalStatus: run.approvalStatus,
+      completionHealth: run.completionHealth,
+      projectionOrigin: run.projectionOrigin,
+    },
+    effectiveRuntime: {
+      hermesE2E: true,
+      orchestrator: {
+        ...input.workOrder.runtime,
+        invoked: true,
+        evidence: "verified-hermes-invocation-receipt",
+        sessionId: input.hermesSessionId,
+        toolsCount: 0,
+        toolCallCount: 0,
+      },
+      inkos: {
+        configMode: input.configMode,
+        model: input.inkosModel,
+        reasoning: input.inkosReasoning,
+      },
+    },
+    modelCalls,
+    artifacts: [
+      { repo: "inkos", path: toPosixPath(join("books", input.workOrder.bookId, paths.action)), sha256: sha256(actionBytes), role: "hermes-control-action" },
+      { repo: "inkos", path: toPosixPath(join("books", input.workOrder.bookId, paths.hermesReceipt)), sha256: sha256(hermesReceiptBytes), role: "hermes-invocation-receipt" },
+      { repo: "inkos", path: toPosixPath(join("books", input.workOrder.bookId, paths.terminal)), sha256: sha256(terminalBytes), role: "agent-operation-receipt" },
+      { repo: "inkos", path: toPosixPath(join("books", input.workOrder.bookId, input.terminal.productionRun.path)), sha256: sha256(runBytes), role: "production-run" },
+    ],
+  };
 }
 
 export const productionCommand = new Command("production")
@@ -172,7 +563,7 @@ productionCommand.command("write-next")
       throw new Error("WorkOrder v2 byte hash mismatch.");
     }
     if (!SHA256.test(String(opts.manifestCapabilitySha))) throw new Error("Manifest capability hash is invalid.");
-    const workOrder = parseWorkOrderV2(JSON.parse(workOrderBytes.toString("utf8")));
+    const workOrder = parseWriteNextWorkOrderV2(JSON.parse(workOrderBytes.toString("utf8")));
     const root = findProjectRoot();
     const effective = await loadConfigWithDiagnostics({ projectRoot: root });
     const pipeline = new PipelineRunner({
@@ -248,4 +639,154 @@ productionCommand.command("write-next")
       artifacts: [{ repo: "inkos", path: runPath, sha256: sha256(runBytes), role: "production-run" }],
     };
     process.stdout.write(`${JSON.stringify(output)}\n`);
+  });
+
+productionCommand.command("agent-operate")
+  .description("Import one verified zero-tool Hermes action and execute one InkOS production kernel call")
+  .requiredOption("--work-order-sha <sha256>")
+  .requiredOption("--manifest-capability-sha <sha256>")
+  .option("--json", "Emit compact receipt/hash JSON")
+  .action(async (opts) => {
+    const ipcBytes = await readStdinBytes();
+    if (ipcBytes.byteLength === 0) throw new Error("Agent operation IPC bytes are required on stdin.");
+    const ipc = parseAgentOperationIpcEnvelope(JSON.parse(ipcBytes.toString("utf8")));
+    const workOrderSha256 = sha256(ipc.workOrderBytes);
+    if (
+      !SHA256.test(String(opts.workOrderSha))
+      || workOrderSha256 !== opts.workOrderSha
+      || workOrderSha256 !== ipc.envelope.workOrder.sha256
+    ) throw new Error("Agent WorkOrder v2 byte hash mismatch.");
+    if (!SHA256.test(String(opts.manifestCapabilitySha))) throw new Error("Manifest capability hash is invalid.");
+    const workOrder = parseAgentWorkOrderV2(JSON.parse(ipc.workOrderBytes.toString("utf8")));
+    const root = findProjectRoot();
+    const canonicalAction = HermesControlActionSchema.parse(JSON.parse(ipc.actionBytes.toString("utf8")));
+    if (canonicalAction.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
+      throw new Error("Agent operation envelope text hash does not match the canonical Hermes action.");
+    }
+    const importExactEvidence = () => importHermesControlOperation({
+      projectRoot: root,
+      bookId: workOrder.bookId,
+      sessionId: workOrder.sessionId,
+      workOrderId: workOrder.workOrderId,
+      workOrderSha256,
+      workOrderBytes: ipc.workOrderBytes,
+      actionBytes: ipc.actionBytes,
+      hermesReceiptBytes: ipc.receiptBytes,
+      profile: {
+        profileId: workOrder.modeEvidence.profileId,
+        soulId: workOrder.modeEvidence.soulId,
+        soulVersion: workOrder.modeEvidence.soulVersion,
+        profileConfigSha256: workOrder.modeEvidence.profileConfigSha256,
+        soulSha256: workOrder.modeEvidence.soulSha256,
+      },
+    });
+    const readTerminal = () => loadAgentOperationTerminal({
+      projectRoot: root,
+      bookId: workOrder.bookId,
+      workOrderId: workOrder.workOrderId,
+    });
+    const assertReplayIdentity = (terminal: NonNullable<Awaited<ReturnType<typeof loadAgentOperationTerminal>>>) => {
+      if (
+        terminal.workOrderSha256 !== workOrderSha256
+        || terminal.sessionId !== workOrder.sessionId
+        || terminal.executionMode !== workOrder.executionMode
+      ) throw new Error("Agent operation terminal does not match the exact replay request.");
+    };
+    const existingTerminal = await readTerminal();
+    if (existingTerminal) {
+      assertReplayIdentity(existingTerminal);
+      const imported = await importExactEvidence();
+      if (imported.action.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
+        throw new Error("Agent operation envelope text hash does not match the canonical Hermes action.");
+      }
+      const output = await buildAgentOperationOutput({
+        root,
+        workOrder,
+        workOrderSha256,
+        terminal: existingTerminal,
+        importReceipt: imported.importReceipt,
+        hermesSessionId: imported.hermesReceipt.invocation.sessionId,
+        configMode: "immutable-terminal-replay",
+        inkosModel: "gpt-5.6-sol",
+        inkosReasoning: "high",
+      });
+      process.stdout.write(`${JSON.stringify(output)}\n`);
+      if (existingTerminal.status !== "succeeded") process.exitCode = 1;
+      return;
+    }
+
+    await assertAgentModeGate(root, workOrder);
+    const effective = await loadConfigWithDiagnostics({ projectRoot: root });
+    const pipeline = new PipelineRunner({
+      ...buildPipelineConfig(effective.config, root, { quiet: true }),
+      surfaceGatewayMode: "kernel",
+      productionKernelMode: effective.config.production?.kernel === "enforce" ? "enforce" : "observe",
+    });
+    const effectiveWriter = assertAgentOperatePipelineRuntime(pipeline, workOrder.bookId);
+    const imported = await importExactEvidence();
+    if (imported.action.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
+      throw new Error("Agent operation envelope text hash does not match the canonical Hermes action.");
+    }
+    const outputFor = async (terminal: Awaited<ReturnType<typeof finalizeAgentOperation>>) => buildAgentOperationOutput({
+      root,
+      workOrder,
+      workOrderSha256,
+      terminal,
+      importReceipt: imported.importReceipt,
+      hermesSessionId: imported.hermesReceipt.invocation.sessionId,
+      configMode: effective.diagnostics.configMode,
+      inkosModel: effectiveWriter.model,
+      inkosReasoning: effectiveWriter.reasoningEffort ?? "none",
+    });
+    const racedTerminal = await readTerminal();
+    if (racedTerminal) {
+      assertReplayIdentity(racedTerminal);
+      process.stdout.write(`${JSON.stringify(await outputFor(racedTerminal))}\n`);
+      if (racedTerminal.status !== "succeeded") process.exitCode = 1;
+      return;
+    }
+
+    const ownerDirection = await createDetachedOwnerDirectionLease({
+      projectRoot: root,
+      receiptId: workOrder.ownerDecision.receiptId,
+      text: workOrder.instruction,
+    });
+    let run: Awaited<ReturnType<PipelineRunner["executeSurfaceWriteNext"]>>["run"];
+    try {
+      const execution = await pipeline.executeSurfaceWriteNext({
+        source: "hq",
+        idempotencyKey: workOrder.idempotencyKey,
+        bookId: workOrder.bookId,
+        sessionId: workOrder.sessionId,
+        requestId: workOrder.workOrderId,
+        workOrderId: workOrder.workOrderId,
+        ownerDirection,
+        taskGuidance: imported.taskGuidance,
+        expectedSoulBinding: workOrder.expectedSoulBinding,
+        authorization: {
+          kind: "authenticated-orchestrator",
+          workOrderId: workOrder.workOrderId,
+          workOrderSha256,
+          manifestCapabilitySha256: opts.manifestCapabilitySha,
+          ownerDecisionReceiptSha256: hashCanonicalJson(workOrder.ownerDecision),
+        },
+        targetLength: workOrder.args.targetLength,
+      });
+      run = execution.run;
+    } catch (error) {
+      if (!(error instanceof ProductionExecutionTerminalError)) throw error;
+      run = error.run;
+    }
+    const terminal = await finalizeAgentOperation({
+      projectRoot: root,
+      bookId: workOrder.bookId,
+      sessionId: workOrder.sessionId,
+      workOrderId: workOrder.workOrderId,
+      workOrderSha256,
+      executionMode: workOrder.executionMode,
+      importReceipt: imported.importReceipt,
+      productionRun: run,
+    });
+    process.stdout.write(`${JSON.stringify(await outputFor(terminal))}\n`);
+    if (terminal.status !== "succeeded") process.exitCode = 1;
   });

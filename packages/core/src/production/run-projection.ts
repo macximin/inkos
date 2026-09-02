@@ -17,7 +17,12 @@ import { ProductionAttemptIdentitySchema, type ProductionAttemptIdentity } from 
 import { Sha256HexSchema } from "./direction-context.js";
 import { ProductionExecutionContextSchema, type ProductionExecutionContext } from "./execution-context.js";
 import { hashCanonicalJson } from "./fiction-content-contract.js";
-import { ProductionCommandSchema, productionCommandActionSource, type ProductionCommand } from "./production-command.js";
+import {
+  ProductionCommandSchema,
+  productionCommandActionSource,
+  productionIntentDigest,
+  type ProductionCommand,
+} from "./production-command.js";
 
 const RUN_ROOT = join("story", "runtime", "production-runs");
 const SNAPSHOT_DIR = join(RUN_ROOT, "snapshots");
@@ -332,7 +337,10 @@ export async function findProductionProjectionByIdempotencyKey(
     }
   };
   await Promise.all([collect(SNAPSHOT_DIR, "snapshot"), collect(TERMINAL_DIR, "terminal")]);
-  if (records.some((record) => record.value.command.intentDigest !== intentDigest)) {
+  if (records.some((record) => (
+    record.value.command.intentDigest !== intentDigest
+    && productionIntentDigest(record.value.command) !== intentDigest
+  ))) {
     throw new Error("Production idempotency key was reused with a different intent digest.");
   }
   if (records.length > 1) {

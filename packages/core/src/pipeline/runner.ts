@@ -40,7 +40,7 @@ import { readGenreProfile } from "../agents/rules-reader.js";
 import { analyzeAITells } from "../agents/ai-tells.js";
 import { analyzeSensitiveWords, type SensitiveWordResult } from "../agents/sensitive-words.js";
 import { BookBoundCompletionAgent } from "../agents/book-bound-completion.js";
-import type { ModelMediatedTaskGuidanceReference, OwnerDirectionReference, ResolvedProductionDirectionContext } from "../production/direction-context.js";
+import type { OwnerDirectionReference, ResolvedProductionDirectionContext, TaskGuidanceReference } from "../production/direction-context.js";
 import { StateManager } from "../state/manager.js";
 import { archiveChapterVersion, readChapterUserBrief } from "../state/chapter-workspace.js";
 import { writeChapterTruthReceipt } from "../state/chapter-truth-receipt.js";
@@ -485,7 +485,7 @@ export interface SurfaceWriteNextInput {
   readonly requestId: string;
   readonly workOrderId?: string;
   readonly ownerDirection: OwnerDirectionReference;
-  readonly taskGuidance?: ModelMediatedTaskGuidanceReference;
+  readonly taskGuidance?: TaskGuidanceReference;
   readonly authorization: ProductionAuthorizationEvidenceV2;
   readonly expectedSoulBinding?: SessionSoulBinding | null;
   readonly targetLength?: ProductionTargetLength;

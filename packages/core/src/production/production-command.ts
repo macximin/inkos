@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ActionSourceSchema, RequestedIntentSchema, type ActionSource, type RequestedIntent } from "../interaction/action-envelope.js";
 import { hashCanonicalJson } from "./fiction-content-contract.js";
-import { ModelMediatedTaskGuidanceReferenceSchema, OwnerDirectionReferenceSchema, Sha256HexSchema, type ModelMediatedTaskGuidanceReference, type OwnerDirectionReference } from "./direction-context.js";
+import {
+  OwnerDirectionReferenceSchema,
+  Sha256HexSchema,
+  TaskGuidanceReferenceSchema,
+  type OwnerDirectionReference,
+  type TaskGuidanceReference,
+} from "./direction-context.js";
 import { SessionSoulBindingSchema } from "./soul-schema.js";
 
 export const ProductionCommandSourceSchema = z.enum([
@@ -51,7 +57,7 @@ const ProductionCommandArgsV1Schema = z.object({
 }).strict();
 
 const ProductionCommandArgsV2Schema = ProductionCommandArgsV1Schema.extend({
-  taskGuidance: ModelMediatedTaskGuidanceReferenceSchema.optional(),
+  taskGuidance: TaskGuidanceReferenceSchema.optional(),
 }).strict();
 
 const ProductionCommandV1UnsignedSchema = z.object({
@@ -158,6 +164,15 @@ function validateCommonCommand(
     ) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["binding", "workOrderId"], message: "orchestrator workOrderId does not match the command binding" });
     }
+    const taskGuidance = command.args.taskGuidance;
+    if (taskGuidance?.source === "hermes-control-action") {
+      if (taskGuidance.bookId !== command.binding.bookId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["args", "taskGuidance", "bookId"], message: "Hermes task guidance bookId does not match the command binding" });
+      }
+      if (!command.binding.workOrderId || taskGuidance.workOrderId !== command.binding.workOrderId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["args", "taskGuidance", "workOrderId"], message: "Hermes task guidance workOrderId does not match the command binding" });
+      }
+    }
   } else if (!isProductionCommandActionAuthorized(command.authorization)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -198,7 +213,10 @@ export const ProductionCommandV2Schema = ProductionCommandV2UnsignedSchema.exten
   commandSelfHash: Sha256HexSchema,
 }).strict().superRefine((command, ctx) => {
   validateCommonCommand(command, ctx);
-  if (productionIntentDigest(command) !== command.intentDigest) {
+  if (
+    productionIntentDigest(command) !== command.intentDigest
+    && legacyProductionIntentDigest(command) !== command.intentDigest
+  ) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["intentDigest"], message: "intent digest mismatch" });
   }
   const { commandSelfHash: _self, ...unsigned } = command;
@@ -220,10 +238,13 @@ export function isProductionCommandActionAuthorized(input: {
     && (input.actionSource === "button" || input.actionSource === "slash" || input.actionSource === "quick-action");
 }
 
-export function productionIntentDigest(input: Pick<
+type ProductionIntentInput = Pick<
   ProductionCommand,
-  "capability" | "source" | "binding" | "authorization" | "args" | "activatedSkills" | "disabledSkills"
->): string {
+  "schemaVersion" | "capability" | "source" | "binding" | "authorization" | "args" | "activatedSkills" | "disabledSkills"
+>;
+
+/** Pre-stability V2 digest retained only so already-persisted commands remain readable. */
+function legacyProductionIntentDigest(input: ProductionIntentInput): string {
   const { workOrderId: _workOrderId, ...stableBinding } = input.binding;
   const authorization = "source" in input.authorization
     ? {
@@ -238,6 +259,36 @@ export function productionIntentDigest(input: Pick<
     source: input.source,
     binding: stableBinding,
     authorization,
+    args: input.args,
+    activatedSkills: [...input.activatedSkills],
+    ...(input.disabledSkills ? { disabledSkills: [...input.disabledSkills] } : {}),
+  });
+}
+
+/**
+ * Semantic idempotency digest. V2 deliberately excludes the random detached
+ * payload lease transport while retaining the owner receipt and exact text
+ * hash. Command self-hashes still bind every lease byte; only retry identity is
+ * transport-independent.
+ */
+export function productionIntentDigest(input: ProductionIntentInput): string {
+  if (input.schemaVersion === "production-command/v1") {
+    return legacyProductionIntentDigest(input);
+  }
+  const { workOrderId: _workOrderId, ...stableBinding } = input.binding;
+  const { ownerDirection, ...authorizationEvidence } = input.authorization;
+  return hashCanonicalJson({
+    capability: input.capability,
+    source: input.source,
+    binding: stableBinding,
+    authorization: {
+      ...authorizationEvidence,
+      ownerDirection: {
+        source: ownerDirection.source,
+        receiptId: ownerDirection.receiptId,
+        textSha256: ownerDirection.textSha256,
+      },
+    },
     args: input.args,
     activatedSkills: [...input.activatedSkills],
     ...(input.disabledSkills ? { disabledSkills: [...input.disabledSkills] } : {}),
@@ -298,7 +349,7 @@ export function createWriteNextProductionCommandV2(input: {
   readonly ownerDirection: OwnerDirectionReference;
   readonly authorization: ProductionAuthorizationEvidenceV2;
   readonly targetLength?: ProductionTargetLength;
-  readonly taskGuidance?: ModelMediatedTaskGuidanceReference;
+  readonly taskGuidance?: TaskGuidanceReference;
   readonly activatedSkills?: ReadonlyArray<string>;
   readonly disabledSkills?: ReadonlyArray<string>;
   readonly commandId?: string;
@@ -308,7 +359,7 @@ export function createWriteNextProductionCommandV2(input: {
     chapterCount: 1,
     ...(input.targetLength ? { targetLength: ProductionTargetLengthSchema.parse(input.targetLength) } : {}),
     ownerDirectionTextSha256: input.ownerDirection.textSha256,
-    ...(input.taskGuidance ? { taskGuidance: ModelMediatedTaskGuidanceReferenceSchema.parse(input.taskGuidance) } : {}),
+    ...(input.taskGuidance ? { taskGuidance: TaskGuidanceReferenceSchema.parse(input.taskGuidance) } : {}),
   });
   const authorization = ProductionCommandAuthorizationV2Schema.parse({
     ...input.authorization,
