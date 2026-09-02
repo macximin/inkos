@@ -47,6 +47,19 @@ export const FICTION_CONTENT_CONTRACT = `## Fiction content contract (${FICTION_
 
 export const FICTION_CONTENT_CONTRACT_SHA256 = sha256(FICTION_CONTENT_CONTRACT);
 
+const PRIMARY_WRITER_INVOCATION_STAGES = new Set([
+  "writer",
+  // Historical callers used this explicit primary stage before BaseAgent
+  // standardized the configured Writer stage as `writer`.
+  "writer-creative",
+]);
+
+const WRITER_INVOCATION_STAGES = new Set([
+  ...PRIMARY_WRITER_INVOCATION_STAGES,
+  "writer-observer",
+  "writer-settler",
+]);
+
 export const ContentIntensityAuthoritySchema = z.enum([
   "default-preserve",
   "owner",
@@ -515,6 +528,9 @@ export async function prepareFictionContentInvocation(
   input: PrepareFictionContentInvocationInput,
 ): Promise<PreparedFictionContentInvocation> {
   assertSafeBookId(input.bookId);
+  if (input.agentName === "writer" && !WRITER_INVOCATION_STAGES.has(input.stage)) {
+    throw new Error(`Invalid host-owned Writer invocation stage: ${input.stage}.`);
+  }
   const evidenceBookDir = resolveEvidenceBookDir(
     input.projectRoot,
     input.bookId,
@@ -563,6 +579,7 @@ export async function prepareFictionContentInvocation(
     }
     if (
       input.agentName === "writer"
+      && PRIMARY_WRITER_INVOCATION_STAGES.has(input.stage)
       && productionInput.externalContextText
       && !input.messages.some((message) => message.content.includes(productionInput.externalContextText))
     ) {

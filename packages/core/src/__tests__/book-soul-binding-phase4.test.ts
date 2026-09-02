@@ -1014,7 +1014,7 @@ describe("Phase 4 BookSoulBinding", () => {
       externalContextSha256: sha256Bytes(externalContextText),
       promptInjectionSha256: sha256Bytes(promptInjection),
     });
-    const prepared = await runWithProductionInputBundle({
+    const bundle = {
       bookId: f.bookId,
       commandId: randomUUID(),
       productionOperationId: attempt.productionOperationId,
@@ -1022,7 +1022,8 @@ describe("Phase 4 BookSoulBinding", () => {
       promptInjection,
       externalContextText,
       receipt,
-    }, () => prepareFictionContentInvocation({
+    };
+    await expect(runWithProductionInputBundle(bundle, () => prepareFictionContentInvocation({
       projectRoot: f.root,
       bookId: f.bookId,
       agentName: "writer",
@@ -1031,12 +1032,78 @@ describe("Phase 4 BookSoulBinding", () => {
       productionAttempt: attempt,
       messages: [
         { role: "system", content: "write" },
-        { role: "user", content: externalContextText },
+        { role: "user", content: "derived prompt without the owner bytes" },
       ],
       now: () => NOW,
-    }));
+    }))).rejects.toThrow(/exact receipt-bound external context bytes/i);
+
+    const [prepared, observer, settler] = await runWithProductionInputBundle(bundle, async () => {
+      const primary = await prepareFictionContentInvocation({
+        projectRoot: f.root,
+        bookId: f.bookId,
+        agentName: "writer",
+        stage: "writer",
+        model: "test-model",
+        productionAttempt: attempt,
+        messages: [
+          { role: "system", content: "write" },
+          { role: "user", content: externalContextText },
+        ],
+        now: () => NOW,
+      });
+      const derivedObserver = await prepareFictionContentInvocation({
+        projectRoot: f.root,
+        bookId: f.bookId,
+        agentName: "writer",
+        stage: "writer-observer",
+        model: "test-model",
+        productionAttempt: attempt,
+        messages: [
+          { role: "system", content: "observe" },
+          { role: "user", content: "extract facts from the completed chapter" },
+        ],
+        now: () => NOW,
+      });
+      const derivedSettler = await prepareFictionContentInvocation({
+        projectRoot: f.root,
+        bookId: f.bookId,
+        agentName: "writer",
+        stage: "writer-settler",
+        model: "test-model",
+        productionAttempt: attempt,
+        messages: [
+          { role: "system", content: "settle" },
+          { role: "user", content: "merge the observed facts" },
+        ],
+        now: () => NOW,
+      });
+      return [primary, derivedObserver, derivedSettler] as const;
+    });
     expect(prepared.messages[0]?.content).toContain(promptInjection);
     expect(prepared.receipt.productionInputs).toEqual(receipt);
+    for (const derived of [observer, settler]) {
+      expect(derived.messages[0]?.content).toContain(promptInjection);
+      expect(derived.messages
+        .filter((message) => message.role === "system")
+        .map((message) => message.content)
+        .join("\n")
+        .split(promptInjection)).toHaveLength(2);
+      expect(derived.messages.some((message) => message.content.includes(externalContextText))).toBe(false);
+      expect(derived.receipt.productionInputs).toEqual(receipt);
+      expect(derived.receipt.productionOperationId).toBe(attempt.productionOperationId);
+      expect(derived.receipt.attemptId).toBe(attempt.attemptId);
+    }
+    expect(observer.receipt.stage).toBe("writer-observer");
+    expect(settler.receipt.stage).toBe("writer-settler");
+    await expect(runWithProductionInputBundle(bundle, () => prepareFictionContentInvocation({
+      projectRoot: f.root,
+      bookId: f.bookId,
+      agentName: "writer",
+      stage: "writer-unclassified",
+      model: "test-model",
+      productionAttempt: attempt,
+      messages: [{ role: "user", content: "unclassified" }],
+    }))).rejects.toThrow(/invalid host-owned Writer invocation stage/i);
     const persisted = await readFile(join(
       f.bookDir,
       "story",

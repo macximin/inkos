@@ -3507,7 +3507,7 @@ export class PipelineRunner {
       bookId,
       operationKind: "repair-chapter-state",
       chapterNumber: targetChapter,
-      requiredStages: ["writer", "auditor"],
+      requiredStages: ["writer-settler", "auditor"],
       productionAttempt,
     });
     return await runWithFictionContentOperation(fictionOperation, async () => {
@@ -3669,7 +3669,7 @@ export class PipelineRunner {
       bookId,
       operationKind: "resync-chapter-artifacts",
       chapterNumber: targetChapter,
-      requiredStages: ["writer", "auditor"],
+      requiredStages: ["writer-settler", "auditor"],
       productionAttempt,
     });
     return await runWithFictionContentOperation(fictionOperation, async () => {

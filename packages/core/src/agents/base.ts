@@ -29,6 +29,11 @@ interface AgentChatOptions {
   readonly maxTokens?: number;
   readonly webSearch?: boolean;
   readonly onTextDelta?: (text: string) => void;
+  /**
+   * Host-owned substage for multi-call agents. This value is evidence metadata
+   * and must never be forwarded to the provider request.
+   */
+  readonly fictionContentInvocationStage?: "writer-observer" | "writer-settler";
 }
 
 export abstract class BaseAgent {
@@ -67,9 +72,19 @@ export abstract class BaseAgent {
     if (!agentName) {
       throw new Error("BaseAgent.name must be non-empty.");
     }
-    const stage = this.ctx.bookId
+    const configuredStage = this.ctx.bookId
       ? this.ctx.fictionContentStage?.trim() || agentName
       : undefined;
+    const invocationStage = options?.fictionContentInvocationStage;
+    const writerPrimaryStage = configuredStage === "writer" || configuredStage === "writer-creative";
+    if (this.ctx.bookId && invocationStage && (agentName !== "writer" || !writerPrimaryStage)) {
+      throw new Error("Writer follow-up stages may only be selected by the host-owned Writer agent.");
+    }
+    const stage = invocationStage ?? configuredStage;
+    const {
+      fictionContentInvocationStage: _hostInvocationStage,
+      ...providerOptions
+    } = options ?? {};
     const prepared = stage && this.ctx.bookId
       ? await prepareFictionContentInvocation({
           projectRoot: this.ctx.projectRoot,
@@ -80,9 +95,9 @@ export abstract class BaseAgent {
           reasoningEffort: this.ctx.reasoningEffort,
           messages,
           options: {
-            temperature: options?.temperature,
-            maxTokens: options?.maxTokens,
-            webSearch: options?.webSearch,
+            temperature: providerOptions.temperature,
+            maxTokens: providerOptions.maxTokens,
+            webSearch: providerOptions.webSearch,
           },
           evidenceBookDir: this.ctx.fictionContentEvidenceBookDir,
         })
@@ -94,7 +109,7 @@ export abstract class BaseAgent {
         this.ctx.model,
         prepared?.messages ?? messages,
         {
-          ...options,
+          ...providerOptions,
           onStreamProgress: this.ctx.onStreamProgress,
           signal: this.ctx.signal,
         },

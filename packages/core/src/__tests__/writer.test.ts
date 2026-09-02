@@ -829,6 +829,13 @@ describe("WriterAgent", () => {
       });
 
       const settlePrompt = (chatSpy.mock.calls[2]?.[0] as ReadonlyArray<{ content: string }> | undefined)?.[1]?.content ?? "";
+      expect(chatSpy.mock.calls[0]?.[1]).not.toHaveProperty("fictionContentInvocationStage");
+      expect(chatSpy.mock.calls[1]?.[1]).toMatchObject({
+        fictionContentInvocationStage: "writer-observer",
+      });
+      expect(chatSpy.mock.calls[2]?.[1]).toMatchObject({
+        fictionContentInvocationStage: "writer-settler",
+      });
       expect(settlePrompt).toContain("## 本章控制输入");
       expect(settlePrompt).toContain("story/chapter_summaries.md#99");
       expect(settlePrompt).toContain("| 99 | Locked Gate |");

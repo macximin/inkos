@@ -24,6 +24,19 @@ class ProbeAgent extends BaseAgent {
   }
 }
 
+class WriterFollowUpProbeAgent extends BaseAgent {
+  get name(): string {
+    return "writer";
+  }
+
+  runObserver(messages: ReadonlyArray<LLMMessage>): Promise<LLMResponse> {
+    return this.chat(messages, {
+      temperature: 0.5,
+      fictionContentInvocationStage: "writer-observer",
+    });
+  }
+}
+
 function context(projectRoot: string): AgentContext {
   return {
     client: { provider: "openai" } as never,
@@ -91,6 +104,45 @@ describe("BaseAgent fiction-content boundary", () => {
       messages: provider.mock.calls[0]?.[2],
       options: { maxTokens: 321, webSearch: true },
     }));
+  });
+
+  it("records a host-owned Writer follow-up stage without forwarding it to the provider", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-base-writer-follow-up-"));
+    const provider = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue(RESPONSE);
+    const ctx = {
+      ...context(root),
+      fictionContentStage: "writer",
+    };
+
+    await new WriterFollowUpProbeAgent(ctx).runObserver([
+      { role: "system", content: "Observe the completed chapter." },
+      { role: "user", content: "Extract facts." },
+    ]);
+
+    expect(provider.mock.calls[0]?.[3]).toMatchObject({ temperature: 0.5 });
+    expect(provider.mock.calls[0]?.[3]).not.toHaveProperty("fictionContentInvocationStage");
+    const audit = await verifyFictionContentInvocationReceipts(root, "demo-book");
+    expect(audit.invocations).toEqual([
+      expect.objectContaining({
+        agentName: "writer",
+        stage: "writer-observer",
+        status: "completed",
+      }),
+    ]);
+  });
+
+  it("keeps non-Book Writer follow-up calls compatible while stripping host-only metadata", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-base-unbound-writer-follow-up-"));
+    const provider = vi.spyOn(llmProvider, "chatCompletion").mockResolvedValue(RESPONSE);
+    const { bookId: _bookId, ...unboundContext } = context(root);
+
+    await new WriterFollowUpProbeAgent(unboundContext).runObserver([
+      { role: "system", content: "Observe without a Book binding." },
+      { role: "user", content: "Extract facts." },
+    ]);
+
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(provider.mock.calls[0]?.[3]).not.toHaveProperty("fictionContentInvocationStage");
   });
 
   it("records a provider refusal as non-completed evidence before rethrowing", async () => {

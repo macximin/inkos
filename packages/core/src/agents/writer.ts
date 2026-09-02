@@ -935,7 +935,10 @@ export class WriterAgent extends BaseAgent {
         { role: "system", content: observerSystem },
         { role: "user", content: observerUser },
       ],
-      { temperature: 0.5 },
+      {
+        temperature: 0.5,
+        fictionContentInvocationStage: "writer-observer",
+      },
     );
     const observations = observerResponse.content;
 
@@ -989,7 +992,10 @@ export class WriterAgent extends BaseAgent {
         { role: "system", content: settlerSystem },
         { role: "user", content: settlerUser },
       ],
-      { temperature: 0.3 },
+      {
+        temperature: 0.3,
+        fictionContentInvocationStage: "writer-settler",
+      },
     );
 
     let mergedSettlement: ReturnType<typeof parseSettlementOutput> & {

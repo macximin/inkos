@@ -4357,6 +4357,7 @@ describe("PipelineRunner", () => {
       expect.objectContaining({
         operationKind: "repair-chapter-state",
         chapterNumber: 1,
+        requiredStages: ["auditor", "writer-settler"],
       }),
     ]);
 
@@ -4552,6 +4553,7 @@ describe("PipelineRunner", () => {
       expect.objectContaining({
         operationKind: "resync-chapter-artifacts",
         chapterNumber: 1,
+        requiredStages: ["auditor", "writer-settler"],
       }),
     ]);
 
