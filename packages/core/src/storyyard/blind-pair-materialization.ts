@@ -982,7 +982,9 @@ export async function acknowledgeStoryyardEvaluation(input: {
   }
   assertFireflyReviewPacketV2Identity(packet);
   assertFireflyReviewDecisionV2MatchesPacket(decision, packet);
-  const ackReceiptPath = storyyardEvaluationAckRelativePath(pairId, decision.decisionId);
+  // The private source pair locates InkOS's label mapping, but the public ACK
+  // path must use the opaque pair ID already exposed to Storyyard.
+  const ackReceiptPath = storyyardEvaluationAckRelativePath(packet.comparison.pairId, decision.decisionId);
   const acknowledgedAt = (input.now ?? (() => new Date()))().toISOString();
   const unsigned = {
     schemaVersion: "firefly_review_evaluation_ack/v1" as const,

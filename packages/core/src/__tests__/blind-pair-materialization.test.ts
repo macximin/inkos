@@ -599,7 +599,8 @@ describe("blind-pair materialization", () => {
       now: () => new Date("2026-09-02T12:01:00.000Z"),
     });
     expect(ack).toMatchObject({ canonEffect: "none", manuscriptApply: false, status: "acknowledged" });
-    expect(ack.ackReceiptPath).toBe(storyyardEvaluationAckRelativePath(PAIR_ID, "decision-001"));
+    expect(transfer.pairId).not.toBe(PAIR_ID);
+    expect(ack.ackReceiptPath).toBe(storyyardEvaluationAckRelativePath(transfer.pairId, "decision-001"));
     await expect(acknowledgeStoryyardEvaluation({
       projectRoot: fixture.root, pairId: PAIR_ID, packetPath: materialized.artifact.path,
       decisionPath: "decision.json",
