@@ -7,7 +7,7 @@ import {
   type GenreProfileReadReceipt,
 } from "../models/genre-profile.js";
 import { Sha256HexSchema } from "./direction-context.js";
-import { SessionSoulBindingSchema } from "./soul-schema.js";
+import { SessionSoulBindingSchema, SoulAdoptionEvidenceSchema } from "./soul-schema.js";
 
 export const ProductionInputFileReceiptSchema = z.object({
   path: z.string().min(1),
@@ -31,8 +31,51 @@ export const ProductionSoulInputReceiptSchema = z.object({
   manifestSha256: Sha256HexSchema,
   resources: z.array(ProductionInputFileReceiptSchema),
   sourceRegistryReceiptSha256: Sha256HexSchema,
+  adoptionEvidence: SoulAdoptionEvidenceSchema.optional(),
+  adoptionEvidenceSha256: Sha256HexSchema.optional(),
+  executorSoulSha256: Sha256HexSchema.optional(),
+  writerSoulPackageSha256: Sha256HexSchema.optional(),
   inputSha256: Sha256HexSchema,
-}).strict();
+}).strict().superRefine((receipt, ctx) => {
+  const adoptionFields = [
+    receipt.adoptionEvidence,
+    receipt.adoptionEvidenceSha256,
+    receipt.executorSoulSha256,
+    receipt.writerSoulPackageSha256,
+  ];
+  if (adoptionFields.some(Boolean) && !adoptionFields.every(Boolean)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["adoptionEvidence"],
+      message: "Soul adoption evidence and all authority digests must be present together",
+    });
+    return;
+  }
+  if (
+    receipt.adoptionEvidence
+    && hashCanonical(receipt.adoptionEvidence) !== receipt.adoptionEvidenceSha256
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["adoptionEvidenceSha256"],
+      message: "Soul adoption evidence hash mismatch",
+    });
+  }
+  if (receipt.adoptionEvidence?.executorSoul.soulSha256 !== receipt.executorSoulSha256) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["executorSoulSha256"],
+      message: "Executor Soul digest mismatch",
+    });
+  }
+  if (receipt.adoptionEvidence?.writerSoulPackage.packageSha256 !== receipt.writerSoulPackageSha256) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["writerSoulPackageSha256"],
+      message: "Writer Soul package digest mismatch",
+    });
+  }
+});
 export type ProductionSoulInputReceipt = z.infer<typeof ProductionSoulInputReceiptSchema>;
 
 const ProductionInputReceiptUnsignedSchema = z.object({

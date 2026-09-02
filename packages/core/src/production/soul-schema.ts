@@ -1,8 +1,23 @@
 import { isAbsolute, normalize, sep } from "node:path";
 import { z } from "zod";
+import { GenreProfileReadReceiptSchema } from "../models/genre-profile.js";
 import { Sha256HexSchema } from "./direction-context.js";
 
 const SafeIdentitySchema = z.string().trim().min(1).max(240);
+const GitCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
+const SafeEvidencePathSchema = z.string().trim().min(1).superRefine((value, ctx) => {
+  const normalized = normalize(value);
+  if (
+    isAbsolute(value)
+    || value.includes("\\")
+    || normalized !== value
+    || normalized === "."
+    || normalized === ".."
+    || normalized.startsWith(`..${sep}`)
+  ) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Soul evidence path must stay inside its repository" });
+  }
+});
 
 export const SoulLifecycleSchema = z.enum(["neutral", "candidate", "promoted"]);
 export type SoulLifecycle = z.infer<typeof SoulLifecycleSchema>;
@@ -42,8 +57,52 @@ export const SoulPackageManifestSchema = z.object({
 });
 export type SoulPackageManifest = z.infer<typeof SoulPackageManifestSchema>;
 
-export const SoulBindingDecisionReceiptSchema = z.object({
-  schemaVersion: z.literal("soul-binding-decision/v1"),
+export const SoulEvidenceArtifactRefSchema = z.object({
+  path: SafeEvidencePathSchema,
+  sha256: Sha256HexSchema,
+  sizeBytes: z.number().int().positive(),
+}).strict();
+export type SoulEvidenceArtifactRef = z.infer<typeof SoulEvidenceArtifactRefSchema>;
+
+export const SoulAdoptionEvidenceSchema = z.object({
+  schemaVersion: z.literal("soul-adoption-evidence/v1"),
+  referenceLab: z.object({
+    repo: z.literal("firefly_reference_lab"),
+    commit: GitCommitSchema,
+    analysisProfile: SoulEvidenceArtifactRefSchema,
+    managerQa: SoulEvidenceArtifactRefSchema,
+    routingCatalog: SoulEvidenceArtifactRefSchema,
+  }).strict(),
+  writerGenreProfile: z.object({
+    repo: z.literal("inkos"),
+    commit: GitCommitSchema,
+    receipt: GenreProfileReadReceiptSchema,
+  }).strict(),
+  executorSoul: z.object({
+    repo: z.literal("firefly_studio"),
+    commit: GitCommitSchema,
+    profileRegistry: SoulEvidenceArtifactRefSchema,
+    profileId: SafeIdentitySchema,
+    soulSha256: Sha256HexSchema,
+    configSha256: Sha256HexSchema,
+  }).strict(),
+  writerSoulPackage: z.object({
+    repo: z.literal("inkos"),
+    commit: GitCommitSchema,
+    packageManifest: SoulEvidenceArtifactRefSchema,
+    files: z.array(SoulEvidenceArtifactRefSchema).min(1),
+    packageSha256: Sha256HexSchema,
+  }).strict(),
+  hqAdoption: z.object({
+    repo: z.literal("firefly_studio"),
+    commit: GitCommitSchema,
+    decision: SoulEvidenceArtifactRefSchema,
+    activeRegistry: SoulEvidenceArtifactRefSchema,
+  }).strict().nullable(),
+}).strict();
+export type SoulAdoptionEvidence = z.infer<typeof SoulAdoptionEvidenceSchema>;
+
+const SoulBindingDecisionReceiptBaseSchema = z.object({
   kind: z.literal("bind-soul"),
   decisionId: SafeIdentitySchema,
   actorId: SafeIdentitySchema,
@@ -53,11 +112,24 @@ export const SoulBindingDecisionReceiptSchema = z.object({
   soulVersion: SafeIdentitySchema,
   status: SoulLifecycleSchema,
   createdAt: z.string().datetime(),
+});
+
+export const SoulBindingDecisionReceiptV1Schema = SoulBindingDecisionReceiptBaseSchema.extend({
+  schemaVersion: z.literal("soul-binding-decision/v1"),
 }).strict();
+
+export const SoulBindingDecisionReceiptV2Schema = SoulBindingDecisionReceiptBaseSchema.extend({
+  schemaVersion: z.literal("soul-binding-decision/v2"),
+  adoptionEvidence: SoulAdoptionEvidenceSchema,
+}).strict();
+
+export const SoulBindingDecisionReceiptSchema = z.discriminatedUnion("schemaVersion", [
+  SoulBindingDecisionReceiptV1Schema,
+  SoulBindingDecisionReceiptV2Schema,
+]);
 export type SoulBindingDecisionReceipt = z.infer<typeof SoulBindingDecisionReceiptSchema>;
 
-const BookSoulBindingUnsignedSchema = z.object({
-  schemaVersion: z.literal("book-soul-binding/v1"),
+const BookSoulBindingBaseSchema = z.object({
   bindingVersion: z.number().int().positive(),
   bookId: SafeIdentitySchema,
   soulId: SafeIdentitySchema,
@@ -71,13 +143,36 @@ const BookSoulBindingUnsignedSchema = z.object({
   decisionReceiptSha256: Sha256HexSchema,
   previousBindingSha256: Sha256HexSchema.nullable(),
   boundAt: z.string().datetime(),
+});
+
+const BookSoulBindingV1UnsignedSchema = BookSoulBindingBaseSchema.extend({
+  schemaVersion: z.literal("book-soul-binding/v1"),
 }).strict();
 
-export const BookSoulBindingSchema = BookSoulBindingUnsignedSchema.extend({
+const BookSoulBindingV2UnsignedSchema = BookSoulBindingBaseSchema.extend({
+  schemaVersion: z.literal("book-soul-binding/v2"),
+  adoptionEvidence: SoulAdoptionEvidenceSchema,
+  adoptionEvidenceSha256: Sha256HexSchema,
+  executorSoulSha256: Sha256HexSchema,
+  writerSoulPackageSha256: Sha256HexSchema,
+}).strict();
+
+export const BookSoulBindingV1Schema = BookSoulBindingV1UnsignedSchema.extend({
   bindingSha256: Sha256HexSchema,
 }).strict();
+
+export const BookSoulBindingV2Schema = BookSoulBindingV2UnsignedSchema.extend({
+  bindingSha256: Sha256HexSchema,
+}).strict();
+
+export const BookSoulBindingSchema = z.discriminatedUnion("schemaVersion", [
+  BookSoulBindingV1Schema,
+  BookSoulBindingV2Schema,
+]);
 export type BookSoulBinding = z.infer<typeof BookSoulBindingSchema>;
-export type BookSoulBindingUnsigned = z.infer<typeof BookSoulBindingUnsignedSchema>;
+export type BookSoulBindingUnsigned =
+  | z.infer<typeof BookSoulBindingV1UnsignedSchema>
+  | z.infer<typeof BookSoulBindingV2UnsignedSchema>;
 
 const ActiveSoulPointerUnsignedSchema = z.object({
   schemaVersion: z.literal("active-soul-pointer/v1"),

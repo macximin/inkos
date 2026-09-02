@@ -999,7 +999,13 @@ describe("agent deterministic writing tools", () => {
       argumentsSha256: "c".repeat(64),
       outcomeFileSha256: "d".repeat(64),
     };
+    const expectedSoulBinding = {
+      soulId: "male-modern-fantasy-ko",
+      soulVersion: "v1",
+      bindingSha256: "e".repeat(64),
+    };
     const tool = createSubAgentTool(pipeline as never, "harbor", root, {
+      expectedSoulBinding,
       getProductionTurnContext: () => ({
         sessionId: "session-phase5-agent",
         requestId: "request-phase5-agent",
@@ -1022,6 +1028,7 @@ describe("agent deterministic writing tools", () => {
       sessionId: "session-phase5-agent",
       requestId: "request-phase5-agent",
       ownerDirection,
+      expectedSoulBinding,
       taskGuidance: expect.objectContaining({
         source: "model-mediated",
         transcriptRef: expect.objectContaining({ toolCallId: "tool-phase5-agent" }),

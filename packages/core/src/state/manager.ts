@@ -146,8 +146,29 @@ export class StateManager {
   }
 
   async acquireBookLock(bookId: string): Promise<() => Promise<void>> {
+    return this.acquireBookScopedLock(bookId, ".write.lock", true, true);
+  }
+
+  /**
+   * Serializes a governed Agent turn with Soul rebinding for one Book.
+   *
+   * Agent sessions own this lease from the last provider-start binding check
+   * until every tool call has completed. Soul rebinding takes the same lease
+   * before the ordinary Book write lock, so an active turn can never commit a
+   * direct mutation under a different Soul tuple than the one it prompted.
+   */
+  async acquireBookSoulTurnLock(bookId: string): Promise<() => Promise<void>> {
+    return this.acquireBookScopedLock(bookId, ".soul-turn.lock", false, false);
+  }
+
+  private async acquireBookScopedLock(
+    bookId: string,
+    lockFileName: ".write.lock" | ".soul-turn.lock",
+    recoverBookState: boolean,
+    reclaimExpiredLiveLease: boolean,
+  ): Promise<() => Promise<void>> {
     await mkdir(this.bookDir(bookId), { recursive: true });
-    const lockPath = join(this.bookDir(bookId), ".write.lock");
+    const lockPath = join(this.bookDir(bookId), lockFileName);
     const lockKey = this.normalizeLockKey(lockPath);
     const existingOwner = processBookLocks.get(lockKey);
     if (existingOwner) {
@@ -189,7 +210,7 @@ export class StateManager {
             }
             throw snapshotError;
           }
-          if (!this.isStaleLock(snapshot.metadata, snapshot.mtimeMs)) {
+          if (!this.isStaleLock(snapshot.metadata, snapshot.mtimeMs, reclaimExpiredLiveLease)) {
             throw new BookWriteLockError(bookId, lockPath, snapshot.raw);
           }
           await this.removeStaleLock(lockPath, snapshot.raw);
@@ -200,28 +221,30 @@ export class StateManager {
         throw new BookWriteLockError(bookId, lockPath);
       }
 
-      // A previous process may have died between the durable phases of a
-      // Book-local multi-file commit. Recovery is safe only after this exact
-      // Book lock is ours and before any caller can observe or mutate files.
-      try {
-        await recoverAtomicFileSets(this.bookDir(bookId));
-        await recoverChapterPersistenceTransactions(this.bookDir(bookId));
-        await recoverBookMutationTransactions(this.bookDir(bookId));
-      } catch (recoveryError) {
+      if (recoverBookState) {
+        // A previous process may have died between the durable phases of a
+        // Book-local multi-file commit. Recovery is safe only after this exact
+        // Book lock is ours and before any caller can observe or mutate files.
         try {
-          const snapshot = await this.readLockSnapshot(lockPath);
-          if (snapshot.metadata?.token === owner.metadata.token) {
-            await this.unlinkWithRetry(lockPath);
+          await recoverAtomicFileSets(this.bookDir(bookId));
+          await recoverChapterPersistenceTransactions(this.bookDir(bookId));
+          await recoverBookMutationTransactions(this.bookDir(bookId));
+        } catch (recoveryError) {
+          try {
+            const snapshot = await this.readLockSnapshot(lockPath);
+            if (snapshot.metadata?.token === owner.metadata.token) {
+              await this.unlinkWithRetry(lockPath);
+            }
+          } catch (cleanupError) {
+            if ((cleanupError as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+              throw new AggregateError(
+                [recoveryError, cleanupError],
+                `Book ${JSON.stringify(bookId)} recovery failed and its temporary lock could not be removed`,
+              );
+            }
           }
-        } catch (cleanupError) {
-          if ((cleanupError as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-            throw new AggregateError(
-              [recoveryError, cleanupError],
-              `Book ${JSON.stringify(bookId)} recovery failed and its temporary lock could not be removed`,
-            );
-          }
+          throw recoveryError;
         }
-        throw recoveryError;
       }
 
       this.startLockHeartbeat(lockPath, lockKey, owner);
@@ -316,7 +339,11 @@ export class StateManager {
     return { raw, metadata: this.parseLockMetadata(raw), mtimeMs: lockStat.mtimeMs };
   }
 
-  private isStaleLock(metadata: Partial<BookLockMetadata> | undefined, mtimeMs: number): boolean {
+  private isStaleLock(
+    metadata: Partial<BookLockMetadata> | undefined,
+    mtimeMs: number,
+    reclaimExpiredLiveLease: boolean,
+  ): boolean {
     if (metadata?.pid === process.pid) {
       // No processBookLocks owner existed before this acquisition reserved its
       // slot, so a same-pid file here can only be orphaned from an older task.
@@ -327,7 +354,15 @@ export class StateManager {
     }
     const heartbeatAt = metadata?.heartbeatAt ?? mtimeMs;
     const hasLeaseMetadata = metadata?.version === 1 && typeof metadata.token === "string";
-    return hasLeaseMetadata && Date.now() - heartbeatAt > BOOK_LOCK_LEASE_MS;
+    // Ordinary Book writes retain the historical expired-lease recovery for a
+    // PID that may have been reused. A Soul-turn lease is an execution
+    // authority fence: reclaiming it while the recorded process is still live
+    // could let that process resume and commit under a newly rebound Soul.
+    // Ambiguous live-PID Soul locks therefore fail closed and require operator
+    // recovery instead of time-based automatic takeover.
+    return reclaimExpiredLiveLease
+      && hasLeaseMetadata
+      && Date.now() - heartbeatAt > BOOK_LOCK_LEASE_MS;
   }
 
   private async removeStaleLock(lockPath: string, expectedRaw: string): Promise<void> {

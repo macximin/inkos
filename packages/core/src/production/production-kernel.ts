@@ -256,6 +256,13 @@ export async function executeObserveOnlyWriteNext(input: {
       input.projectRoot,
       book.genre,
     )).receipt;
+    if (
+      activeSoul?.binding.schemaVersion === "book-soul-binding/v2"
+      && hashCanonicalJson(activeSoul.binding.adoptionEvidence.writerGenreProfile.receipt)
+        !== hashCanonicalJson(writerGenreProfile)
+    ) {
+      throw new Error("Active Soul adoption evidence no longer matches the Writer genre profile resolved for this Book.");
+    }
     const productionInputs = createProductionInputReceipt({
       schemaVersion: "production-input-receipt/v1",
       soul: activeSoul?.receipt ?? null,

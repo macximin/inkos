@@ -1035,6 +1035,31 @@ describe("StateManager", () => {
       }
     });
 
+    it("never reclaims an expired Soul-turn lease while its recorded process is live", async () => {
+      const bookId = "soul-turn-live-expired-lease";
+      await mkdir(manager.bookDir(bookId), { recursive: true });
+      const lockPath = join(manager.bookDir(bookId), ".soul-turn.lock");
+      const oldTimestamp = Date.now() - 10 * 60_000;
+      const original = JSON.stringify({
+        version: 1,
+        pid: 424244,
+        token: "live-soul-turn-owner",
+        startedAt: oldTimestamp,
+        heartbeatAt: oldTimestamp,
+      });
+      await writeFile(lockPath, original, "utf-8");
+
+      const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+      try {
+        await expect(manager.acquireBookSoulTurnLock(bookId)).rejects.toMatchObject({
+          code: "BOOK_BUSY",
+        });
+        await expect(readFile(lockPath, "utf-8")).resolves.toBe(original);
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+
     it("refreshes the lease heartbeat while a write remains active", async () => {
       vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
       const bookId = "lock-book-heartbeat";

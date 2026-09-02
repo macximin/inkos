@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, readdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, stat, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -320,6 +320,52 @@ import {
   FICTION_CONTENT_CONTRACT,
   verifyFictionContentInvocationReceipts,
 } from "../production/fiction-content-contract.js";
+import {
+  bindBookSoul,
+  loadActiveBookSoulSessionBinding,
+} from "../production/book-soul-binding.js";
+import { StateManager } from "../state/manager.js";
+
+async function bindNeutralTestSoul(
+  projectRoot: string,
+  bookId: string,
+  version: string,
+  decisionId: string,
+): Promise<Awaited<ReturnType<typeof bindBookSoul>>> {
+  const sourceRoot = join(projectRoot, `soul-${version}-${decisionId}`);
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(join(sourceRoot, "SOUL.md"), `Soul ${version}\n`, "utf8");
+  await writeFile(join(sourceRoot, "manifest.json"), `${JSON.stringify({
+    schemaVersion: "soul-package/v1",
+    soulId: "agent-session-test-soul",
+    version,
+    promptPath: "SOUL.md",
+    resources: [],
+  })}\n`, "utf8");
+  const registryPath = join(projectRoot, `soul-registry-${decisionId}.json`);
+  await writeFile(registryPath, "{}\n", "utf8");
+  const decisionPath = join(projectRoot, `soul-decision-${decisionId}.json`);
+  await writeFile(decisionPath, `${JSON.stringify({
+    schemaVersion: "soul-binding-decision/v1",
+    kind: "bind-soul",
+    decisionId,
+    actorId: "owner",
+    actorRole: "owner",
+    bookId,
+    soulId: "agent-session-test-soul",
+    soulVersion: version,
+    status: "neutral",
+    createdAt: "2026-08-28T03:00:00.000Z",
+  })}\n`, "utf8");
+  return bindBookSoul({
+    projectRoot,
+    bookId,
+    manifestPath: join(sourceRoot, "manifest.json"),
+    sourceRegistryReceiptPath: registryPath,
+    decisionReceiptPath: decisionPath,
+    status: "neutral",
+  });
+}
 
 async function writeProjectAgentSkill(
   projectRoot: string,
@@ -392,6 +438,9 @@ describe("runAgentSession cache — bookId switch", () => {
     evictAgentCache("ko-reference-session");
     evictAgentCache("governed-mutation-session");
     evictAgentCache("governed-stub-session");
+    evictAgentCache("direct-soul-session");
+    evictAgentCache("direct-soul-session-v2");
+    evictAgentCache("direct-soul-turn-lease");
     await rm(projectRoot, { recursive: true, force: true });
     if (otherProjectRoot) await rm(otherProjectRoot, { recursive: true, force: true });
   });
@@ -412,6 +461,134 @@ describe("runAgentSession cache — bookId switch", () => {
     )).rejects.toThrow('is bound to book "book-a", not "book-b"');
 
     expect(agentInstances).toHaveLength(1);
+  });
+
+  it("freezes the active Soul in direct Agent session headers and rejects drift before the next model call", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+    const state = new StateManager(projectRoot);
+    await state.saveBookConfig("book-a", {
+      id: "book-a",
+      title: "Book A",
+      platform: "other",
+      genre: "urban-fantasy",
+      status: "active",
+      targetChapters: 100,
+      chapterWordCount: 1800,
+      language: "zh",
+      createdAt: "2026-08-28T03:00:00.000Z",
+      updatedAt: "2026-08-28T03:00:00.000Z",
+    });
+    const first = await bindNeutralTestSoul(projectRoot, "book-a", "v1", "agent-session-soul-v1");
+    await runAgentSession(
+      { sessionId: "direct-soul-session", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
+      "first turn",
+    );
+    const firstHeader = (await readTranscriptEvents(projectRoot, "direct-soul-session"))
+      .find((event) => event.type === "session_created");
+    expect(firstHeader).toMatchObject({
+      type: "session_created",
+      soulBinding: {
+        soulId: first.soulId,
+        soulVersion: first.version,
+        bindingSha256: first.bindingSha256,
+      },
+    });
+
+    const second = await bindNeutralTestSoul(projectRoot, "book-a", "v2", "agent-session-soul-v2");
+    const modelCallsBeforeDrift = streamCalls.length;
+    await expect(runAgentSession(
+      { sessionId: "direct-soul-session", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
+      "must not reach the model",
+    )).rejects.toThrow(/Start a new session for the current Soul binding/u);
+    expect(streamCalls).toHaveLength(modelCallsBeforeDrift);
+
+    await runAgentSession(
+      { sessionId: "direct-soul-session-v2", bookId: "book-a", language: "zh", pipeline, projectRoot, model },
+      "new session",
+    );
+    const secondHeader = (await readTranscriptEvents(projectRoot, "direct-soul-session-v2"))
+      .find((event) => event.type === "session_created");
+    expect(secondHeader).toMatchObject({
+      soulBinding: {
+        soulId: second.soulId,
+        soulVersion: second.version,
+        bindingSha256: second.bindingSha256,
+      },
+    });
+  });
+
+  it("holds the Soul tuple from provider start through all direct tool mutation completion", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
+    const pipeline = {} as any;
+    const state = new StateManager(projectRoot);
+    await state.saveBookConfig("book-a", {
+      id: "book-a",
+      title: "Book A",
+      platform: "other",
+      genre: "urban-fantasy",
+      status: "active",
+      targetChapters: 100,
+      chapterWordCount: 1800,
+      language: "zh",
+      createdAt: "2026-08-28T03:00:00.000Z",
+      updatedAt: "2026-08-28T03:00:00.000Z",
+    });
+    const first = await bindNeutralTestSoul(projectRoot, "book-a", "v1", "agent-turn-lease-v1");
+
+    const running = runAgentSession(
+      {
+        sessionId: "direct-soul-turn-lease",
+        bookId: "book-a",
+        language: "zh",
+        pipeline,
+        projectRoot,
+        model,
+      },
+      "hold for interleave",
+    );
+    if (heldStreamCompletions.length === 0) {
+      await new Promise<void>((resolve) => {
+        heldStreamWaiters.push(resolve);
+      });
+    }
+    await expect(stat(join(projectRoot, "books", "book-a", ".soul-turn.lock"))).resolves.toMatchObject({});
+    const turnToolNames = agentInstances.at(-1).state.tools.map((tool: { name: string }) => tool.name);
+    expect(turnToolNames).toEqual(expect.arrayContaining([
+      "sub_agent",
+      "write_truth_file",
+      "patch_chapter_text",
+      "delete_latest_chapter",
+      "replace_story_rails",
+      "apply_story_rail_reflow",
+      "discard_story_rail_reflow",
+    ]));
+
+    await expect(bindNeutralTestSoul(
+      projectRoot,
+      "book-a",
+      "v2",
+      "agent-turn-lease-v2",
+    )).rejects.toMatchObject({ code: "BOOK_BUSY" });
+    await expect(loadActiveBookSoulSessionBinding(projectRoot, "book-a")).resolves.toMatchObject({
+      soulId: first.soulId,
+      soulVersion: first.version,
+      bindingSha256: first.bindingSha256,
+    });
+
+    const finishStream = heldStreamCompletions.shift();
+    expect(finishStream).toBeTypeOf("function");
+    finishStream?.();
+    await running;
+    await expect(stat(join(projectRoot, "books", "book-a", ".soul-turn.lock"))).rejects.toThrow();
+
+    const second = await bindNeutralTestSoul(
+      projectRoot,
+      "book-a",
+      "v2",
+      "agent-turn-lease-v2",
+    );
+    expect(second.version).toBe("v2");
   });
 
   it("routes Korean book sessions to Korean sub-agent and reference-management copy", async () => {

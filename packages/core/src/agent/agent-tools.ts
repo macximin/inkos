@@ -51,6 +51,7 @@ import {
   type ResolvedProductionDirectionContext,
 } from "../production/direction-context.js";
 import { hashCanonicalJson, type FictionContentToolAuthorization } from "../production/fiction-content-contract.js";
+import type { SessionSoulBinding } from "../production/soul-schema.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -709,6 +710,7 @@ export function createSubAgentTool(
       readonly ownerDirection?: OwnerDirectionReference;
       readonly toolAuthorization?: FictionContentToolAuthorization;
     } | undefined;
+    readonly expectedSoulBinding?: SessionSoulBinding | null;
   } = {},
 ): AgentTool<any> {
   const surfaceLanguage = options.language ?? "en";
@@ -1002,6 +1004,7 @@ export function createSubAgentTool(
                     }),
                     toolArgsSha256: toolAuthorization.argumentsSha256,
                   },
+                  expectedSoulBinding: options.expectedSoulBinding ?? null,
                   ...(targetLength ? { targetLength } : {}),
                 }),
               );

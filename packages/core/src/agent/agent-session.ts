@@ -100,6 +100,12 @@ import {
 } from "../production/fiction-content-contract.js";
 import { createDetachedOwnerDirectionLease } from "../production/detached-payload-store.js";
 import type { OwnerDirectionReference } from "../production/direction-context.js";
+import {
+  loadActiveBookSoulSessionBinding,
+  sessionSoulBindingsEqual,
+} from "../production/book-soul-binding.js";
+import type { SessionSoulBinding } from "../production/soul-schema.js";
+import { StateManager } from "../state/manager.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -193,6 +199,7 @@ interface CachedAgent {
   sessionId: string;
   projectRoot: string;
   bookId: string | null;
+  soulBinding: SessionSoulBinding | null;
   sessionKind: SessionKind;
   actionSource: NonNullable<AgentSessionConfig["actionSource"]>;
   requestedIntent: AgentSessionConfig["requestedIntent"];
@@ -433,6 +440,27 @@ function localAssistantStopStream(model: Model<Api>): AssistantMessageEventStrea
 
 function isGovernedBookSession(bookId: string | null, sessionKind: SessionKind): bookId is string {
   return Boolean(bookId) && (sessionKind === "book" || sessionKind === "edit");
+}
+
+function soulBindingDriftError(sessionId: string): Error {
+  return new Error(
+    `Book Soul binding changed while session ${JSON.stringify(sessionId)} was active. Start a new session for the current Soul binding.`,
+  );
+}
+
+async function assertFrozenSoulBindingCurrent(input: {
+  readonly projectRoot: string;
+  readonly sessionId: string;
+  readonly bookId: string | null;
+  readonly sessionKind: SessionKind;
+  readonly frozenSoulBinding: SessionSoulBinding | null;
+}): Promise<void> {
+  const activeSoulBinding = isGovernedBookSession(input.bookId, input.sessionKind)
+    ? await loadActiveBookSoulSessionBinding(input.projectRoot, input.bookId)
+    : null;
+  if (!sessionSoulBindingsEqual(input.frozenSoulBinding, activeSoulBinding)) {
+    throw soulBindingDriftError(input.sessionId);
+  }
 }
 
 function serializablePiModel(model: Model<Api>): unknown {
@@ -851,6 +879,7 @@ async function ensureSessionCreatedEvent(
   sessionId: string,
   bookId: string | null,
   sessionKind?: SessionKind,
+  soulBinding?: SessionSoulBinding | null,
 ): Promise<void> {
   await appendTranscriptEvents(projectRoot, sessionId, ({ events, nextSeq }) => {
     if (events.some((event) => event.type === "session_created")) return [];
@@ -864,6 +893,7 @@ async function ensureSessionCreatedEvent(
       timestamp: now,
       bookId,
       ...(sessionKind ? { sessionKind } : {}),
+      ...(soulBinding ? { soulBinding } : {}),
       title: null,
       createdAt: now,
       updatedAt: now,
@@ -1155,6 +1185,7 @@ const PRODUCTION_MUTATION_TOOL_NAMES = new Set([
 type CreateAgentToolsForModeParams = {
   readonly pipeline: PipelineRunner;
   readonly bookId: string | null;
+  readonly expectedSoulBinding: SessionSoulBinding | null;
   readonly sessionId: string;
   readonly sessionKind: SessionKind;
   readonly actionSource: NonNullable<AgentSessionConfig["actionSource"]>;
@@ -1187,6 +1218,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
     actionPayload: params.actionPayload,
     language: surfaceLanguage,
     getProductionTurnContext: params.getProductionTurnContext,
+    expectedSoulBinding: params.expectedSoulBinding,
   });
   const proposalTool = createProposeActionTool(lang, {
     sameSession: params.sessionKind !== "chat",
@@ -1286,6 +1318,7 @@ function createModeTools(params: CreateAgentToolsForModeParams) {
         architectCreateOnly: true,
         language: surfaceLanguage,
         getProductionTurnContext: params.getProductionTurnContext,
+        expectedSoulBinding: params.expectedSoulBinding,
       })];
     }
     return [proposalTool, researchTool, materialTool, materialRetrievalTool];
@@ -1377,6 +1410,9 @@ async function runAgentSessionUnlocked(
   const actionPayloadKey = actionPayloadCacheKey(actionPayload);
   const transcriptEvents = await readTranscriptEventsStrict(projectRoot, sessionId);
   const transcriptBinding = deriveTranscriptSessionBinding(transcriptEvents, sessionId);
+  const frozenSoulBinding = isGovernedBookSession(bookId, sessionKind)
+    ? await loadActiveBookSoulSessionBinding(projectRoot, bookId)
+    : null;
   if (transcriptBinding) {
     if (transcriptBinding.bookId !== bookId) {
       throw new Error(
@@ -1387,6 +1423,9 @@ async function runAgentSessionUnlocked(
       throw new Error(
         `Session ${JSON.stringify(sessionId)} is bound to kind ${JSON.stringify(transcriptBinding.sessionKind)}, not ${JSON.stringify(sessionKind)}.`,
       );
+    }
+    if (!sessionSoulBindingsEqual(transcriptBinding.soulBinding, frozenSoulBinding)) {
+      throw soulBindingDriftError(sessionId);
     }
   }
   const configuredSkills = await loadAvailableAgentSkills({ projectRoot });
@@ -1418,6 +1457,7 @@ async function runAgentSessionUnlocked(
     const modelChanged = cached.modelIdentity !== requestedModelIdentity;
     const projectRootChanged = cached.projectRoot !== projectRoot;
     const bookChanged = cached.bookId !== bookId;
+    const soulBindingChanged = !sessionSoulBindingsEqual(cached.soulBinding, frozenSoulBinding);
     const sessionKindChanged = cached.sessionKind !== sessionKind;
     const actionSourceChanged = cached.actionSource !== actionSource;
     const requestedIntentChanged = cached.requestedIntent !== requestedIntent;
@@ -1435,6 +1475,7 @@ async function runAgentSessionUnlocked(
       modelChanged ||
       projectRootChanged ||
       bookChanged ||
+      soulBindingChanged ||
       sessionKindChanged ||
       actionSourceChanged ||
       requestedIntentChanged ||
@@ -1501,6 +1542,7 @@ async function runAgentSessionUnlocked(
     const agentTools = createAgentToolsForMode({
       pipeline,
       bookId,
+      expectedSoulBinding: frozenSoulBinding,
       sessionId,
       sessionKind,
       actionSource,
@@ -1615,6 +1657,20 @@ async function runAgentSessionUnlocked(
         ) {
           return undefined;
         }
+        try {
+          await assertFrozenSoulBindingCurrent({
+            projectRoot,
+            sessionId,
+            bookId,
+            sessionKind,
+            frozenSoulBinding,
+          });
+        } catch (error) {
+          return {
+            block: true,
+            reason: `Blocked: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
         const authorized = authorizedMutationCalls.get(toolCall.id);
         authorizedMutationCalls.delete(toolCall.id);
         if (!authorized) {
@@ -1664,6 +1720,7 @@ async function runAgentSessionUnlocked(
       sessionId,
       projectRoot,
       bookId,
+      soulBinding: frozenSoulBinding,
       sessionKind,
       actionSource,
       requestedIntent,
@@ -1699,7 +1756,14 @@ async function runAgentSessionUnlocked(
 
   // ----- Prepare transcript persistence -----
   const requestId = randomUUID();
-  await ensureSessionCreatedEvent(projectRoot, sessionId, bookId, sessionKind);
+  await assertFrozenSoulBindingCurrent({
+    projectRoot,
+    sessionId,
+    bookId,
+    sessionKind,
+    frozenSoulBinding,
+  });
+  await ensureSessionCreatedEvent(projectRoot, sessionId, bookId, sessionKind, frozenSoulBinding);
   await appendAgentTranscriptEvent(projectRoot, sessionId, (seq) => ({
     type: "request_started",
     version: 1,
@@ -1810,17 +1874,34 @@ async function runAgentSessionUnlocked(
   const turnMessageStartIndex = agent.state.messages.length;
 
   try {
-    await runWithAgentTrajectory({
-      conversationId: opaqueConversationId(sessionId),
-      runId: requestId,
-      agentRole: "main",
-    }, async () => {
-      if (promptImages.length > 0) {
-        await agent.prompt(promptMessage, promptImages);
-      } else {
-        await agent.prompt(promptMessage);
-      }
-    });
+    const releaseSoulTurn = isGovernedBookSession(bookId, sessionKind)
+      ? await new StateManager(projectRoot).acquireBookSoulTurnLock(bookId)
+      : undefined;
+    try {
+      // This is the provider-start CAS. bindBookSoul takes the same lease, so
+      // the frozen tuple remains current through every tool round and through
+      // completion of writer, patch/delete, Rail, and other direct mutations.
+      await assertFrozenSoulBindingCurrent({
+        projectRoot,
+        sessionId,
+        bookId,
+        sessionKind,
+        frozenSoulBinding,
+      });
+      await runWithAgentTrajectory({
+        conversationId: opaqueConversationId(sessionId),
+        runId: requestId,
+        agentRole: "main",
+      }, async () => {
+        if (promptImages.length > 0) {
+          await agent.prompt(promptMessage, promptImages);
+        } else {
+          await agent.prompt(promptMessage);
+        }
+      });
+    } finally {
+      await releaseSoulTurn?.();
+    }
 
     finalAssistant = lastAssistantMessage(agent.state.messages);
     agent.state.messages = agent.state.messages.map((message, index) => (
