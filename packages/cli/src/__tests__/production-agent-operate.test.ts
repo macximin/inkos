@@ -26,7 +26,15 @@ function agentWorkOrder() {
     soulVersion: "v1",
     soulSha256: "c".repeat(64),
     promotionDecisionSha256: null,
-    isolationReceiptSha256: "d".repeat(64),
+    canaryIsolation: {
+      pairId: "pair-neutral-1",
+      path: ".inkos/canaries/pair-neutral-1/common-snapshot.json",
+      sha256: "d".repeat(64),
+      byteLength: 4096,
+      receiptSelfHash: "e".repeat(64),
+      isolationScopeSha256: "f".repeat(64),
+      commonSnapshotSha256: "0".repeat(64),
+    },
   };
   const bookId = "neutral-canary";
   const expectedSoulBinding = null;
@@ -38,6 +46,7 @@ function agentWorkOrder() {
     soulId: modeEvidence.soulId,
     soulVersion: modeEvidence.soulVersion,
     bindingSha256: null,
+    isolationScopeSha256: modeEvidence.canaryIsolation.isolationScopeSha256,
   }).slice(0, 40)}`;
   const args = { chapterCount: 1 as const, targetLength: { count: 1800, unit: "ko-chars" as const } };
   const instructionSha256 = directionTextSha256(instruction);
@@ -71,18 +80,98 @@ function agentWorkOrder() {
     },
     runtime: { hermesProfile: modeEvidence.profileId, model: "gpt-5.6-sol", reasoning: "high" },
     approvalMode: "human" as const,
-    approvedInputs: [{
-      repo: "firefly_studio",
-      commit: "1".repeat(40),
-      path: "adoptions/canaries/neutral-isolation.json",
-      sha256: modeEvidence.isolationReceiptSha256,
-      role: "promotion-canary-isolation",
-    }],
+    approvedInputs: [],
     privateInputs: [],
     requestedAt: "2026-09-02T00:00:00.000Z",
     timeoutMs: 600000,
     executionMode: "promotion-canary" as const,
     modeEvidence,
+  };
+}
+
+function productionWorkOrder() {
+  const base = agentWorkOrder();
+  const modeEvidence = {
+    lane: "genre-soul" as const,
+    profileId: "male-modern-fantasy-ko",
+    profileConfigSha256: "1".repeat(64),
+    profileLifecycle: "promoted" as const,
+    productionEnabled: true,
+    adoptionRegistrySha256: "2".repeat(64),
+    activeMatchingCount: 1 as const,
+    soulId: "male-modern-fantasy-ko",
+    soulVersion: "v1",
+    soulSha256: "3".repeat(64),
+    promotionDecisionSha256: "4".repeat(64),
+  };
+  const expectedSoulBinding = {
+    soulId: modeEvidence.soulId,
+    soulVersion: modeEvidence.soulVersion,
+    bindingSha256: "5".repeat(64),
+  };
+  const sessionId = `hq-agent-${hashCanonicalJson({
+    v: 1,
+    bookId: base.bookId,
+    lane: modeEvidence.lane,
+    profileId: modeEvidence.profileId,
+    soulId: modeEvidence.soulId,
+    soulVersion: modeEvidence.soulVersion,
+    bindingSha256: expectedSoulBinding.bindingSha256,
+    isolationScopeSha256: null,
+  }).slice(0, 40)}`;
+  const ownerDecision = {
+    ...base.ownerDecision,
+    argsSha256: hashCanonicalJson({
+      capability: "agent-operate",
+      bookId: base.bookId,
+      sessionId,
+      args: base.args,
+      expectedSoulBinding,
+      executionMode: "production",
+      modeEvidence,
+      instructionSha256: base.ownerDecision.instructionSha256,
+    }),
+  };
+  return {
+    ...base,
+    sessionId,
+    expectedSoulBinding,
+    ownerDecision,
+    runtime: { ...base.runtime, hermesProfile: modeEvidence.profileId },
+    executionMode: "production" as const,
+    modeEvidence,
+  };
+}
+
+function withBookId(bookId: string) {
+  const base = agentWorkOrder();
+  const sessionId = `hq-agent-${hashCanonicalJson({
+    v: 1,
+    bookId,
+    lane: base.modeEvidence.lane,
+    profileId: base.modeEvidence.profileId,
+    soulId: base.modeEvidence.soulId,
+    soulVersion: base.modeEvidence.soulVersion,
+    bindingSha256: null,
+    isolationScopeSha256: base.modeEvidence.canaryIsolation.isolationScopeSha256,
+  }).slice(0, 40)}`;
+  return {
+    ...base,
+    bookId,
+    sessionId,
+    ownerDecision: {
+      ...base.ownerDecision,
+      argsSha256: hashCanonicalJson({
+        capability: "agent-operate",
+        bookId,
+        sessionId,
+        args: base.args,
+        expectedSoulBinding: base.expectedSoulBinding,
+        executionMode: base.executionMode,
+        modeEvidence: base.modeEvidence,
+        instructionSha256: base.ownerDecision.instructionSha256,
+      }),
+    },
   };
 }
 
@@ -151,28 +240,67 @@ describe("production agent-operate strict ingress", () => {
   });
 
   it("accepts the deterministic neutral canary contract", () => {
+    expect(agentWorkOrder().sessionId).toBe("hq-agent-2214ce47dfd0eba6202c3c6b657ff759c1fc5882");
     expect(parseAgentWorkOrderV2(agentWorkOrder())).toEqual(agentWorkOrder());
+    expect(parseAgentWorkOrderV2(productionWorkOrder())).toEqual(productionWorkOrder());
   });
 
   it("rejects session, isolation, and lane/mode drift", () => {
     const workOrder = agentWorkOrder();
     expect(() => parseAgentWorkOrderV2({ ...workOrder, sessionId: "hq-agent-wrong" })).toThrow(/deterministic/i);
-    const { isolationReceiptSha256: _isolation, ...withoutIsolation } = workOrder.modeEvidence;
+    const { canaryIsolation: _isolation, ...withoutIsolation } = workOrder.modeEvidence;
     expect(() => parseAgentWorkOrderV2({ ...workOrder, modeEvidence: withoutIsolation })).toThrow(/isolation/i);
+    expect(() => parseAgentWorkOrderV2({
+      ...workOrder,
+      modeEvidence: { ...workOrder.modeEvidence, isolationReceiptSha256: "d".repeat(64) },
+    })).toThrow(/unknown field/i);
+    expect(() => parseAgentWorkOrderV2({
+      ...workOrder,
+      approvedInputs: [{ role: "promotion-canary-isolation" }],
+    })).toThrow(/approvedInputs/i);
+    expect(() => parseAgentWorkOrderV2({
+      ...workOrder,
+      modeEvidence: {
+        ...workOrder.modeEvidence,
+        canaryIsolation: { ...workOrder.modeEvidence.canaryIsolation, path: "wrong.json" },
+      },
+    })).toThrow(/canaryIsolation/i);
     expect(() => parseAgentWorkOrderV2({ ...workOrder, executionMode: "production" })).toThrow(/production mode/i);
+    for (const bookId of [" book", "book..id", "book:id", "book\u0001id", "x".repeat(121)]) {
+      expect(() => parseAgentWorkOrderV2(withBookId(bookId))).toThrow(/bookId.*safe path segment/i);
+    }
+    expect(() => parseAgentWorkOrderV2({
+      ...workOrder,
+      modeEvidence: {
+        ...workOrder.modeEvidence,
+        canaryIsolation: {
+          ...workOrder.modeEvidence.canaryIsolation,
+          byteLength: 10 * 1024 * 1024 + 1,
+        },
+      },
+    })).toThrow(/canaryIsolation/i);
+    const production = productionWorkOrder();
+    expect(() => parseAgentWorkOrderV2({
+      ...production,
+      modeEvidence: { ...production.modeEvidence, canaryIsolation: workOrder.modeEvidence.canaryIsolation },
+    })).toThrow(/forbids canaryIsolation/i);
   });
 
   it("decodes only exact canonical base64 artifacts", () => {
     const workOrderBytes = Buffer.from(`${JSON.stringify(agentWorkOrder())}\n`, "utf8");
     const actionBytes = Buffer.from('{"schemaVersion":"hermes-control-action/v1"}\n', "utf8");
     const receiptBytes = Buffer.from('{"schemaVersion":"hermes-invocation-receipt/v1"}\n', "utf8");
+    const canaryReceiptBytes = Buffer.from('{"schemaVersion":"inkos-canary-common-snapshot/v1"}\n', "utf8");
     const envelope = {
       schemaVersion: "inkos-agent-operation-request/v1",
       workOrder: artifact(workOrderBytes),
       hermesAction: { ...artifact(actionBytes), textSha256: "e".repeat(64) },
       hermesReceipt: artifact(receiptBytes),
+      canaryIsolationReceipt: { ...artifact(canaryReceiptBytes), selfHash: "f".repeat(64) },
     };
-    expect(parseAgentOperationIpcEnvelope(envelope).workOrderBytes).toEqual(workOrderBytes);
+    const parsed = parseAgentOperationIpcEnvelope(envelope);
+    expect(parsed.workOrderBytes).toEqual(workOrderBytes);
+    expect(parsed.canaryIsolationReceiptBytes).toEqual(canaryReceiptBytes);
     expect(() => parseAgentOperationIpcEnvelope({
       ...envelope,
       workOrder: { ...envelope.workOrder, unexpected: true },
@@ -181,5 +309,13 @@ describe("production agent-operate strict ingress", () => {
       ...envelope,
       hermesAction: { ...envelope.hermesAction, bytes: `${envelope.hermesAction.bytes}\n` },
     })).toThrow(/base64/i);
+    expect(() => parseAgentOperationIpcEnvelope({
+      ...envelope,
+      canaryIsolationReceipt: { ...envelope.canaryIsolationReceipt, byteLength: canaryReceiptBytes.byteLength + 1 },
+    })).toThrow(/hash\/length/i);
+    expect(() => parseAgentOperationIpcEnvelope({
+      ...envelope,
+      canaryIsolationReceipt: { ...envelope.canaryIsolationReceipt, selfHash: "wrong" },
+    })).toThrow(/selfHash/i);
   });
 });

@@ -212,6 +212,8 @@ describe("Book-local Hermes control operation", () => {
       workOrderBytes: f.workOrderBytes,
       actionBytes: f.actionBytes,
       hermesReceiptBytes: f.receiptBytes,
+      executionMode: "production",
+      canaryIsolation: null,
       profile: {
         profileId: "neutral-baseline-ko",
         soulId: "neutral-baseline-ko",
@@ -230,7 +232,21 @@ describe("Book-local Hermes control operation", () => {
     await expect(readFile(join(f.state.bookDir(f.bookId), paths.request))).resolves.toEqual(f.workOrderBytes);
     await expect(readFile(join(f.state.bookDir(f.bookId), paths.action))).resolves.toEqual(f.actionBytes);
 
-    const storedImport = JSON.parse((await readFile(join(f.state.bookDir(f.bookId), paths.importReceipt), "utf8")));
+    const storedImportBytes = await readFile(join(f.state.bookDir(f.bookId), paths.importReceipt));
+    const normalizedOnly = JSON.parse(storedImportBytes.toString("utf8"));
+    normalizedOnly.sessionId = ` ${normalizedOnly.sessionId} `;
+    await writeFile(join(f.state.bookDir(f.bookId), paths.importReceipt), `${JSON.stringify(normalizedOnly, null, 2)}\n`);
+    await expect(importHermesControlOperation(input)).rejects.toThrow(/raw self hash/i);
+
+    const nonCanonical = JSON.parse(storedImportBytes.toString("utf8"));
+    nonCanonical.request.path = `${dirname(nonCanonical.request.path)}/request-copy.json`;
+    const { receiptSelfHash: _canonicalSelf, ...nonCanonicalUnsigned } = nonCanonical;
+    nonCanonical.receiptSelfHash = hashCanonicalJson(nonCanonicalUnsigned);
+    await writeFile(join(f.state.bookDir(f.bookId), paths.importReceipt), `${JSON.stringify(nonCanonical, null, 2)}\n`);
+    await expect(importHermesControlOperation(input)).rejects.toThrow(/paths are not canonical/i);
+    await writeFile(join(f.state.bookDir(f.bookId), paths.importReceipt), storedImportBytes);
+
+    const storedImport = JSON.parse(storedImportBytes.toString("utf8"));
     storedImport.sessionId = "different-session";
     const { receiptSelfHash: _self, ...unsigned } = storedImport;
     storedImport.receiptSelfHash = hashCanonicalJson(unsigned);
@@ -249,6 +265,8 @@ describe("Book-local Hermes control operation", () => {
       workOrderBytes: f.workOrderBytes,
       actionBytes: f.actionBytes,
       hermesReceiptBytes: f.receiptBytes,
+      executionMode: "production",
+      canaryIsolation: null,
       profile: {
         profileId: "neutral-baseline-ko",
         soulId: "neutral-baseline-ko",
@@ -287,6 +305,8 @@ describe("Book-local Hermes control operation", () => {
       workOrderBytes: f.workOrderBytes,
       actionBytes: f.actionBytes,
       hermesReceiptBytes: f.receiptBytes,
+      executionMode: "production",
+      canaryIsolation: null,
       profile: {
         profileId: "neutral-baseline-ko",
         soulId: "neutral-baseline-ko",
@@ -317,6 +337,8 @@ describe("Book-local Hermes control operation", () => {
       workOrderBytes: f.workOrderBytes,
       actionBytes: f.actionBytes,
       hermesReceiptBytes: f.receiptBytes,
+      executionMode: "production",
+      canaryIsolation: null,
       profile: {
         profileId: "neutral-baseline-ko",
         soulId: "neutral-baseline-ko",
@@ -374,19 +396,28 @@ describe("Book-local Hermes control operation", () => {
       sessionId: f.sessionId,
       workOrderId: f.workOrderId,
       workOrderSha256: f.workOrderSha256,
-      executionMode: "promotion-canary",
+      executionMode: "production",
+      canaryIsolation: null,
       importReceipt: imported.importReceipt,
       productionRun: run!,
       completedAt: NOW,
     });
     expect(first.status).toBe("failed");
+    expect(imported.importReceipt.schemaVersion).toBe("hermes-control-import/v2");
+    if (imported.importReceipt.schemaVersion !== "hermes-control-import/v2") throw new Error("expected import v2");
+    expect(first.schemaVersion).toBe("inkos-agent-operation-terminal/v2");
+    if (first.schemaVersion !== "inkos-agent-operation-terminal/v2") throw new Error("expected terminal v2");
+    expect(imported.importReceipt.canaryIsolation).toBeNull();
+    expect(first.canaryIsolation).toBeNull();
+    expect(first.finalLaneManifestSha256).toBeNull();
     const replay = await finalizeAgentOperation({
       projectRoot: f.root,
       bookId: f.bookId,
       sessionId: f.sessionId,
       workOrderId: f.workOrderId,
       workOrderSha256: f.workOrderSha256,
-      executionMode: "promotion-canary",
+      executionMode: "production",
+      canaryIsolation: null,
       importReceipt: imported.importReceipt,
       productionRun: run!,
       completedAt: new Date(NOW.getTime() + 60_000),
@@ -394,6 +425,90 @@ describe("Book-local Hermes control operation", () => {
     expect(replay).toEqual(first);
     await expect(loadAgentOperationTerminal({ projectRoot: f.root, bookId: f.bookId, workOrderId: f.workOrderId }))
       .resolves.toEqual(first);
+
+    const operationPaths = hermesControlOperationPaths(f.workOrderId);
+    const terminalV2Bytes = await readFile(join(f.state.bookDir(f.bookId), operationPaths.terminal));
+    const normalizedTerminal = JSON.parse(terminalV2Bytes.toString("utf8"));
+    normalizedTerminal.sessionId = ` ${normalizedTerminal.sessionId} `;
+    await writeFile(join(f.state.bookDir(f.bookId), operationPaths.terminal), `${JSON.stringify(normalizedTerminal)}\n`);
+    await expect(loadAgentOperationTerminal({ projectRoot: f.root, bookId: f.bookId, workOrderId: f.workOrderId }))
+      .rejects.toThrow(/raw self hash/i);
+
+    const nonCanonicalTerminal = JSON.parse(terminalV2Bytes.toString("utf8"));
+    nonCanonicalTerminal.productionRun.path = "story/runtime/production-runs/terminals/not-the-command-id.json";
+    const { receiptSelfHash: _nonCanonicalSelf, ...nonCanonicalTerminalUnsigned } = nonCanonicalTerminal;
+    nonCanonicalTerminal.receiptSelfHash = hashCanonicalJson(nonCanonicalTerminalUnsigned);
+    await writeFile(join(f.state.bookDir(f.bookId), operationPaths.terminal), `${JSON.stringify(nonCanonicalTerminal)}\n`);
+    await expect(loadAgentOperationTerminal({ projectRoot: f.root, bookId: f.bookId, workOrderId: f.workOrderId }))
+      .rejects.toThrow(/paths are not canonical/i);
+    await writeFile(join(f.state.bookDir(f.bookId), operationPaths.terminal), terminalV2Bytes);
+
+    const importV2 = JSON.parse(await readFile(join(f.state.bookDir(f.bookId), operationPaths.importReceipt), "utf8"));
+    const {
+      schemaVersion: _importSchema,
+      canaryIsolation: _importCanary,
+      receiptSelfHash: _importSelf,
+      ...importFields
+    } = importV2;
+    const importV1Unsigned = { schemaVersion: "hermes-control-import/v1", ...importFields };
+    const importV1 = { ...importV1Unsigned, receiptSelfHash: hashCanonicalJson(importV1Unsigned) };
+    const importV1Bytes = Buffer.from(`${JSON.stringify(importV1, null, 2)}\n`, "utf8");
+    await writeFile(join(f.state.bookDir(f.bookId), operationPaths.importReceipt), importV1Bytes);
+
+    const {
+      schemaVersion: _terminalSchema,
+      canaryIsolation: _terminalCanary,
+      finalLaneManifestSha256: _finalManifest,
+      receiptSelfHash: _terminalSelf,
+      ...terminalFields
+    } = first;
+    const terminalV1Unsigned = {
+      schemaVersion: "inkos-agent-operation-terminal/v1",
+      ...terminalFields,
+      importReceipt: {
+        ...first.importReceipt,
+        sha256: sha256Bytes(importV1Bytes),
+        byteLength: importV1Bytes.byteLength,
+      },
+    };
+    const terminalV1 = { ...terminalV1Unsigned, receiptSelfHash: hashCanonicalJson(terminalV1Unsigned) };
+    await writeFile(
+      join(f.state.bookDir(f.bookId), operationPaths.terminal),
+      `${JSON.stringify(terminalV1, null, 2)}\n`,
+    );
+    await expect(loadAgentOperationTerminal({ projectRoot: f.root, bookId: f.bookId, workOrderId: f.workOrderId }))
+      .resolves.toMatchObject({ schemaVersion: "inkos-agent-operation-terminal/v1", executionMode: "production" });
+    await expect(importHermesControlOperation({
+      projectRoot: f.root,
+      bookId: f.bookId,
+      sessionId: f.sessionId,
+      workOrderId: f.workOrderId,
+      workOrderSha256: f.workOrderSha256,
+      workOrderBytes: f.workOrderBytes,
+      actionBytes: f.actionBytes,
+      hermesReceiptBytes: f.receiptBytes,
+      executionMode: "production",
+      canaryIsolation: null,
+      profile: {
+        profileId: "neutral-baseline-ko",
+        soulId: "neutral-baseline-ko",
+        soulVersion: "v1",
+        profileConfigSha256: "a".repeat(64),
+        soulSha256: "b".repeat(64),
+      },
+    })).resolves.toMatchObject({ importReceipt: { schemaVersion: "hermes-control-import/v1" } });
+
+    const legacyCanaryUnsigned = { ...terminalV1Unsigned, executionMode: "promotion-canary" };
+    await writeFile(join(f.state.bookDir(f.bookId), operationPaths.terminal), `${JSON.stringify({
+      ...legacyCanaryUnsigned,
+      receiptSelfHash: hashCanonicalJson(legacyCanaryUnsigned),
+    }, null, 2)}\n`);
+    await expect(loadAgentOperationTerminal({ projectRoot: f.root, bookId: f.bookId, workOrderId: f.workOrderId }))
+      .rejects.toThrow(/legacy.*production replay/i);
+    await writeFile(
+      join(f.state.bookDir(f.bookId), operationPaths.terminal),
+      `${JSON.stringify(terminalV1, null, 2)}\n`,
+    );
 
     await rm(join(f.state.bookDir(f.bookId), first.productionRun.path));
     await expect(loadAgentOperationTerminal({ projectRoot: f.root, bookId: f.bookId, workOrderId: f.workOrderId }))
@@ -411,6 +526,8 @@ describe("Book-local Hermes control operation", () => {
       workOrderBytes: f.workOrderBytes,
       actionBytes: f.actionBytes,
       hermesReceiptBytes: f.receiptBytes,
+      executionMode: "production",
+      canaryIsolation: null,
       profile: {
         profileId: "neutral-baseline-ko",
         soulId: "neutral-baseline-ko",
@@ -480,7 +597,8 @@ describe("Book-local Hermes control operation", () => {
       sessionId: f.sessionId,
       workOrderId: f.workOrderId,
       workOrderSha256: f.workOrderSha256,
-      executionMode: "promotion-canary",
+      executionMode: "production",
+      canaryIsolation: null,
       importReceipt: imported.importReceipt,
       productionRun: first.run,
       completedAt: NOW,
@@ -504,7 +622,8 @@ describe("Book-local Hermes control operation", () => {
       sessionId: f.sessionId,
       workOrderId: f.workOrderId,
       workOrderSha256: f.workOrderSha256,
-      executionMode: "promotion-canary",
+      executionMode: "production",
+      canaryIsolation: null,
       importReceipt: imported.importReceipt,
       productionRun: replay.run,
       completedAt: new Date(NOW.getTime() + 10_000),

@@ -1,8 +1,9 @@
 import { Command } from "commander";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join, posix } from "node:path";
+import { join, resolve } from "node:path";
 import {
+  CANARY_ISOLATION_RECEIPT_MAX_BYTES,
   PipelineRunner,
   HermesControlActionSchema,
   ProductionExecutionTerminalError,
@@ -12,10 +13,17 @@ import {
   hashCanonicalJson,
   hermesControlOperationPaths,
   importHermesControlOperation,
+  isSafeBookId,
   loadActiveBookSoulBinding,
+  prepareProductionCanaryPair,
   loadAgentOperationTerminal,
   readProductionModelCallReadback,
+  parseCanaryCommonSnapshotReceiptBytes,
   toPosixPath,
+  acquireProductionCanaryAgentOperationLease,
+  verifyProductionCanaryExecutionRoot,
+  verifyProductionCanaryStructuralRoot,
+  type ProductionCanaryExecutionRootVerification,
 } from "@actalk/inkos-core";
 import { buildPipelineConfig, findProjectRoot, loadConfigWithDiagnostics } from "../utils.js";
 
@@ -67,6 +75,15 @@ type WorkOrderV2 = {
 };
 
 type AgentExecutionMode = "promotion-canary" | "production";
+type AgentCanaryIsolationEvidence = {
+  readonly pairId: string;
+  readonly path: string;
+  readonly sha256: string;
+  readonly byteLength: number;
+  readonly receiptSelfHash: string;
+  readonly isolationScopeSha256: string;
+  readonly commonSnapshotSha256: string;
+};
 type AgentModeEvidence = {
   readonly lane: "genre-soul" | "neutral-baseline";
   readonly profileId: string;
@@ -79,7 +96,7 @@ type AgentModeEvidence = {
   readonly soulVersion: string;
   readonly soulSha256: string;
   readonly promotionDecisionSha256: string | null;
-  readonly isolationReceiptSha256?: string;
+  readonly canaryIsolation?: AgentCanaryIsolationEvidence;
 };
 type AgentWorkOrderV2 = Omit<WorkOrderV2, "capability"> & {
   readonly capability: "agent-operate";
@@ -98,6 +115,7 @@ type AgentOperationIpcEnvelope = {
   readonly workOrder: Base64ArtifactEnvelope;
   readonly hermesAction: Base64ArtifactEnvelope & { readonly textSha256: string };
   readonly hermesReceipt: Base64ArtifactEnvelope;
+  readonly canaryIsolationReceipt?: Base64ArtifactEnvelope & { readonly selfHash: string };
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,7 +136,7 @@ function parseWriteNextWorkOrderV2(value: unknown): WorkOrderV2 {
     throw new Error("WorkOrder v2 identifiers contain unsafe characters.");
   }
   const bookId = String(value.bookId);
-  if (bookId.length > 240 || bookId === "." || bookId === ".." || bookId.includes("/") || bookId.includes("\\") || bookId.includes("\0")) {
+  if (!isSafeBookId(bookId)) {
     throw new Error("WorkOrder v2 bookId must be one safe path segment.");
   }
   if (!isRecord(value.args) || Object.keys(value.args).some((key) => key !== "chapterCount" && key !== "targetLength")) {
@@ -191,8 +209,12 @@ const AGENT_WORK_ORDER_KEYS = new Set([...WORK_ORDER_KEYS, "executionMode", "mod
 const MODE_EVIDENCE_KEYS = new Set([
   "lane", "profileId", "profileConfigSha256", "profileLifecycle", "productionEnabled",
   "adoptionRegistrySha256", "activeMatchingCount", "soulId", "soulVersion", "soulSha256",
-  "promotionDecisionSha256", "isolationReceiptSha256",
+  "promotionDecisionSha256", "canaryIsolation",
 ]);
+const CANARY_ISOLATION_KEYS = new Set([
+  "pairId", "path", "sha256", "byteLength", "receiptSelfHash", "isolationScopeSha256", "commonSnapshotSha256",
+]);
+const SAFE_CANARY_PAIR_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u;
 
 export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
   if (!isRecord(value)) throw new Error("Agent WorkOrder v2 must be an object.");
@@ -233,7 +255,24 @@ export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
     throw new Error("modeEvidence.promotionDecisionSha256 is invalid.");
   }
   if (value.executionMode === "promotion-canary") {
-    if (!SHA256.test(String(evidence.isolationReceiptSha256))) throw new Error("promotion-canary requires isolationReceiptSha256.");
+    if (!isRecord(evidence.canaryIsolation)) throw new Error("promotion-canary requires canaryIsolation.");
+    const canaryUnknown = Object.keys(evidence.canaryIsolation).filter((key) => !CANARY_ISOLATION_KEYS.has(key));
+    if (canaryUnknown.length > 0 || Object.keys(evidence.canaryIsolation).length !== CANARY_ISOLATION_KEYS.size) {
+      throw new Error(`modeEvidence.canaryIsolation must be exact${canaryUnknown[0] ? `; unknown field: ${canaryUnknown[0]}` : ""}.`);
+    }
+    const canary = evidence.canaryIsolation;
+    if (
+      typeof canary.pairId !== "string"
+      || !SAFE_CANARY_PAIR_ID.test(canary.pairId)
+      || canary.path !== `.inkos/canaries/${canary.pairId}/common-snapshot.json`
+      || !SHA256.test(String(canary.sha256))
+      || !Number.isInteger(canary.byteLength)
+      || Number(canary.byteLength) < 1
+      || Number(canary.byteLength) > CANARY_ISOLATION_RECEIPT_MAX_BYTES
+      || !SHA256.test(String(canary.receiptSelfHash))
+      || !SHA256.test(String(canary.isolationScopeSha256))
+      || !SHA256.test(String(canary.commonSnapshotSha256))
+    ) throw new Error("modeEvidence.canaryIsolation is invalid.");
     if (evidence.productionEnabled !== false || evidence.activeMatchingCount !== 0 || evidence.promotionDecisionSha256 !== null) {
       throw new Error("promotion-canary must be disabled, inactive, and unpromoted.");
     }
@@ -243,22 +282,11 @@ export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
     if (evidence.lane === "neutral-baseline" && evidence.profileLifecycle !== "baseline") {
       throw new Error("Neutral promotion-canary requires a baseline profile.");
     }
-    if (!Array.isArray(value.approvedInputs) || value.approvedInputs.length !== 1 || !isRecord(value.approvedInputs[0])) {
-      throw new Error("promotion-canary requires exactly one isolation approvedInput.");
+    if (!Array.isArray(value.approvedInputs) || value.approvedInputs.length !== 0) {
+      throw new Error("promotion-canary Agent operation does not accept approvedInputs.");
     }
-    const isolation = value.approvedInputs[0];
-    if (
-      Object.keys(isolation).some((key) => !["repo", "commit", "path", "sha256", "role"].includes(key))
-      || typeof isolation.repo !== "string" || !isolation.repo.trim()
-      || !/^[0-9a-f]{40}$/u.test(String(isolation.commit))
-      || typeof isolation.path !== "string" || !isolation.path.trim()
-      || posix.isAbsolute(isolation.path) || isolation.path.includes("\\")
-      || posix.normalize(isolation.path) !== isolation.path || isolation.path === ".." || isolation.path.startsWith("../")
-      || isolation.sha256 !== evidence.isolationReceiptSha256
-      || isolation.role !== "promotion-canary-isolation"
-    ) throw new Error("promotion-canary isolation approvedInput is invalid.");
   } else {
-    if ("isolationReceiptSha256" in evidence) throw new Error("production mode forbids isolationReceiptSha256.");
+    if ("canaryIsolation" in evidence) throw new Error("production mode forbids canaryIsolation.");
     if (
       evidence.lane !== "genre-soul"
       || evidence.profileLifecycle !== "promoted"
@@ -291,6 +319,7 @@ export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
     soulId: evidence.soulId,
     soulVersion: evidence.soulVersion,
     bindingSha256: isRecord(value.expectedSoulBinding) ? value.expectedSoulBinding.bindingSha256 : null,
+    isolationScopeSha256: isRecord(evidence.canaryIsolation) ? evidence.canaryIsolation.isolationScopeSha256 : null,
   }).slice(0, 40)}`;
   if (value.sessionId !== expectedSessionId) {
     throw new Error("Agent WorkOrder sessionId is not the deterministic Book/profile/Soul session.");
@@ -335,10 +364,11 @@ function decodeBase64Artifact(
   label: string,
   maxBytes: number,
   allowTextSha256 = false,
+  allowSelfHash = false,
 ): { readonly envelope: Base64ArtifactEnvelope; readonly bytes: Buffer } {
-  const allowed = allowTextSha256
-    ? ["encoding", "bytes", "sha256", "byteLength", "textSha256"]
-    : ["encoding", "bytes", "sha256", "byteLength"];
+  const allowed = ["encoding", "bytes", "sha256", "byteLength"];
+  if (allowTextSha256) allowed.push("textSha256");
+  if (allowSelfHash) allowed.push("selfHash");
   if (!isRecord(value) || Object.keys(value).some((key) => !allowed.includes(key))) {
     throw new Error(`${label} envelope must be strict.`);
   }
@@ -360,22 +390,41 @@ export function parseAgentOperationIpcEnvelope(value: unknown): {
   readonly workOrderBytes: Buffer;
   readonly actionBytes: Buffer;
   readonly receiptBytes: Buffer;
+  readonly canaryIsolationReceiptBytes?: Buffer;
 } {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["schemaVersion", "workOrder", "hermesAction", "hermesReceipt"].includes(key))) {
+  if (!isRecord(value) || Object.keys(value).some((key) => ![
+    "schemaVersion", "workOrder", "hermesAction", "hermesReceipt", "canaryIsolationReceipt",
+  ].includes(key))) {
     throw new Error("Agent operation IPC envelope must be strict.");
   }
   if (value.schemaVersion !== "inkos-agent-operation-request/v1") throw new Error("Agent operation IPC schemaVersion is invalid.");
   const workOrder = decodeBase64Artifact(value.workOrder, "workOrder", 1024 * 1024);
   const action = decodeBase64Artifact(value.hermesAction, "hermesAction", 256 * 1024, true);
   const receipt = decodeBase64Artifact(value.hermesReceipt, "hermesReceipt", 1024 * 1024);
+  const canaryReceipt = value.canaryIsolationReceipt === undefined
+    ? undefined
+    : decodeBase64Artifact(
+      value.canaryIsolationReceipt,
+      "canaryIsolationReceipt",
+      CANARY_ISOLATION_RECEIPT_MAX_BYTES,
+      false,
+      true,
+    );
   if (!isRecord(value.hermesAction) || !SHA256.test(String(value.hermesAction.textSha256))) {
     throw new Error("hermesAction.textSha256 is invalid.");
+  }
+  if (value.canaryIsolationReceipt !== undefined && (
+    !isRecord(value.canaryIsolationReceipt)
+    || !SHA256.test(String(value.canaryIsolationReceipt.selfHash))
+  )) {
+    throw new Error("canaryIsolationReceipt.selfHash is invalid.");
   }
   return {
     envelope: value as unknown as AgentOperationIpcEnvelope,
     workOrderBytes: workOrder.bytes,
     actionBytes: action.bytes,
     receiptBytes: receipt.bytes,
+    ...(canaryReceipt ? { canaryIsolationReceiptBytes: canaryReceipt.bytes } : {}),
   };
 }
 
@@ -387,6 +436,68 @@ async function readStdinBytes(): Promise<Buffer> {
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function verifyAgentCanaryIsolationIngress(input: {
+  readonly projectRoot: string;
+  readonly workOrder: AgentWorkOrderV2;
+  readonly ipc: ReturnType<typeof parseAgentOperationIpcEnvelope>;
+}): Promise<ProductionCanaryExecutionRootVerification | null> {
+  const workOrderIsolation = input.workOrder.modeEvidence.canaryIsolation;
+  const envelopeIsolation = input.ipc.envelope.canaryIsolationReceipt;
+  const receiptBytes = input.ipc.canaryIsolationReceiptBytes;
+  if (input.workOrder.executionMode === "production") {
+    if (workOrderIsolation !== undefined || envelopeIsolation !== undefined || receiptBytes !== undefined) {
+      throw new Error("Production Agent operation forbids canary isolation evidence.");
+    }
+    return null;
+  }
+  if (!workOrderIsolation || !envelopeIsolation || !receiptBytes) {
+    throw new Error("Promotion canary requires an exact canaryIsolationReceipt IPC artifact.");
+  }
+  if (
+    envelopeIsolation.sha256 !== workOrderIsolation.sha256
+    || envelopeIsolation.byteLength !== workOrderIsolation.byteLength
+    || envelopeIsolation.selfHash !== workOrderIsolation.receiptSelfHash
+  ) {
+    throw new Error("Canary isolation IPC artifact does not match the WorkOrder evidence.");
+  }
+  const receipt = parseCanaryCommonSnapshotReceiptBytes(receiptBytes);
+  const { receiptSelfHash, ...unsignedReceipt } = receipt;
+  const physicalLane = input.workOrder.modeEvidence.lane === "neutral-baseline" ? "neutral" : "soul";
+  const receiptLane = physicalLane === "neutral" ? receipt.lanes.neutral : receipt.lanes.genreSoul;
+  if (
+    hashCanonicalJson(unsignedReceipt) !== receiptSelfHash
+    || receiptSelfHash !== workOrderIsolation.receiptSelfHash
+    || receipt.pairId !== workOrderIsolation.pairId
+    || receipt.bookId !== input.workOrder.bookId
+    || receipt.isolationScopeSha256 !== workOrderIsolation.isolationScopeSha256
+    || receipt.commonSnapshotSha256 !== workOrderIsolation.commonSnapshotSha256
+    || hashCanonicalJson(receiptLane.expectedSoulBinding) !== hashCanonicalJson(input.workOrder.expectedSoulBinding)
+  ) {
+    throw new Error("Canary isolation IPC receipt is not exactly bound to the Agent WorkOrder lane.");
+  }
+  const verification = await verifyProductionCanaryStructuralRoot({
+    projectRoot: input.projectRoot,
+    pairId: workOrderIsolation.pairId,
+    lane: physicalLane,
+    receiptSha256: workOrderIsolation.sha256,
+    receiptByteLength: workOrderIsolation.byteLength,
+    receiptSelfHash: workOrderIsolation.receiptSelfHash,
+    isolationScopeSha256: workOrderIsolation.isolationScopeSha256,
+    commonSnapshotSha256: workOrderIsolation.commonSnapshotSha256,
+    bookId: input.workOrder.bookId,
+    expectedSoulBinding: input.workOrder.expectedSoulBinding,
+  });
+  const canonicalReceiptBytes = await readFile(resolve(
+    input.projectRoot,
+    "../../../..",
+    workOrderIsolation.path,
+  ));
+  if (!canonicalReceiptBytes.equals(receiptBytes)) {
+    throw new Error("Canary isolation IPC raw bytes differ from the canonical local receipt.");
+  }
+  return verification;
 }
 
 async function assertAgentModeGate(projectRoot: string, workOrder: AgentWorkOrderV2): Promise<void> {
@@ -495,12 +606,20 @@ async function buildAgentOperationOutput(input: {
     outcomePath: toPosixPath(join("books", input.workOrder.bookId, call.outcomePath)),
   })));
   const run = JSON.parse(runBytes.toString("utf8")) as Record<string, unknown>;
+  const terminalCanaryIsolation = input.terminal.schemaVersion === "inkos-agent-operation-terminal/v2"
+    ? input.terminal.canaryIsolation
+    : null;
+  const finalLaneManifestSha256 = input.terminal.schemaVersion === "inkos-agent-operation-terminal/v2"
+    ? input.terminal.finalLaneManifestSha256
+    : null;
   return {
     schemaVersion: "inkos-agent-operation-result/v1",
     workOrder: { id: input.workOrder.workOrderId, sha256: input.workOrderSha256 },
     agentOperation: {
       status: input.terminal.status,
       executionMode: input.workOrder.executionMode,
+      canaryIsolation: terminalCanaryIsolation,
+      finalLaneManifestSha256,
       receipt: { path: toPosixPath(join("books", input.workOrder.bookId, paths.terminal)), sha256: sha256(terminalBytes) },
       importReceipt: { path: toPosixPath(join("books", input.workOrder.bookId, paths.importReceipt)), sha256: sha256(importBytes) },
       action: {
@@ -549,6 +668,58 @@ async function buildAgentOperationOutput(input: {
 
 export const productionCommand = new Command("production")
   .description("Execute strict host-authenticated production commands");
+
+productionCommand.command("canary-prepare")
+  .description("Create one immutable neutral/Soul canary pair in isolated real project roots")
+  .requiredOption("--book <bookId>")
+  .requiredOption("--pair <pairId>")
+  .requiredOption("--soul <soulId>")
+  .requiredOption("--version <soulVersion>")
+  .requiredOption("--soul-manifest <repoRelativePath>")
+  .requiredOption("--source-registry-root <path>")
+  .requiredOption("--source-registry-receipt <relativePath>")
+  .requiredOption("--decision-root <path>")
+  .requiredOption("--decision-receipt <relativePath>")
+  .requiredOption("--reference-lab-evidence-root <path>")
+  .requiredOption("--inkos-evidence-root <path>")
+  .requiredOption("--hq-evidence-root <path>")
+  .option("--json", "Emit the exact compact isolation receipt projection")
+  .action(async (opts) => {
+    const root = findProjectRoot();
+    const result = await prepareProductionCanaryPair({
+      projectRoot: root,
+      bookId: String(opts.book),
+      pairId: String(opts.pair),
+      soulId: String(opts.soul),
+      soulVersion: String(opts.version),
+      soulManifestPath: String(opts.soulManifest),
+      sourceRegistryReceipt: {
+        root: resolve(root, String(opts.sourceRegistryRoot)),
+        path: String(opts.sourceRegistryReceipt),
+      },
+      decisionReceipt: {
+        root: resolve(root, String(opts.decisionRoot)),
+        path: String(opts.decisionReceipt),
+      },
+      evidenceRoots: {
+        referenceLab: resolve(root, String(opts.referenceLabEvidenceRoot)),
+        inkos: resolve(root, String(opts.inkosEvidenceRoot)),
+        hq: resolve(root, String(opts.hqEvidenceRoot)),
+      },
+    });
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+    process.stdout.write([
+      `Prepared canary pair ${result.pairId} for ${result.bookId}.`,
+      `Neutral root: ${result.lanes.neutral.projectRoot}`,
+      `Genre Soul root: ${result.lanes.genreSoul.projectRoot}`,
+      `Receipt: ${result.receipt.path} (${result.receipt.sha256})`,
+      result.replayed ? "Existing immutable pair replayed." : "New immutable pair created.",
+      "",
+    ].join("\n"));
+  });
 
 productionCommand.command("write-next")
   .description("Execute one HQ WorkOrder v2 through the ProductionCommand gateway")
@@ -663,6 +834,7 @@ productionCommand.command("agent-operate")
     if (canonicalAction.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
       throw new Error("Agent operation envelope text hash does not match the canonical Hermes action.");
     }
+    const canaryIsolation = await verifyAgentCanaryIsolationIngress({ projectRoot: root, workOrder, ipc });
     const importExactEvidence = () => importHermesControlOperation({
       projectRoot: root,
       bookId: workOrder.bookId,
@@ -672,6 +844,8 @@ productionCommand.command("agent-operate")
       workOrderBytes: ipc.workOrderBytes,
       actionBytes: ipc.actionBytes,
       hermesReceiptBytes: ipc.receiptBytes,
+      executionMode: workOrder.executionMode,
+      canaryIsolation,
       profile: {
         profileId: workOrder.modeEvidence.profileId,
         soulId: workOrder.modeEvidence.soulId,
@@ -686,15 +860,36 @@ productionCommand.command("agent-operate")
       workOrderId: workOrder.workOrderId,
     });
     const assertReplayIdentity = (terminal: NonNullable<Awaited<ReturnType<typeof loadAgentOperationTerminal>>>) => {
+      const terminalIsolation = terminal.schemaVersion === "inkos-agent-operation-terminal/v2"
+        ? terminal.canaryIsolation
+        : null;
       if (
         terminal.workOrderSha256 !== workOrderSha256
         || terminal.sessionId !== workOrder.sessionId
         || terminal.executionMode !== workOrder.executionMode
+        || hashCanonicalJson(terminalIsolation) !== hashCanonicalJson(canaryIsolation)
       ) throw new Error("Agent operation terminal does not match the exact replay request.");
     };
-    const existingTerminal = await readTerminal();
-    if (existingTerminal) {
-      assertReplayIdentity(existingTerminal);
+    const verifyTerminalReplay = async (terminal: NonNullable<Awaited<ReturnType<typeof loadAgentOperationTerminal>>>) => {
+      assertReplayIdentity(terminal);
+      if (canaryIsolation) {
+        if (
+          terminal.schemaVersion !== "inkos-agent-operation-terminal/v2"
+          || !terminal.finalLaneManifestSha256
+        ) {
+          throw new Error("Promotion canary terminal is missing its final lane manifest seal.");
+        }
+      } else if (
+        terminal.schemaVersion === "inkos-agent-operation-terminal/v2"
+        && terminal.finalLaneManifestSha256 !== null
+      ) {
+        throw new Error("Production Agent terminal must not contain a canary final lane manifest.");
+      }
+    };
+    const emitTerminalReplay = async (
+      terminal: NonNullable<Awaited<ReturnType<typeof loadAgentOperationTerminal>>>,
+    ): Promise<void> => {
+      await verifyTerminalReplay(terminal);
       const imported = await importExactEvidence();
       if (imported.action.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
         throw new Error("Agent operation envelope text hash does not match the canonical Hermes action.");
@@ -703,7 +898,7 @@ productionCommand.command("agent-operate")
         root,
         workOrder,
         workOrderSha256,
-        terminal: existingTerminal,
+        terminal,
         importReceipt: imported.importReceipt,
         hermesSessionId: imported.hermesReceipt.invocation.sessionId,
         configMode: "immutable-terminal-replay",
@@ -711,8 +906,45 @@ productionCommand.command("agent-operate")
         inkosReasoning: "high",
       });
       process.stdout.write(`${JSON.stringify(output)}\n`);
-      if (existingTerminal.status !== "succeeded") process.exitCode = 1;
+      if (terminal.status !== "succeeded") process.exitCode = 1;
+    };
+    const existingTerminal = await readTerminal();
+    if (existingTerminal) {
+      await emitTerminalReplay(existingTerminal);
       return;
+    }
+
+    const releaseCanaryLease = canaryIsolation
+      ? await acquireProductionCanaryAgentOperationLease({
+        projectRoot: root,
+        pairId: canaryIsolation.pairId,
+        lane: canaryIsolation.lane,
+      })
+      : undefined;
+    try {
+      const terminalAfterLease = await readTerminal();
+      if (terminalAfterLease) {
+        await emitTerminalReplay(terminalAfterLease);
+        return;
+      }
+
+    if (canaryIsolation) {
+      const evidence = workOrder.modeEvidence.canaryIsolation!;
+      const pristineVerification = await verifyProductionCanaryExecutionRoot({
+        projectRoot: root,
+        pairId: evidence.pairId,
+        lane: canaryIsolation.lane,
+        receiptSha256: evidence.sha256,
+        receiptByteLength: evidence.byteLength,
+        receiptSelfHash: evidence.receiptSelfHash,
+        isolationScopeSha256: evidence.isolationScopeSha256,
+        commonSnapshotSha256: evidence.commonSnapshotSha256,
+        bookId: workOrder.bookId,
+        expectedSoulBinding: workOrder.expectedSoulBinding,
+      });
+      if (hashCanonicalJson(pristineVerification) !== hashCanonicalJson(canaryIsolation)) {
+        throw new Error("Canary pristine execution root differs from its structural projection.");
+      }
     }
 
     await assertAgentModeGate(root, workOrder);
@@ -740,7 +972,7 @@ productionCommand.command("agent-operate")
     });
     const racedTerminal = await readTerminal();
     if (racedTerminal) {
-      assertReplayIdentity(racedTerminal);
+      await verifyTerminalReplay(racedTerminal);
       process.stdout.write(`${JSON.stringify(await outputFor(racedTerminal))}\n`);
       if (racedTerminal.status !== "succeeded") process.exitCode = 1;
       return;
@@ -784,9 +1016,13 @@ productionCommand.command("agent-operate")
       workOrderId: workOrder.workOrderId,
       workOrderSha256,
       executionMode: workOrder.executionMode,
+      canaryIsolation,
       importReceipt: imported.importReceipt,
       productionRun: run,
     });
     process.stdout.write(`${JSON.stringify(await outputFor(terminal))}\n`);
     if (terminal.status !== "succeeded") process.exitCode = 1;
+    } finally {
+      await releaseCanaryLease?.();
+    }
   });

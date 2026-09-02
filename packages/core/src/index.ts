@@ -956,7 +956,11 @@ export {
 export {
   HermesControlActionSchema,
   HermesInvocationReceiptSchema,
+  HermesControlImportReceiptV1Schema,
+  HermesControlImportReceiptV2Schema,
   HermesControlImportReceiptSchema,
+  AgentOperationTerminalReceiptV1Schema,
+  AgentOperationTerminalReceiptV2Schema,
   AgentOperationTerminalReceiptSchema,
   hermesControlOperationPaths,
   importHermesControlOperation,
@@ -965,7 +969,11 @@ export {
   type HermesControlAction,
   type HermesInvocationReceipt,
   type HermesControlArtifactRef,
+  type HermesControlImportReceiptV1,
+  type HermesControlImportReceiptV2,
   type HermesControlImportReceipt,
+  type AgentOperationTerminalReceiptV1,
+  type AgentOperationTerminalReceiptV2,
   type AgentOperationTerminalReceipt,
 } from "./production/hermes-control-operation.js";
 export {
@@ -1062,6 +1070,28 @@ export {
   type BindBookSoulInput,
   type ResolvedBookSoulInput,
 } from "./production/book-soul-binding.js";
+export {
+  CANARY_ISOLATION_RECEIPT_MAX_BYTES,
+  CanaryCommonSnapshotReceiptSchema,
+  ProductionCanaryExecutionRootVerificationSchema,
+  parseCanaryCommonSnapshotReceiptBytes,
+  prepareProductionCanaryPair,
+  loadCanaryCommonSnapshotReceipt,
+  verifyProductionCanaryExecutionRoot,
+  verifyProductionCanaryStructuralRoot,
+  collectProductionCanaryFinalLaneManifestSha256,
+  verifyProductionCanaryTerminalReplayRoot,
+  acquireProductionCanaryAgentOperationLease,
+  type CanaryCommonSnapshotReceipt,
+  type CanaryRegularFileRef,
+  type CanaryEvidenceRoots,
+  type CanaryRelativeArtifactInput,
+  type PrepareProductionCanaryPairInput,
+  type PrepareProductionCanaryPairResult,
+  type VerifyProductionCanaryExecutionRootInput,
+  type VerifyProductionCanaryTerminalReplayRootInput,
+  type ProductionCanaryExecutionRootVerification,
+} from "./production/canary-isolation.js";
 export {
   ProductionInputFileReceiptSchema,
   ProductionSkillReceiptSchema,
