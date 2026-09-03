@@ -12,6 +12,7 @@ import {
   type ReferenceTransformation,
 } from "./schema.js";
 import { ReferencePackStore } from "./store.js";
+import { assertApprovedFireflyPlanningAdmission } from "../planning/entry-contract.js";
 
 export interface FireflyPreflightReceipt {
   readonly referencePackId?: string;
@@ -21,6 +22,7 @@ export interface FireflyPreflightReceipt {
   readonly transformationSha256?: string;
   readonly railPlanSha256?: string;
   readonly arcId?: string;
+  readonly planningAdmissionSha256?: string;
 }
 
 async function fileSha256(path: string): Promise<string> {
@@ -33,10 +35,18 @@ export async function ensureFireflyLongformPreflight(input: {
   readonly book: BookConfig;
   readonly now?: () => Date;
 }): Promise<FireflyPreflightReceipt> {
+  const planningRequired = input.book.writing?.entryContractPolicy === "auto-required";
   const referenceRequired = input.book.writing?.referencePolicy === "auto-required";
   const railRequired = input.book.writing?.railPolicy === "auto-required";
+  const planningAdmission = planningRequired
+    ? await assertApprovedFireflyPlanningAdmission({ bookDir: input.bookDir, bookId: input.book.id })
+    : null;
   if (!referenceRequired && !railRequired) {
-    return { transformationCreated: false, railCreated: false };
+    return {
+      transformationCreated: false,
+      railCreated: false,
+      ...(planningAdmission ? { planningAdmissionSha256: planningAdmission.entryContractSha256 } : {}),
+    };
   }
 
   const now = input.now ?? (() => new Date());
@@ -80,6 +90,7 @@ export async function ensureFireflyLongformPreflight(input: {
       transformationSha256: await fileSha256(referenceStore.transformationPath),
       railPlanSha256: await fileSha256(join(input.bookDir, "story", "rails", "plan.json")),
       arcId: activeArc.id,
+      ...(planningAdmission ? { planningAdmissionSha256: planningAdmission.entryContractSha256 } : {}),
     };
   }
 
@@ -163,6 +174,7 @@ export async function ensureFireflyLongformPreflight(input: {
     transformationSha256: await fileSha256(referenceStore.transformationPath),
     railPlanSha256: await fileSha256(join(input.bookDir, "story", "rails", "plan.json")),
     arcId: activeArc.id,
+    ...(planningAdmission ? { planningAdmissionSha256: planningAdmission.entryContractSha256 } : {}),
   };
 }
 

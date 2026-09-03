@@ -9,15 +9,19 @@ const mocks = vi.hoisted(() => ({
   runAgentSession: vi.fn(),
 }));
 
-vi.mock("@actalk/inkos-core", () => ({
-  defaultChapterLength: vi.fn(() => 5000),
-  normalizePlatformOrOther: vi.fn(() => "other"),
-  PipelineRunner: class PipelineRunnerMock {
-    constructor(_config: unknown) {}
-  },
-  runAgentSession: mocks.runAgentSession,
-  loadBuiltinSkillResource: vi.fn(async (skillId: string) => `rubric for ${skillId}`),
-}));
+vi.mock("@actalk/inkos-core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@actalk/inkos-core")>();
+  return {
+    ...actual,
+    defaultChapterLength: vi.fn(() => 5000),
+    normalizePlatformOrOther: vi.fn(() => "other"),
+    PipelineRunner: class PipelineRunnerMock {
+      constructor(_config: unknown) {}
+    },
+    runAgentSession: mocks.runAgentSession,
+    loadBuiltinSkillResource: vi.fn(async (skillId: string) => `rubric for ${skillId}`),
+  };
+});
 
 vi.mock("../utils.js", () => ({
   buildPipelineConfig: vi.fn(() => ({})),
@@ -45,6 +49,28 @@ function candidate(candidateId = "p01") {
       startingIdentity: "그룹에서 쫓겨난 구조조정 실무자",
       repeatedVerb: "싸게 사고 정상화한다",
       firstAsset: "부도 기업의 숨은 수주 장부",
+    },
+    entryContract: {
+      humanDrive: {
+        lackOrHumiliation: "그룹에서 쫓겨나 전생의 구조조정 책임까지 뒤집어썼다.",
+        personalDesire: "자기 이름으로 그룹의 주인이 되어 누구도 다시 내쫓지 못하게 한다.",
+        selfInterest: "첫 공장과 현금을 자기 법인의 소유로 확정한다.",
+        emotionalCostLimit: "모욕은 첫 장면에서 끝내고 주인공이 곧바로 거래 선택권을 행사한다.",
+      },
+      purpose: {
+        seriesWhat: "재벌그룹의 지배권을 자기 이름으로 확보한다.",
+        arcWhat: "첫 공장과 운영팀을 소유한 독립 법인 대표가 된다.",
+        chapterWant: "오늘 채권 매각 전에 계약금을 걸고 공장 열쇠를 확보한다.",
+        whyNow: "오늘 입찰을 놓치면 공장이 철거되고 숨은 수주 장부도 사라진다.",
+      },
+      commercialPromise: {
+        currentSituation: "철거 입찰까지 세 시간이 남은 지방 공장에서 비서실장이 출입을 막는다.",
+        repeatableReaderFantasy: "버려진 남자가 남들이 버린 회사를 먼저 사서 자기 기업 제국으로 키운다.",
+        howAdvantage: "전생의 부도 시점과 숨은 수주를 알고 실제 채권 계약으로 선점한다.",
+        firstPayoff: "공장 열쇠와 법인 소유권, 첫 입금 3천만 원을 얻는다.",
+        payoffWitness: "그를 내쫓던 비서실장과 현장 직원들이 대표라고 부른다.",
+        nextPaymentQuestion: "첫 공장의 숨은 수주로 다음 부실 계열사까지 살 수 있는가.",
+      },
     },
     openingEpisodes: [1, 2, 3, 4].map((episode) => ({
       episode,
@@ -83,6 +109,15 @@ function survivalReview() {
         candidateId: "p01",
         verdict: "SURVIVE",
         independentScore: { promise: 19, earlyPayoff: 19, repeatEngine: 18, railConversion: 18, longRunSupply: 18, total: 92 },
+        entryGate: {
+          passed: true,
+          protagonistNow: "쫓겨난 구조조정 실무자",
+          personalWant: "자기 이름으로 그룹을 차지한다",
+          whyNow: "오늘 공장이 철거된다",
+          repeatableFantasy: "버린 회사를 사서 기업 제국을 만든다",
+          chapterGoal: "채권 계약금을 걸고 공장 열쇠를 얻는다",
+          failureReasons: [] as string[],
+        },
         decisiveStrength: "첫 보상이 더 빠르고 관계 변화가 선명하다.",
         decisiveRisk: "중반 인수전이 반복될 수 있다.",
         requiredRepair: "Arc별 승부 수단을 분리한다.",
@@ -91,6 +126,15 @@ function survivalReview() {
         candidateId: "p02",
         verdict: "HOLD",
         independentScore: { promise: 18, earlyPayoff: 17, repeatEngine: 18, railConversion: 17, longRunSupply: 18, total: 88 },
+        entryGate: {
+          passed: true,
+          protagonistNow: "쫓겨난 구조조정 실무자",
+          personalWant: "자기 이름으로 그룹을 차지한다",
+          whyNow: "오늘 공장이 철거된다",
+          repeatableFantasy: "버린 회사를 사서 기업 제국을 만든다",
+          chapterGoal: "채권 계약금을 걸고 공장 열쇠를 얻는다",
+          failureReasons: [] as string[],
+        },
         decisiveStrength: "채권 회수 엔진이 명확하다.",
         decisiveRisk: "초반 개인 소유권이 약하다.",
         requiredRepair: "첫 자산의 개인 귀속을 명시한다.",
@@ -132,6 +176,14 @@ describe("pitch slate command", () => {
     expect(errors).toContain("commercialScore.total must equal the five component scores");
   });
 
+  it("rejects candidates without the human desire and purpose entry contract", () => {
+    const invalid = candidate();
+    delete (invalid as Partial<typeof invalid>).entryContract;
+    expect(validatePitchCandidate(invalid, "p01")).toContain(
+      "entryContract must fully define human drive, purpose, situation, HOW, and payment promise",
+    );
+  });
+
   it("rejects survival reviews that restore multiple winners or omit candidates", () => {
     const invalid = survivalReview();
     invalid.verdicts[1].verdict = "SURVIVE";
@@ -139,6 +191,18 @@ describe("pitch slate command", () => {
     const errors = validatePitchSurvivalReview(invalid, ["p01", "p02"]);
     expect(errors).toContain("ranking must contain every candidate exactly once");
     expect(errors).toContain("at most one candidate may be SURVIVE");
+  });
+
+  it("forbids SURVIVE when the semantic entry gate fails", () => {
+    const invalid = survivalReview();
+    invalid.verdicts[0].entryGate = {
+      ...invalid.verdicts[0].entryGate,
+      passed: false,
+      failureReasons: ["개인 욕망을 복원할 수 없다"],
+    };
+    expect(validatePitchSurvivalReview(invalid, ["p01", "p02"])).toContain(
+      "verdicts[0] cannot SURVIVE after failing the entry gate",
+    );
   });
 
   it("generates candidates serially and publishes one non-canonical slate atomically", async () => {
@@ -184,6 +248,9 @@ describe("pitch slate command", () => {
       canonStatus: "non-canonical",
       reviewStatus: "pending",
     }));
+    expect(JSON.parse(await readFile(join(root, ".inkos", "pitch-slates", "chaebol-canary", "slate.json"), "utf8"))).toEqual(
+      expect.objectContaining({ schemaVersion: 2, genre: "modern-fantasy-ko", targetChapters: 200 }),
+    );
     expect(output.artifacts.map((artifact: { role: string }) => artifact.role)).toEqual([
       "pitch-slate-data",
       "pitch-slate-review",
@@ -247,6 +314,7 @@ describe("pitch slate command", () => {
     const reviewPrompt = String(mocks.runAgentSession.mock.calls[0]?.[1]);
     expect(reviewPrompt).not.toContain('"commercialScore"');
     expect(reviewPrompt).not.toContain('"decision"');
+    expect(reviewPrompt).toContain("entryGate");
     expect(mocks.runAgentSession.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       bookId: null,
       sessionKind: "pitch-review",
@@ -272,7 +340,7 @@ describe("pitch slate command", () => {
     const reviewDir = join(slateDir, "survival-review");
     await mkdir(reviewDir, { recursive: true });
     const slate = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       slateId: "decision-canary",
       canonStatus: "non-canonical",
       reviewStatus: "pending",
@@ -282,7 +350,7 @@ describe("pitch slate command", () => {
     const slateBytes = Buffer.from(`${JSON.stringify(slate, null, 2)}\n`);
     await writeFile(join(slateDir, "slate.json"), slateBytes);
     await writeFile(join(reviewDir, "review.json"), `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       reviewKind: "independent-blind-comparison",
       slateId: "decision-canary",
       reviewedAt: "2026-08-26T12:00:00.000Z",
@@ -329,7 +397,7 @@ describe("pitch slate command", () => {
     await mkdir(reviewDir, { recursive: true });
     await mkdir(decisionDir, { recursive: true });
     const slate = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       slateId: "promote-canary",
       canonStatus: "non-canonical",
       reviewStatus: "pending",
@@ -388,6 +456,13 @@ describe("pitch slate command", () => {
     const book = JSON.parse(await readFile(join(root, "books", "selected-chaebol", "book.json"), "utf8"));
     expect(book.status).toBe("outlining");
     expect(book.writing.reviewMode).toBe("manual");
+    expect(book.writing.entryContractPolicy).toBe("auto-required");
+    const admission = JSON.parse(await readFile(join(root, "books", "selected-chaebol", "story", "entry-contract.json"), "utf8"));
+    expect(admission).toEqual(expect.objectContaining({
+      schemaVersion: "firefly_planning_admission/v1",
+      bookId: "selected-chaebol",
+      status: "approved",
+    }));
     await expect(readFile(join(root, "books", "selected-chaebol", "chapters", "chapter-0001.md"), "utf8"))
       .rejects.toThrow();
     const receipt = JSON.parse(await readFile(join(slateDir, "promotion.json"), "utf8"));

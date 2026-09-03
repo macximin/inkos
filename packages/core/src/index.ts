@@ -33,6 +33,22 @@ export {
 export { type DetectionHistoryEntry, type DetectionStats } from "./models/detection.js";
 export { type StyleProfile } from "./models/style-profile.js";
 export {
+  FireflyEntryContractSchema,
+  FireflyPlanningAdmissionSchema,
+  assertApprovedFireflyPlanningAdmission,
+  hashEntryContract,
+  type FireflyEntryContract,
+  type FireflyPlanningAdmission,
+} from "./planning/entry-contract.js";
+export {
+  FireflyPitchEntryGateSchema,
+  FireflyPitchReviewCandidateV3Schema,
+  FireflyPitchReviewPacketV3Schema,
+  buildFireflyPitchReviewPacketV3,
+  hashCanonicalJson as hashPitchReviewCanonicalJson,
+  type FireflyPitchReviewPacketV3,
+} from "./storyyard/pitch-review-packet.js";
+export {
   ReferencePackSchema,
   ReferenceStoryIndexEntrySchema,
   ReferenceStyleExampleSchema,

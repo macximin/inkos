@@ -3,8 +3,14 @@ import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises
 import { dirname, join, relative, resolve } from "node:path";
 import { Command } from "commander";
 import {
+  FireflyEntryContractSchema,
+  FireflyPitchReviewCandidateV3Schema,
+  FireflyPitchReviewPacketV3Schema,
   PipelineRunner,
+  buildFireflyPitchReviewPacketV3,
   defaultChapterLength,
+  hashEntryContract,
+  hashPitchReviewCanonicalJson,
   loadBuiltinSkillResource,
   normalizePlatformOrOther,
   runAgentSession,
@@ -20,6 +26,7 @@ const PITCH_SKILL_ID = "inkos-commercial-webnovel-pitch";
 const PITCH_REVIEW_SKILL_ID = "inkos-commercial-pitch-review";
 const REVIEW_VERDICTS = new Set(["SURVIVE", "HOLD", "KILL"]);
 const HUMAN_DECISIONS = new Set(["select", "hold", "reject"]);
+const PITCH_GENRES = new Set(["modern-fantasy-ko", "fantasy-ko", "murim-ko"]);
 
 type JsonObject = Record<string, unknown>;
 
@@ -159,6 +166,7 @@ function renderPitchBrief(params: {
   readonly decision: JsonObject;
 }): string {
   const { candidate, verdict, decision } = params;
+  const entry = FireflyEntryContractSchema.parse(candidate.entryContract);
   return [
     `# 선택 피치 · ${params.slateId}/${candidate.candidateId}`,
     "",
@@ -174,6 +182,23 @@ function renderPitchBrief(params: {
     `- 장기 위험: ${candidate.longRunRisk}`,
     `- 독립심사 최소 수리: ${verdict?.requiredRepair ?? "없음"}`,
     `- 인간 판정 메모: ${decision.comment || "없음"}`,
+    "",
+    "## Entry Contract",
+    "",
+    `- 결핍·모욕: ${entry.humanDrive.lackOrHumiliation}`,
+    `- 개인 욕망: ${entry.humanDrive.personalDesire}`,
+    `- 자기 이득: ${entry.humanDrive.selfInterest}`,
+    `- 정서 소모 한도: ${entry.humanDrive.emotionalCostLimit}`,
+    `- Series WHAT: ${entry.purpose.seriesWhat}`,
+    `- Arc what: ${entry.purpose.arcWhat}`,
+    `- Chapter want: ${entry.purpose.chapterWant}`,
+    `- Why now: ${entry.purpose.whyNow}`,
+    `- 첫 상황: ${entry.commercialPromise.currentSituation}`,
+    `- 반복 소비 판타지: ${entry.commercialPromise.repeatableReaderFantasy}`,
+    `- HOW: ${entry.commercialPromise.howAdvantage}`,
+    `- 첫 지급: ${entry.commercialPromise.firstPayoff}`,
+    `- 목격자 반응: ${entry.commercialPromise.payoffWitness}`,
+    `- 다음 결제 질문: ${entry.commercialPromise.nextPaymentQuestion}`,
     "",
     "## 초반 4화",
     "",
@@ -242,6 +267,11 @@ export function validatePitchCandidate(candidate: JsonObject, expectedId: string
     for (const field of ["startingIdentity", "repeatedVerb", "firstAsset"] as const) {
       if (!nonEmptyString(protagonist[field])) errors.push(`protagonist.${field} is required`);
     }
+  }
+
+  const entryContract = FireflyEntryContractSchema.safeParse(candidate.entryContract);
+  if (!entryContract.success) {
+    errors.push("entryContract must fully define human drive, purpose, situation, HOW, and payment promise");
   }
 
   const opening = candidate.openingEpisodes;
@@ -336,6 +366,28 @@ commercialScore의 다섯 세부 항목은 각각 0~20점, total은 그 합계�
     "repeatedVerb": "장편에서 반복할 구체 행동",
     "firstAsset": "첫 자산·정보·관계"
   },
+  "entryContract": {
+    "humanDrive": {
+      "lackOrHumiliation": "독자가 즉시 체감할 구체적 결핍·모욕·상실",
+      "personalDesire": "주인공이 자기 자신을 위해 원하는 것",
+      "selfInterest": "첫 선택으로 주인공 개인에게 돌아오는 이득",
+      "emotionalCostLimit": "초반 정서 소모 한도와 반드시 보존할 능동성"
+    },
+    "purpose": {
+      "seriesWhat": "달성하면 작품을 완결해도 되는 장기 목표",
+      "arcWhat": "첫 Arc 종료 때 비가역적으로 바뀔 상태",
+      "chapterWant": "1화에서 행동으로 얻으려는 구체적 결과",
+      "whyNow": "오늘 움직이지 않으면 무엇을 잃는지"
+    },
+    "commercialPromise": {
+      "currentSituation": "첫 장면의 장소·압박·상대·시한",
+      "repeatableReaderFantasy": "여러 Arc에 걸쳐 반복 구매할 욕망과 승리",
+      "howAdvantage": "주인공만 가진 우위와 실제 사용법",
+      "firstPayoff": "1~4화 안에 개인에게 지급될 돈·소유·선택권",
+      "payoffWitness": "누가 지급을 목격하고 어떤 행동·호칭을 바꾸는지",
+      "nextPaymentQuestion": "첫 지급 직후 다음 화에서 확인하고 싶은 질문"
+    }
+  },
   "openingEpisodes": [
     {"episode": 1, "event": "행동과 압박", "visiblePayoff": "독자가 확인할 결과"},
     {"episode": 2, "event": "행동과 압박", "visiblePayoff": "독자가 확인할 결과"},
@@ -429,6 +481,23 @@ export function validatePitchSurvivalReview(review: JsonObject, candidateIds: Re
         survivor = String(candidateId);
       }
       errors.push(...scoreErrors(verdict.independentScore, `verdicts[${index}].independentScore`));
+      const entryGate = verdict.entryGate;
+      if (!isObject(entryGate)) {
+        errors.push(`verdicts[${index}].entryGate is required`);
+      } else {
+        for (const field of ["protagonistNow", "personalWant", "whyNow", "repeatableFantasy", "chapterGoal"] as const) {
+          if (!nonEmptyString(entryGate[field])) errors.push(`verdicts[${index}].entryGate.${field} is required`);
+        }
+        if (typeof entryGate.passed !== "boolean") errors.push(`verdicts[${index}].entryGate.passed must be boolean`);
+        if (!Array.isArray(entryGate.failureReasons) || entryGate.failureReasons.some((reason) => !nonEmptyString(reason))) {
+          errors.push(`verdicts[${index}].entryGate.failureReasons must be a string array`);
+        } else if (entryGate.passed !== (entryGate.failureReasons.length === 0)) {
+          errors.push(`verdicts[${index}].entryGate.passed must match failureReasons emptiness`);
+        }
+        if (entryGate.passed === false && verdict.verdict === "SURVIVE") {
+          errors.push(`verdicts[${index}] cannot SURVIVE after failing the entry gate`);
+        }
+      }
       for (const field of ["decisiveStrength", "decisiveRisk", "requiredRepair"] as const) {
         if (!nonEmptyString(verdict[field])) errors.push(`verdicts[${index}].${field} is required`);
       }
@@ -453,6 +522,8 @@ function survivalReviewPrompt(slate: JsonObject): string {
 - 입력에서 생성자의 commercialScore와 decision은 제거되어 있습니다. 추정하거나 복원하지 말고 직접 심사하세요.
 - 독창성, 원작과의 거리, 업종·사건 순서·보상 구조 유사성은 감점하지 마세요.
 - 바로 제작할 후보가 있으면 SURVIVE는 정확히 하나만 선택하세요. 모두 부족하면 SURVIVE 없이 winnerCandidateId를 null로 두세요.
+- 독자가 '누가, 무엇을, 왜 지금 원하고, 어떤 판타지를 반복 구매하는지' 설명할 수 있는지 entryGate로 먼저 판정하세요.
+- entryGate가 실패한 후보는 점수가 높아도 SURVIVE로 둘 수 없습니다. 정보 누락을 미스터리나 분위기로 보정하지 마세요.
 - 결과는 사람 결정을 돕는 추천이며 정본 승격이 아닙니다.
 
 <pitch_candidates>
@@ -475,6 +546,15 @@ ${JSON.stringify(candidates, null, 2)}
         "railConversion": 0,
         "longRunSupply": 0,
         "total": 0
+      },
+      "entryGate": {
+        "passed": true,
+        "protagonistNow": "첫 장면에서 주인공이 처한 구체적 상황",
+        "personalWant": "주인공 개인의 욕망",
+        "whyNow": "지금 움직여야 하는 이유",
+        "repeatableFantasy": "독자가 반복 구매할 판타지",
+        "chapterGoal": "1화의 행동 목표와 확인 가능한 결과",
+        "failureReasons": []
       },
       "decisiveStrength": "다른 후보와 비교해 살릴 결정적 강점",
       "decisiveRisk": "실제 제작을 막을 수 있는 한 가지 위험",
@@ -539,6 +619,7 @@ function renderReviewMarkdown(slate: JsonObject): string {
 
   for (const candidate of candidates) {
     const protagonist = candidate.protagonist as JsonObject;
+    const entry = FireflyEntryContractSchema.parse(candidate.entryContract);
     const score = candidate.commercialScore as JsonObject;
     lines.push(
       `## ${candidate.candidateId} · ${(candidate.titleCandidates as string[]).join(" / ")}`,
@@ -549,6 +630,11 @@ function renderReviewMarkdown(slate: JsonObject): string {
       `- 반복 동사: ${protagonist.repeatedVerb}`,
       `- 첫 자산: ${protagonist.firstAsset}`,
       `- 첫 보상: ${candidate.firstReward}`,
+      `- 개인 욕망: ${entry.humanDrive.personalDesire}`,
+      `- Series WHAT: ${entry.purpose.seriesWhat}`,
+      `- Arc what: ${entry.purpose.arcWhat}`,
+      `- 1화 want: ${entry.purpose.chapterWant}`,
+      `- 반복 소비 판타지: ${entry.commercialPromise.repeatableReaderFantasy}`,
       `- 표면 변주: ${candidate.surfaceVariation}`,
       `- 상업성: ${score.total}/100`,
       "",
@@ -596,12 +682,18 @@ function renderSurvivalReviewMarkdown(review: JsonObject): string {
   ];
   for (const verdict of verdicts) {
     const score = verdict.independentScore as JsonObject;
+    const entryGate = verdict.entryGate as JsonObject;
     lines.push(
       `### ${verdict.candidateId} · ${verdict.verdict} · ${score.total}/100`,
       "",
       `- 결정적 강점: ${verdict.decisiveStrength}`,
       `- 실제 위험: ${verdict.decisiveRisk}`,
       `- 제작 전 최소 수리: ${verdict.requiredRepair}`,
+      `- Entry Gate: ${entryGate.passed === true ? "PASS" : "FAIL"}`,
+      `- 독해 복원: ${entryGate.protagonistNow} / ${entryGate.personalWant} / ${entryGate.whyNow}`,
+      `- 반복 판타지: ${entryGate.repeatableFantasy}`,
+      `- 1화 목표: ${entryGate.chapterGoal}`,
+      `- 실패 사유: ${Array.isArray(entryGate.failureReasons) && entryGate.failureReasons.length > 0 ? entryGate.failureReasons.join(" / ") : "없음"}`,
       `- 세부 점수: 약속 ${score.promise} / 초반 결제 ${score.earlyPayoff} / 반복 엔진 ${score.repeatEngine} / 관계 환전 ${score.railConversion} / 장편 공급량 ${score.longRunSupply}`,
       "",
     );
@@ -689,6 +781,8 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
     .requiredOption("--id <slateId>", "Safe slate identifier")
     .requiredOption("--count <n>", "Candidate count (1-20)")
     .requiredOption("--reference <paths...>", "Verified reference-pack text files")
+    .option("--genre <genre>", "Storyyard planning genre", "modern-fantasy-ko")
+    .option("--target-chapters <n>", "Planned long-form chapter count", "200")
     .option("--instruction <text>", "Explicit commercial direction")
     .option("--session <sessionId>", "Stable base session id")
     .option("--json", "Emit structured JSON for external agents")
@@ -697,6 +791,12 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         const slateId = String(opts.id ?? "").trim();
         if (!SAFE_SLATE_ID.test(slateId)) throw new Error("slate id must use 1-80 safe filename characters");
         const count = parseCandidateCount(String(opts.count));
+        const genre = String(opts.genre ?? "modern-fantasy-ko").trim();
+        if (!PITCH_GENRES.has(genre)) throw new Error("pitch genre must be modern-fantasy-ko, fantasy-ko, or murim-ko");
+        const targetChapters = Number(opts.targetChapters);
+        if (!Number.isInteger(targetChapters) || targetChapters < 20 || targetChapters > 2_000) {
+          throw new Error("target chapters must be an integer between 20 and 2000");
+        }
         const sessionId = String(opts.session ?? `pitch-${slateId}`).trim();
         if (!SAFE_SESSION_ID.test(sessionId)) throw new Error("session id must use 1-140 safe filename characters");
         const instruction = await readPitchInstruction(instructionArgs, opts.instruction, hooks.readInput);
@@ -756,11 +856,13 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
 
         const generatedAt = (hooks.now?.() ?? new Date()).toISOString();
         const slate: JsonObject = {
-          schemaVersion: 1,
+          schemaVersion: 2,
           slateId,
           canonStatus: "non-canonical",
           reviewStatus: "pending",
           candidateCount: count,
+          genre,
+          targetChapters,
           instruction,
           instructionSha256: createHash("sha256").update(instruction).digest("hex"),
           referenceInputs: references.inputs,
@@ -845,7 +947,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         }
         if (errors.length > 0) throw new Error(`pitch survival review failed after one repair: ${errors.join("; ")}`);
         const persistedReview: JsonObject = {
-          schemaVersion: 1,
+          schemaVersion: 2,
           reviewKind: "independent-blind-comparison",
           slateId,
           reviewedAt: new Date().toISOString(),
@@ -866,6 +968,125 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         const message = error instanceof Error ? error.message : String(error);
         if (opts.json) process.stdout.write(`${JSON.stringify({ error: message })}\n`);
         else process.stderr.write(`Pitch review failed: ${message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  command
+    .command("export-storyyard")
+    .description("Export a reviewed Entry Contract slate for Storyyard planning HIL")
+    .requiredOption("--id <slateId>", "Reviewed schema-v2 slate identifier")
+    .option("--out <path>", "Project-relative output path")
+    .option("--json", "Emit structured JSON")
+    .action(async (opts) => {
+      try {
+        const slateId = String(opts.id ?? "").trim();
+        if (!SAFE_SLATE_ID.test(slateId)) throw new Error("slate id must use 1-80 safe filename characters");
+        const projectRoot = findProjectRoot();
+        const loaded = await loadReviewedSlate(projectRoot, slateId);
+        if (loaded.slate.schemaVersion !== 2 || loaded.review.schemaVersion !== 2) {
+          throw new Error("Storyyard planning HIL export requires a schema-v2 Entry Contract slate and review");
+        }
+        const genre = String(loaded.slate.genre ?? "");
+        const targetChapters = Number(loaded.slate.targetChapters);
+        if (!PITCH_GENRES.has(genre) || !Number.isInteger(targetChapters)) {
+          throw new Error("pitch slate genre or target chapter count is invalid");
+        }
+        const verdicts = loaded.review.verdicts as JsonObject[];
+        const candidates = (loaded.slate.candidates as JsonObject[]).map((candidate) => {
+          const verdict = verdicts.find((item) => item.candidateId === candidate.candidateId);
+          if (!verdict) throw new Error(`survival review is missing ${candidate.candidateId}`);
+          const unsigned = {
+            id: candidate.candidateId,
+            titleCandidates: candidate.titleCandidates,
+            oneLinePromise: candidate.oneLinePromise,
+            entryContract: candidate.entryContract,
+            protagonist: candidate.protagonist,
+            openingEpisodes: candidate.openingEpisodes,
+            firstReward: candidate.firstReward,
+            railA: candidate.railA,
+            railB: candidate.railB,
+            arcLadder: candidate.arcLadder,
+            longRunRisk: candidate.longRunRisk,
+            independentReview: {
+              verdict: verdict.verdict,
+              independentScore: verdict.independentScore,
+              entryGate: verdict.entryGate,
+              decisiveStrength: verdict.decisiveStrength,
+              decisiveRisk: verdict.decisiveRisk,
+              requiredRepair: verdict.requiredRepair,
+            },
+          };
+          return FireflyPitchReviewCandidateV3Schema.parse({
+            ...unsigned,
+            sha256: hashPitchReviewCanonicalJson(unsigned),
+          });
+        });
+        const winnerCandidateId = loaded.review.winnerCandidateId as string | null;
+        const generatedAt = (hooks.now?.() ?? new Date()).toISOString();
+        const title = `기획 HIL · ${slateId}`;
+        const packet = buildFireflyPitchReviewPacketV3({
+          generatedAt,
+          purpose: "planning-entry",
+          source: {
+            system: "inkos",
+            slateId,
+            sourceRevision: sha256Bytes(`${loaded.slateSha256}:${loaded.reviewSha256}`),
+          },
+          work: { id: slateId, title, genre, status: "non-canonical", targetChapters },
+          artifact: { id: slateId, kind: "pitch-slate", title, status: "human-decision-pending" },
+          candidates,
+          recommendation: winnerCandidateId
+            ? { candidateId: winnerCandidateId, reason: String(loaded.review.comparisonReason) }
+            : null,
+          actions: ["select", "hold", "reject"],
+          authority: {
+            canon: "inkos",
+            decisionSurface: "storyyard",
+            decisionEffect: "planning-selection",
+            manuscriptApply: false,
+            reverseSync: false,
+          },
+        });
+        const defaultPath = `.inkos/exports/storyyard/pitch-slates/${slateId}/packet.json`;
+        const relativeOutput = String(opts.out ?? defaultPath).split("\\").join("/");
+        const outputPath = resolve(projectRoot, relativeOutput);
+        if (!(outputPath === projectRoot || outputPath.startsWith(`${projectRoot}/`))) {
+          throw new Error("Storyyard planning HIL output must stay inside the InkOS project");
+        }
+        await mkdir(dirname(outputPath), { recursive: true });
+        const content = `${JSON.stringify(packet, null, 2)}\n`;
+        let persistedPacket = packet;
+        let persistedContent = content;
+        try {
+          await writeFile(outputPath, content, { encoding: "utf8", flag: "wx" });
+        } catch (error) {
+          if (!isObject(error) || error.code !== "EEXIST") throw error;
+          persistedContent = await readFile(outputPath, "utf8");
+          persistedPacket = FireflyPitchReviewPacketV3Schema.parse(JSON.parse(persistedContent));
+          if (persistedPacket.source.slateId !== slateId
+            || persistedPacket.source.sourceRevision !== packet.source.sourceRevision) {
+            throw new Error("A stale Storyyard planning HIL packet already occupies the immutable output path");
+          }
+        }
+        process.stdout.write(`${JSON.stringify({
+          slateId,
+          packetId: persistedPacket.packetId,
+          packetSha256: persistedPacket.packetSha256,
+          humanDecision: "pending",
+          manuscriptAuthorized: false,
+          path: relative(projectRoot, outputPath).split("\\").join("/"),
+          artifacts: [{
+            repo: "inkos",
+            path: relative(projectRoot, outputPath).split("\\").join("/"),
+            sha256: sha256Bytes(persistedContent),
+            role: "pitch-storyyard-planning-packet",
+          }],
+        }, null, 2)}\n`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (opts.json) process.stdout.write(`${JSON.stringify({ error: message })}\n`);
+        else process.stderr.write(`Pitch Storyyard export failed: ${message}\n`);
         process.exitCode = 1;
       }
     });
@@ -991,6 +1212,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         const candidate = (loaded.slate.candidates as JsonObject[])
           .find((item) => item.candidateId === decision.candidateId);
         if (!candidate) throw new Error("selected candidate no longer belongs to the slate");
+        const entryContract = FireflyEntryContractSchema.parse(candidate.entryContract);
         const verdict = (loaded.review.verdicts as JsonObject[] | undefined)
           ?.find((item) => item.candidateId === decision.candidateId);
         try {
@@ -1022,7 +1244,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
           language: "ko",
           createdAt: promotedAt,
           updatedAt: promotedAt,
-          writing: { reviewMode: "manual" },
+          writing: { reviewMode: "manual", entryContractPolicy: "auto-required" },
         };
         if (hooks.initializePromotedBook) {
           await hooks.initializePromotedBook({ book, brief });
@@ -1045,6 +1267,22 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
           humanDecision: decision,
         };
         const selectionArtifacts = await writeArtifacts(projectRoot, [
+          {
+            path: `books/${bookId}/story/entry-contract.json`,
+            content: `${JSON.stringify({
+              schemaVersion: "firefly_planning_admission/v1",
+              bookId,
+              status: "approved",
+              entryContract,
+              entryContractSha256: hashEntryContract(entryContract),
+              sourceSlateId: slateId,
+              sourceSlateSha256: loaded.slateSha256,
+              sourceReviewSha256: loaded.reviewSha256,
+              sourceDecisionSha256: sha256Bytes(decisionBytes),
+              approvedAt: String(decision.decidedAt),
+            }, null, 2)}\n`,
+            role: "book-entry-contract-admission",
+          },
           {
             path: `books/${bookId}/story/pitch-selection.json`,
             content: `${JSON.stringify(selection, null, 2)}\n`,

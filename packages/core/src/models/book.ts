@@ -70,6 +70,7 @@ export const BookConfigSchema = z.object({
     revisionGate: z.enum(["strict", "lenient", "always"]).optional(),
     railPolicy: z.enum(["optional", "auto-required"]).optional(),
     referencePolicy: z.enum(["optional", "auto-required"]).optional(),
+    entryContractPolicy: z.enum(["optional", "auto-required"]).optional(),
     referencePackId: z.string().min(1).optional(),
     spineReference: z.string().min(1).optional(),
   }).optional(),
