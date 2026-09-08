@@ -21,7 +21,7 @@ const {
   codexLoopControl,
 } = vi.hoisted(() => ({
   agentInstances: [] as any[],
-  streamCalls: [] as Array<{ model: any; context: any; options: any }>,
+  streamCalls: [] as Array<{ model: any; context: any; options: any; invocation?: any }>,
   heldStreamCompletions: [] as Array<() => void>,
   heldStreamWaiters: [] as Array<() => void>,
   codexStreamCalls: [] as Array<{ model: any; context: any }>,
@@ -84,6 +84,7 @@ vi.mock("../llm/codex-cli.js", async (importOriginal) => {
 
 vi.mock("@mariozechner/pi-ai", async () => {
   const actual = await vi.importActual<any>("@mariozechner/pi-ai");
+  const { currentModelInvocation } = await import("../llm/model-invocation.js");
 
   function clone(value: unknown): unknown {
     return JSON.parse(JSON.stringify(value));
@@ -127,7 +128,7 @@ vi.mock("@mariozechner/pi-ai", async () => {
   }
 
   const streamSimple = vi.fn((model: any, context: any, options: any) => {
-    streamCalls.push({ model: clone(model), context: clone(context), options: clone(options) });
+    streamCalls.push({ model: clone(model), context: clone(context), options: clone(options), invocation: currentModelInvocation() });
     const stream = actual.createAssistantMessageEventStream();
     const last = context.messages.at(-1);
     const prompt = lastVisibleUserText(context.messages);
@@ -1669,6 +1670,35 @@ describe("runAgentSession cache — bookId switch", () => {
       "ls",
       "use_skill",
     ]);
+  });
+
+  it("removes every tool and restores the default table when the tool policy changes", async () => {
+    const config = { sessionId: "s1", bookId: null, language: "en", pipeline: {} as any, projectRoot, model: { provider: "x", id: "y", api: "anthropic-messages" } as any };
+    await runAgentSession({ ...config, toolPolicy: "none" }, "hello");
+    expect(agentInstances[0].state.tools).toEqual([]);
+    expect(streamCalls[0].context.tools).toEqual([]);
+    await runAgentSession(config, "hello again");
+    expect(agentInstances).toHaveLength(2);
+    expect(agentInstances[1].state.tools.length).toBeGreaterThan(0);
+  });
+
+  it("uses fresh invocation metadata on a cached agent without leaking it into the prompt", async () => {
+    const config = { sessionId: "s1", bookId: null, language: "en", pipeline: {} as any, projectRoot, model: { provider: "x", id: "y", api: "anthropic-messages" } as any, toolPolicy: "none" as const };
+    await runAgentSession({ ...config, modelInvocation: { stage: "generation-evidence-only", candidateId: "p01", attempt: 1 } }, "hello");
+    await runAgentSession({ ...config, modelInvocation: { stage: "repair-evidence-only", candidateId: "p02", attempt: 2 } }, "hello again");
+    expect(agentInstances).toHaveLength(1);
+    expect(streamCalls[0].invocation).toMatchObject({ projectRoot, sessionId: "s1", stage: "generation-evidence-only", candidateId: "p01", attempt: 1 });
+    expect(streamCalls[1].invocation).toMatchObject({ projectRoot, sessionId: "s1", stage: "repair-evidence-only", candidateId: "p02", attempt: 2 });
+    expect(streamCalls[0].invocation.requestId).not.toBe(streamCalls[1].invocation.requestId);
+    expect(JSON.stringify(streamCalls.map((call) => call.context))).not.toContain("evidence-only");
+  });
+
+  it("evicts the cached agent when bound Codex runtime instructions change", async () => {
+    const model = { provider: "x", id: "y", api: "anthropic-messages", codexModelInstructions: { path: "/thin.md", sha256: "a".repeat(64) } } as any;
+    const config = { sessionId: "s1", bookId: null, language: "en", pipeline: {} as any, projectRoot, model, toolPolicy: "none" as const };
+    await runAgentSession(config, "hello");
+    await runAgentSession({ ...config, model: { ...model, codexModelInstructions: { path: "/thin.md", sha256: "b".repeat(64) } } }, "hello again");
+    expect(agentInstances).toHaveLength(2);
   });
 
   it("suppresses book-mutating production tools while a background task runs and restores them on flag change", async () => {

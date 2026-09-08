@@ -1,4 +1,5 @@
 import { BaseAgent } from "./base.js";
+import { estimateTextTokens } from "../llm/provider.js";
 import type { BookConfig } from "../models/book.js";
 import type { ChapterArcProvenance } from "../models/chapter.js";
 import type { FutureAdvantageMove } from "../arc/schema.js";
@@ -29,7 +30,7 @@ import {
 import { analyzeAITells } from "./ai-tells.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage, RuleStack } from "../models/input-governance.js";
 import type { LengthSpec } from "../models/length-governance.js";
-import type { RuntimeStateDelta } from "../models/runtime-state.js";
+import { CurrentStateStateSchema, type RuntimeStateDelta } from "../models/runtime-state.js";
 import { buildLengthSpec, countChapterLength, resolveLengthCountingMode } from "../utils/length-metrics.js";
 import {
   capContextBlock,
@@ -43,12 +44,11 @@ import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js"
 import {
   buildGovernedCharacterMatrixWorkingSet,
   buildGovernedHookWorkingSet,
-  mergeCharacterMatrixMarkdown,
-  mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
 import { parseCreativeOutput } from "./writer-parser.js";
-import { buildRuntimeStateArtifacts, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
+import { buildRuntimeStateArtifacts, loadRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
+import { ENTITY_OBSERVATION_CONTEXT_SOURCE, readEntityObservationContext, validateEntityObservations } from "../state/entity-observations.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
@@ -260,9 +260,17 @@ export function assertRuntimeStateDeltaMoralAuthority(
   moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource>,
 ): void {
   const findings = new Set<string>();
-  for (const surface of collectStringLeaves(delta)) {
+  // Quoted chapter observations are narrative evidence, not new writing rules.
+  const { entityObservations, ...stateChanges } = delta;
+  for (const surface of collectStringLeaves(stateChanges)) {
     for (const finding of findUnauthorizedMandatoryMoralCorrectionsInText(
       surface,
+      moralAuthoritySources,
+    )) findings.add(finding);
+  }
+  for (const observation of entityObservations ?? []) {
+    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence(
+      observation.evidence,
       moralAuthoritySources,
     )) findings.add(finding);
   }
@@ -356,6 +364,11 @@ export class WriterAgent extends BaseAgent {
     assertCurrentProductionGenreProfileReceipt(resolvedGenreProfile.receipt);
     const { profile: genreProfile, body: genreBody } = resolvedGenreProfile;
     const effectiveBookRules = await readEffectiveBookRules(bookDir, book.id);
+    const { contextPackage, entityContext } = await this.loadEntityObservationContext({
+      bookDir, chapterNumber, language: book.language ?? genreProfile.language,
+      contextPackage: input.contextPackage,
+      query: [input.chapterMemo?.goal, input.chapterIntent, ownerExternalContext].filter(Boolean).join("\n"),
+    });
     const bookRules = effectiveBookRules?.automatic ?? null;
     const bookRulesGuidance = effectiveBookRules?.guidance ?? "";
     const verifiedRuleStack = projectRuleStackToVerifiedBookRules(
@@ -365,7 +378,7 @@ export class WriterAgent extends BaseAgent {
     const moralAuthoritySources: ArchitectMoralAuthoritySource[] = [
       { kind: "owner-direction", text: ownerExternalContext ?? "" },
       { kind: "owner-direction", text: creativeBrief },
-      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+      ...(contextPackage?.selectedContext ?? []).flatMap((entry) => (
         (entry.source === "story/author_intent.md" || entry.source === "story/current_focus.md")
           && entry.excerpt
           ? [{ kind: "owner-direction" as const, text: entry.excerpt }]
@@ -393,11 +406,17 @@ export class WriterAgent extends BaseAgent {
       parentCanon,
       fanficCanonRaw,
       ...collectStringLeaves(verifiedRuleStack),
-      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
-        !ownerDirectionSources.has(entry.source) ? [entry.excerpt] : []
+      ...(contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        !ownerDirectionSources.has(entry.source) && entry.source !== ENTITY_OBSERVATION_CONTEXT_SOURCE ? [entry.excerpt] : []
       )),
     ], moralAuthoritySources);
-    assertNarrativeEvidenceMoralAuthority([recentChapters], moralAuthoritySources);
+    assertNarrativeEvidenceMoralAuthority([
+      recentChapters,
+      entityContext,
+      ...(contextPackage?.selectedContext ?? [])
+        .filter((entry) => entry.source === ENTITY_OBSERVATION_CONTEXT_SOURCE)
+        .map((entry) => entry.excerpt),
+    ], moralAuthoritySources);
 
     if (input.chapterMemo) {
       assertChapterMemoMoralAuthority(input.chapterMemo, moralAuthoritySources);
@@ -460,8 +479,8 @@ export class WriterAgent extends BaseAgent {
       arcId: arcChapterContext?.provenance.arcId,
     });
     const externalContext = ownerExternalContext?.trim() ? ownerExternalContext : undefined;
-    const governedMemoryBlocks = input.contextPackage
-      ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
+    const governedMemoryBlocks = contextPackage
+      ? buildGovernedMemoryEvidenceBlocks(contextPackage, resolvedLanguage)
       : undefined;
     const englishVarianceBrief = resolvedLanguage === "en"
       ? await buildEnglishVarianceBrief({
@@ -490,12 +509,12 @@ export class WriterAgent extends BaseAgent {
       ? `${baseCreativeSystemPrompt}\n\n${referenceContext.rendered}`
       : baseCreativeSystemPrompt;
 
-    const creativeUserPrompt = input.chapterMemo && input.contextPackage && verifiedRuleStack
+    const baseCreativeUserPrompt = input.chapterMemo && contextPackage && verifiedRuleStack
       ? this.buildGovernedUserPrompt({
           chapterNumber,
           chapterMemo: input.chapterMemo,
           chapterIntentData: input.chapterIntentData,
-          contextPackage: input.contextPackage,
+          contextPackage: contextPackage,
           ruleStack: verifiedRuleStack,
           externalContext,
           taskGuidance,
@@ -546,6 +565,21 @@ export class WriterAgent extends BaseAgent {
           });
         })();
 
+    const isGovernedCreative = Boolean(input.chapterMemo && contextPackage && verifiedRuleStack);
+    const creativeUserPrompt = entityContext && !isGovernedCreative
+      ? `${baseCreativeUserPrompt}\n\n${entityContext}`
+      : baseCreativeUserPrompt;
+    const entityContextReceiptPath = join(bookDir, "story", "runtime", `chapter-${String(chapterNumber).padStart(4, "0")}.entity-context.json`);
+    await mkdir(join(bookDir, "story", "runtime"), { recursive: true });
+    await writeFile(entityContextReceiptPath, JSON.stringify({
+      chapter: chapterNumber,
+      throughChapter: chapterNumber - 1,
+      source: ENTITY_OBSERVATION_CONTEXT_SOURCE,
+      excerpt: entityContext,
+      estimatedTokens: estimateTextTokens(entityContext),
+      purpose: "Effective entity evidence delivered to Writer after refreshing the composed selection.",
+    }, null, 2), "utf8");
+
     const creativeTemperature = input.temperatureOverride ?? 0.7;
 
     this.logInfo(resolvedLanguage, {
@@ -564,6 +598,9 @@ export class WriterAgent extends BaseAgent {
     const creativeUsage = creativeResponse.usage;
 
     const creative = parseCreativeOutput(chapterNumber, creativeResponse.content, resolvedLengthSpec.countingMode);
+    // Settle the exact surface that will be persisted so evidence offsets and
+    // hashes do not refer to pre-normalization text.
+    const surfaceNormalizedContent = normalizePostWriteSurface(creative.content, resolvedLanguage);
 
     // Phase 4: soft-check that PRE_WRITE_CHECK aligns with the chapter memo.
     // Memo was already parse-validated in the planner, so this only warns —
@@ -578,11 +615,11 @@ export class WriterAgent extends BaseAgent {
       ko: `2단계: ${chapterNumber}화 상태 정산 (${creative.wordCount}자)`,
       en: `Phase 2: state settlement for chapter ${chapterNumber} (${creative.wordCount} words)`,
     });
-    const isGovernedSettlement = Boolean(input.chapterIntent && input.contextPackage && verifiedRuleStack);
-    const filteredHooksForSettlement = isGovernedSettlement && input.contextPackage
+    const isGovernedSettlement = Boolean(input.chapterIntent && contextPackage && verifiedRuleStack);
+    const filteredHooksForSettlement = isGovernedSettlement && contextPackage
       ? buildGovernedHookWorkingSet({
           hooksMarkdown: hooks,
-          contextPackage: input.contextPackage,
+          contextPackage: contextPackage,
           chapterIntent: input.chapterIntent,
           chapterNumber,
           language: resolvedLanguage,
@@ -598,7 +635,7 @@ export class WriterAgent extends BaseAgent {
       ? buildGovernedCharacterMatrixWorkingSet({
           matrixMarkdown: characterMatrix,
           chapterIntent: input.chapterIntent ?? volumeOutline,
-          contextPackage: input.contextPackage!,
+          contextPackage: contextPackage!,
           protagonistName: bookRules?.protagonist?.name,
         })
       : characterMatrix;
@@ -609,11 +646,11 @@ export class WriterAgent extends BaseAgent {
       bookRules,
       chapterNumber,
       title: creative.title,
-      content: creative.content,
+      content: surfaceNormalizedContent,
       currentState,
       ledger: genreProfile.numericalSystem ? ledger : "",
       hooks: filteredHooksForSettlement,
-      chapterSummaries: input.contextPackage ? filterSummaries(chapterSummaries, chapterNumber) : chapterSummaries,
+      chapterSummaries: contextPackage ? filterSummaries(chapterSummaries, chapterNumber) : chapterSummaries,
       subplotBoard: filteredSubplotsForSettlement,
       emotionalArcs: filteredArcsForSettlement,
       characterMatrix: filteredMatrixForSettlement,
@@ -622,7 +659,7 @@ export class WriterAgent extends BaseAgent {
         ? this.joinGovernedEvidenceBlocks(governedMemoryBlocks)
         : undefined,
       chapterIntent: input.chapterIntent,
-      contextPackage: input.contextPackage,
+      contextPackage: contextPackage,
       ruleStack: verifiedRuleStack,
       validationFeedback: undefined,
       originalHooks: hooks,
@@ -651,6 +688,7 @@ export class WriterAgent extends BaseAgent {
       chapterNumber,
       undefined,
       settlementMoralAuthoritySources,
+      surfaceNormalizedContent,
     );
     const resolvedRuntimeStateDelta = runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta;
     const priorHookIds = new Set(parsePendingHooksMarkdown(hooks).map((hook) => hook.hookId));
@@ -667,7 +705,6 @@ export class WriterAgent extends BaseAgent {
       : [];
 
     // ── Post-write validation (regex + rule-based, zero LLM cost) ──
-    const surfaceNormalizedContent = normalizePostWriteSurface(creative.content, resolvedLanguage);
     const surfaceNormalizedWordCount = countChapterLength(surfaceNormalizedContent, resolvedLengthSpec.countingMode);
     const ruleViolations = [
       ...validatePostWrite(surfaceNormalizedContent, genreProfile, bookRules, resolvedLanguage),
@@ -780,14 +817,18 @@ export class WriterAgent extends BaseAgent {
       effectiveBookRules,
     );
     const resolvedLanguage = input.book.language ?? genreProfile.language;
-    const governedMemoryBlocks = input.contextPackage
-      ? buildGovernedMemoryEvidenceBlocks(input.contextPackage, resolvedLanguage)
+    const { contextPackage } = await this.loadEntityObservationContext({
+      bookDir: input.bookDir, chapterNumber: input.chapterNumber, language: resolvedLanguage,
+      contextPackage: input.contextPackage, query: input.content,
+    });
+    const governedMemoryBlocks = contextPackage
+      ? buildGovernedMemoryEvidenceBlocks(contextPackage, resolvedLanguage)
       : undefined;
 
     const ownerDirectionSources = new Set(["story/author_intent.md", "story/current_focus.md"]);
     const settlementMoralAuthoritySources: ArchitectMoralAuthoritySource[] = [
       { kind: "owner-direction", text: creativeBrief },
-      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
+      ...(contextPackage?.selectedContext ?? []).flatMap((entry) => (
         ownerDirectionSources.has(entry.source) && entry.excerpt
           ? [{ kind: "owner-direction" as const, text: entry.excerpt }]
           : []
@@ -810,10 +851,16 @@ export class WriterAgent extends BaseAgent {
       input.chapterIntent,
       input.validationFeedback,
       ...collectStringLeaves(verifiedRuleStack),
-      ...(input.contextPackage?.selectedContext ?? []).flatMap((entry) => (
-        !ownerDirectionSources.has(entry.source) ? [entry.excerpt] : []
+      ...(contextPackage?.selectedContext ?? []).flatMap((entry) => (
+        !ownerDirectionSources.has(entry.source) && entry.source !== ENTITY_OBSERVATION_CONTEXT_SOURCE ? [entry.excerpt] : []
       )),
     ], settlementMoralAuthoritySources);
+    assertNarrativeEvidenceMoralAuthority(
+      (contextPackage?.selectedContext ?? [])
+        .filter((entry) => entry.source === ENTITY_OBSERVATION_CONTEXT_SOURCE)
+        .map((entry) => entry.excerpt),
+      settlementMoralAuthoritySources,
+    );
 
     const settleResult = await this.settle({
       book: input.book,
@@ -834,7 +881,7 @@ export class WriterAgent extends BaseAgent {
         ? this.joinGovernedEvidenceBlocks(governedMemoryBlocks)
         : undefined,
       chapterIntent: input.chapterIntent,
-      contextPackage: input.contextPackage,
+      contextPackage: contextPackage,
       ruleStack: verifiedRuleStack,
       validationFeedback: input.validationFeedback,
       originalHooks: hooks,
@@ -859,6 +906,7 @@ export class WriterAgent extends BaseAgent {
       input.chapterNumber,
       input.allowReapply,
       settlementMoralAuthoritySources,
+      input.content,
     );
 
     return {
@@ -998,41 +1046,19 @@ export class WriterAgent extends BaseAgent {
       },
     );
 
-    let mergedSettlement: ReturnType<typeof parseSettlementOutput> & {
-      runtimeStateDelta?: RuntimeStateDelta;
-      runtimeStateSnapshot?: RuntimeStateSnapshot;
-    };
-    try {
-      const deltaOutput = parseSettlerDeltaOutput(response.content);
-      mergedSettlement = {
-        postSettlement: deltaOutput.postSettlement,
-        runtimeStateDelta: deltaOutput.runtimeStateDelta,
-        updatedState: "",
-        updatedLedger: "",
-        updatedHooks: "",
-        chapterSummary: "",
-        updatedSubplots: "",
-        updatedEmotionalArcs: "",
-        updatedCharacterMatrix: "",
-      };
-    } catch {
-      const settlement = parseSettlementOutput(response.content, params.genreProfile);
-      mergedSettlement = governedControlBlock
-        ? {
-            ...settlement,
-            updatedHooks: mergeTableMarkdownByKey(params.originalHooks, settlement.updatedHooks, [0]),
-            updatedSubplots: settlement.updatedSubplots
-              ? mergeTableMarkdownByKey(params.originalSubplots, settlement.updatedSubplots, [0])
-              : settlement.updatedSubplots,
-            updatedEmotionalArcs: settlement.updatedEmotionalArcs
-              ? mergeTableMarkdownByKey(params.originalEmotionalArcs, settlement.updatedEmotionalArcs, [0, 1])
-              : settlement.updatedEmotionalArcs,
-            updatedCharacterMatrix: settlement.updatedCharacterMatrix
-              ? mergeCharacterMatrixMarkdown(params.originalCharacterMatrix, settlement.updatedCharacterMatrix)
-              : settlement.updatedCharacterMatrix,
-          }
-        : settlement;
+    // Newly generated settlements must use the current structured contract.
+    // Historical legacy text still has its standalone parser, but cannot silently
+    // bypass named-entity recording in a new production run.
+    const deltaOutput = parseSettlerDeltaOutput(response.content);
+    if (deltaOutput.runtimeStateDelta.entityObservations === undefined) {
+      throw new Error("Settler must output entityObservations (use [] when no named entities occur)");
     }
+    const mergedSettlement = {
+      postSettlement: deltaOutput.postSettlement,
+      runtimeStateDelta: deltaOutput.runtimeStateDelta,
+      updatedState: "", updatedLedger: "", updatedHooks: "", chapterSummary: "",
+      updatedSubplots: "", updatedEmotionalArcs: "", updatedCharacterMatrix: "",
+    };
 
     return {
       settlement: mergedSettlement,
@@ -1767,6 +1793,7 @@ ${overrides}\n`;
     authoritativeChapterNumber?: number,
     allowReapply?: boolean,
     moralAuthoritySources: ReadonlyArray<ArchitectMoralAuthoritySource> = [],
+    chapterText?: string,
   ): Promise<RuntimeStateArtifacts | null> {
     if (!delta) return null;
     const safeDelta = authoritativeChapterNumber === undefined
@@ -1778,6 +1805,7 @@ ${overrides}\n`;
       delta: safeDelta,
       language,
       allowReapply,
+      chapterText,
     });
   }
 
@@ -1786,7 +1814,12 @@ ${overrides}\n`;
     output: WriteChapterOutput,
     language: "zh" | "ko" | "en",
   ): Promise<RuntimeStateArtifacts | null> {
-    if (!output.runtimeStateDelta) return null;
+    if (!output.runtimeStateDelta) {
+      if (output.runtimeStateSnapshot?.currentState.entityObservations !== undefined) {
+        throw new Error("Entity observations require a chapter-grounded runtime state delta");
+      }
+      return null;
+    }
     const safeDelta = this.normalizeRuntimeStateDeltaChapter(
       output.runtimeStateDelta,
       output.chapterNumber,
@@ -1795,6 +1828,7 @@ ${overrides}\n`;
       safeDelta,
       await this.loadPersistenceMoralAuthoritySources(bookDir),
     );
+    const observations = validateEntityObservations(safeDelta, output.content);
     if (
       safeDelta === output.runtimeStateDelta
       && output.runtimeStateSnapshot
@@ -1802,8 +1836,26 @@ ${overrides}\n`;
       && output.updatedState
       && output.updatedHooks
     ) {
+      // Preserve already-arbitrated hooks, but never trust cached observations.
+      // A revised body must replace this chapter's earlier mentions completely.
+      const persisted = await loadRuntimeStateSnapshot(bookDir);
+      if (safeDelta.chapter < persisted.manifest.lastAppliedChapter) {
+        throw new Error(`delta chapter ${safeDelta.chapter} goes backwards`);
+      }
+      const currentState = { ...output.runtimeStateSnapshot.currentState };
+      delete currentState.entityObservations;
+      if (persisted.currentState.entityObservations !== undefined || safeDelta.entityObservations !== undefined) {
+        currentState.entityObservations = [
+          ...(persisted.currentState.entityObservations ?? []).filter((entry) => entry.sourceChapter !== safeDelta.chapter),
+          ...observations,
+        ];
+      }
+      if (currentState.chapter !== safeDelta.chapter) {
+        throw new Error("Cached current state does not match the chapter being saved");
+      }
+      CurrentStateStateSchema.parse(currentState);
       return {
-        snapshot: output.runtimeStateSnapshot,
+        snapshot: { ...output.runtimeStateSnapshot, currentState },
         resolvedDelta: safeDelta,
         currentStateMarkdown: output.updatedState,
         hooksMarkdown: output.updatedHooks,
@@ -1815,7 +1867,56 @@ ${overrides}\n`;
       bookDir,
       delta: safeDelta,
       language,
+      chapterText: output.content,
+      allowReapply: true,
     });
+  }
+
+  private async loadEntityObservationContext(params: {
+    readonly bookDir: string;
+    readonly chapterNumber: number;
+    readonly language: "zh" | "ko" | "en";
+    readonly contextPackage?: ContextPackage;
+    readonly query?: string;
+  }): Promise<{ contextPackage: ContextPackage | undefined; entityContext: string }> {
+    // Refresh even when a supplied package has this source: a cached package
+    // must not retain removed observations or leak later chapters into a replay.
+    const existingEntries = params.contextPackage?.selectedContext.filter((entry) => entry.source === ENTITY_OBSERVATION_CONTEXT_SOURCE) ?? [];
+    let maxContextTokens: number | undefined;
+    let maxChars: number | undefined;
+    if (existingEntries.length > 0) {
+      // Stay within the slot already accepted by Composer's context budget,
+      // including when refreshing changes the mix of CJK and Latin text.
+      maxChars = Math.min(6000, existingEntries.reduce((sum, entry) => sum + (entry.excerpt?.length ?? 0), 0));
+      maxContextTokens = existingEntries.reduce((sum, entry) => sum + estimateTextTokens(entry.excerpt ?? ""), 0);
+    } else if (params.contextPackage) {
+      const contextWindow = this.ctx.client._piModel?.contextWindow;
+      if (contextWindow && Number.isFinite(contextWindow) && contextWindow > 0) {
+        const usedTokens = params.contextPackage.selectedContext.reduce((sum, entry) => sum
+          + estimateTextTokens(`${entry.source}\n${entry.reason}\n${entry.excerpt ?? ""}`), 0);
+        const entryOverhead = estimateTextTokens(`${ENTITY_OBSERVATION_CONTEXT_SOURCE}\nNamed people and organizations observed before the current chapter.\n`);
+        maxContextTokens = Math.max(0, contextWindow - Math.max(0, this.ctx.client.defaults.maxTokens) - usedTokens - entryOverhead);
+      }
+    }
+    const entityContext = await readEntityObservationContext(params.bookDir, {
+      throughChapter: params.chapterNumber - 1,
+      query: params.query,
+      language: params.language,
+      maxChars,
+      maxContextTokens,
+    });
+    const contextPackage = params.contextPackage ? {
+      ...params.contextPackage,
+      selectedContext: [
+        ...params.contextPackage.selectedContext.filter((entry) => entry.source !== ENTITY_OBSERVATION_CONTEXT_SOURCE),
+        ...(entityContext ? [{
+          source: ENTITY_OBSERVATION_CONTEXT_SOURCE,
+          reason: existingEntries[0]?.reason ?? "Named people and organizations observed before the current chapter.",
+          excerpt: entityContext,
+        }] : []),
+      ],
+    } : undefined;
+    return { contextPackage, entityContext };
   }
 
   private async loadPersistenceMoralAuthoritySources(

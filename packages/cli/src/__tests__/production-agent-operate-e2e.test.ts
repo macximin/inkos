@@ -23,7 +23,7 @@ vi.mock("@actalk/inkos-core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actalk/inkos-core")>();
   class MockPipelineRunner {
     createAgentContext(role: string) {
-      return { role, model: "gpt-5.6-sol", reasoningEffort: "high" };
+      return { role, model: "gpt-6-astra", reasoningEffort: "high" };
     }
 
     executeSurfaceWriteNext(input: unknown) {
@@ -74,7 +74,7 @@ afterEach(async () => {
 });
 
 describe("production agent-operate CLI end-to-end orchestration", () => {
-  it("holds the pair/lane lease from pristine verification through v2 terminal readback", async () => {
+  it("executes Astra while holding the pair/lane lease through immutable terminal replay", async () => {
     const sourceRoot = await mkdtemp(join(tmpdir(), "inkos-agent-cli-e2e-"));
     roots.push(sourceRoot);
     const pairId = "pair-cli-e2e";
@@ -90,11 +90,11 @@ describe("production agent-operate CLI end-to-end orchestration", () => {
         service: "codex",
         configSource: "studio",
         baseUrl: "http://127.0.0.1/codex-subscription",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-astra",
         apiFormat: "responses",
         stream: false,
-        services: [{ service: "codex", models: ["gpt-5.6-sol"], apiFormat: "responses", stream: false }],
-        defaultModel: "gpt-5.6-sol",
+        services: [{ service: "codex", models: ["gpt-6-astra"], apiFormat: "responses", stream: false }],
+        defaultModel: "gpt-6-astra",
         extra: { codexReasoningEffort: "high" },
       },
       notify: [],
@@ -215,7 +215,7 @@ describe("production agent-operate CLI end-to-end orchestration", () => {
       },
     };
     const sessionId = `hq-agent-${hashCanonicalJson({
-      v: 1,
+      v: 2,
       bookId,
       lane: modeEvidence.lane,
       profileId: modeEvidence.profileId,
@@ -223,6 +223,8 @@ describe("production agent-operate CLI end-to-end orchestration", () => {
       soulVersion: modeEvidence.soulVersion,
       bindingSha256: null,
       isolationScopeSha256,
+      runtime: { hermesProfile: modeEvidence.profileId, model: "gpt-6-astra", reasoning: "high" },
+      profileConfigSha256: modeEvidence.profileConfigSha256,
     }).slice(0, 40)}`;
     const instruction = "다음 화에서 즉시 보상을 보여 줘.";
     const args = { chapterCount: 1 as const, targetLength: { count: 1800, unit: "ko-chars" as const } };
@@ -255,7 +257,7 @@ describe("production agent-operate CLI end-to-end orchestration", () => {
       args,
       expectedSoulBinding: null,
       ownerDecision,
-      runtime: { hermesProfile: "neutral-baseline-ko", model: "gpt-5.6-sol", reasoning: "high" },
+      runtime: { hermesProfile: "neutral-baseline-ko", model: "gpt-6-astra", reasoning: "high" },
       approvalMode: "human" as const,
       approvedInputs: [],
       privateInputs: [],
@@ -278,7 +280,16 @@ describe("production agent-operate CLI end-to-end orchestration", () => {
       guidanceSha256: directionTextSha256(guidance),
     };
     const actionBytes = Buffer.from(`${JSON.stringify(action)}\n`, "utf8");
-    const hermesReceiptBytes = Buffer.from("{}\n", "utf8");
+    const hermesUnsigned = {
+      schemaVersion: "hermes-invocation-receipt/v1", status: "completed", workOrderId: workOrder.workOrderId, workOrderSha256,
+      profile: { profileId: modeEvidence.profileId, soulId: modeEvidence.soulId, soulVersion: modeEvidence.soulVersion, configSha256: modeEvidence.profileConfigSha256, soulSha256: modeEvidence.soulSha256 },
+      runtime: { provider: "openai-codex", model: "gpt-6-astra", reasoning: "high", platform: "cli", openaiRuntime: "auto", transport: "codex_responses", toolsCount: 0, toolCallCount: 0 },
+      invocation: { sessionId: "hermes-cli-e2e", startedAt: "2026-09-02T00:00:00.000Z", completedAt: "2026-09-02T00:00:01.000Z", exitCode: 0 },
+      promptSha256: "a".repeat(64), systemPrompt: { sha256: "b".repeat(64), byteLength: 1 }, rawOutput: { sha256: "c".repeat(64), byteLength: 1 },
+      action: { sha256: sha256(actionBytes), byteLength: actionBytes.byteLength, textSha256: action.guidanceSha256 },
+      sessionExport: { sha256: "d".repeat(64), byteLength: 1 },
+    };
+    const hermesReceiptBytes = Buffer.from(`${JSON.stringify({ ...hermesUnsigned, receiptSelfHash: hashCanonicalJson(hermesUnsigned) })}\n`, "utf8");
     const ipcBytes = Buffer.from(`${JSON.stringify({
       schemaVersion: "inkos-agent-operation-request/v1",
       workOrder: artifact(workOrderBytes),

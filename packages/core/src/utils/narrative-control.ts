@@ -135,10 +135,16 @@ export function renderNarrativeSelectedContext(
 
   return entries
     .map((entry, index) => {
+      // This source contains host-validated literal quotations. Replacing a
+      // chapter reference, hyphenated name, or H123 inside it would alter the
+      // evidence and make Writer's recorded input differ from its actual input.
+      const detail = entry.source === "story/state/current_state.json#entity-observations"
+        ? entry.excerpt
+        : entry.excerpt && sanitizeNarrativeControlText(entry.excerpt, language);
       const lines = [
         `### ${heading} ${index + 1}`,
         `- ${reasonLabel}: ${sanitizeNarrativeControlText(entry.reason, language)}`,
-        entry.excerpt ? `- ${detailLabel}: ${sanitizeNarrativeControlText(entry.excerpt, language)}` : "",
+        detail ? `- ${detailLabel}: ${detail}` : "",
       ].filter(Boolean);
       return lines.join("\n");
     })

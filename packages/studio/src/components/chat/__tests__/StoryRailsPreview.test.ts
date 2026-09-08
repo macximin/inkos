@@ -173,9 +173,10 @@ describe("StoryRailsPreview", () => {
     }));
 
     expect(html).toContain("아직 Rail 계획이 없습니다");
-    expect(html).toContain("기존 Book → Chapter 집필은 그대로 작동합니다");
-    expect(html).toContain("Book 정본(캐논)보다 우선순위가 낮은");
-    expect(html).toContain("Arc의 하위 항목이 되지 않습니다");
+    expect(html).toContain("작품의 A-Rail은 장기 도착점");
+    expect(html).toContain("기존 회차 집필에 연결할 수 있습니다");
+    expect(html).toContain("작품의 확정된 사실보다 우선순위가 낮은");
+    expect(html).toContain("이미 일어난 일과 앞으로의 계획을 구별");
   });
 
   it("renders ordered A/B cards, statuses, targets, bindings and warnings", () => {
@@ -196,8 +197,8 @@ describe("StoryRailsPreview", () => {
       }),
     }));
 
-    expect(html).toContain("A-Rail · 장기 Anchor");
-    expect(html).toContain("B-Rail · Arc 경로");
+    expect(html).toContain("A-Rail · 장기 도착점");
+    expect(html).toContain("B-Rail · 아크 경로");
     expect(html.indexOf("문이 닫히는 밤")).toBeLessThan(html.indexOf("새 도시의 주인"));
     expect(html.indexOf("B001")).toBeLessThan(html.indexOf("B002"));
     expect(html).toContain("현재");

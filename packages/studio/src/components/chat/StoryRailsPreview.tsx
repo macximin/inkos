@@ -637,7 +637,7 @@ export function StoryRailsPreview({ exec }: { readonly exec: ToolExecution }) {
             {tr(
               "这是优先级低于 Book 正史的“可编辑未来规划”。Chapter 仍然直接属于 Book，不会变成 Arc 的子项。",
               "This is an editable future plan below Book canon. Chapters still belong directly to the Book; they do not become children of an Arc.",
-              "Book 정본(캐논)보다 우선순위가 낮은 ‘편집 가능한 미래 계획’입니다. Chapter는 계속 Book에 직접 속하며 Arc의 하위 항목이 되지 않습니다.",
+              "작품의 확정된 사실보다 우선순위가 낮은 편집 가능한 전개 계획입니다. 원고에서 이미 일어난 일과 앞으로의 계획을 구별합니다.",
             )}
           </span>
         </div>
@@ -683,7 +683,7 @@ export function StoryRailsPreview({ exec }: { readonly exec: ToolExecution }) {
             {tr(
               "现有 Book → Chapter 写作仍可照常使用；需要时再添加 A-Rail 与 B-Rail。",
               "Existing Book → Chapter writing keeps working. Add A-Rail and B-Rail only when useful.",
-              "기존 Book → Chapter 집필은 그대로 작동합니다. 필요할 때만 A-Rail과 B-Rail을 추가하면 됩니다.",
+              "작품의 A-Rail은 장기 도착점, B-Rail은 그곳으로 가는 아크 경로입니다. 필요할 때 기존 회차 집필에 연결할 수 있습니다.",
             )}
           </p>
         </div>
@@ -693,7 +693,7 @@ export function StoryRailsPreview({ exec }: { readonly exec: ToolExecution }) {
           <section>
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <div>
-                <h5 className="text-sm font-semibold text-foreground">{tr("A-Rail · 长程锚点", "A-Rail · Long-range anchors", "A-Rail · 장기 Anchor")}</h5>
+                <h5 className="text-sm font-semibold text-foreground">{tr("A-Rail · 长程锚点", "A-Rail · Long-range anchors", "A-Rail · 장기 도착점")}</h5>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">{tr("故事必须抵达的不可逆变化", "Irreversible destinations the story must reach", "이야기가 도달해야 할 비가역적 도착점")}</p>
               </div>
               <span className="rounded-full border border-border/50 bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -708,7 +708,7 @@ export function StoryRailsPreview({ exec }: { readonly exec: ToolExecution }) {
           <section>
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <div>
-                <h5 className="text-sm font-semibold text-foreground">{tr("B-Rail · Arc 路线", "B-Rail · Arc route", "B-Rail · Arc 경로")}</h5>
+                <h5 className="text-sm font-semibold text-foreground">{tr("B-Rail · Arc 路线", "B-Rail · Arc route", "B-Rail · 아크 경로")}</h5>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">{tr("通向各锚点的当前与候选 Arc", "Current and possible Arcs toward each anchor", "각 Anchor로 향하는 현재·후보 Arc")}</p>
               </div>
               <span className="rounded-full border border-border/50 bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">

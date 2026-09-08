@@ -19,6 +19,13 @@ export const CODEX: InkosEndpoint = {
       capabilities: { text: true, tools: true, reasoning: true },
     },
     {
+      id: "gpt-6-astra",
+      maxOutput: 32768,
+      // Codex CLI model catalog, not the distinct API context limit.
+      contextWindowTokens: 272000,
+      capabilities: { text: true, tools: true, reasoning: true },
+    },
+    {
       id: "gpt-5.6-sol",
       maxOutput: 32768,
       contextWindowTokens: 272000,

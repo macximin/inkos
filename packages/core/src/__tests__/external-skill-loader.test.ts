@@ -14,6 +14,8 @@ import {
 const BUILTIN_SKILL_IDS = [
   "inkos-commercial-pitch-review",
   "inkos-commercial-webnovel-pitch",
+  "inkos-human-premise-pitch",
+  "inkos-human-premise-review",
   "inkos-long-market-research",
   "inkos-long-story-analysis",
   "inkos-long-writing",
@@ -81,6 +83,12 @@ describe("external skill loader", () => {
     expect(pitchRubric).toContain("인간 질감은 상업 골격을 대체하지 않는다");
     expect(pitchRubric).not.toContain("최소 세 축");
     expect(pitchRubric).not.toContain("새 인과");
+    const premiseSkill = loaded.skills.find((skill) => skill.id === "inkos-human-premise-pitch");
+    expect(premiseSkill?.body).toContain("a person's private want");
+    expect(premiseSkill?.body).toContain("actual creative evidence");
+    const premiseReviewSkill = loaded.skills.find((skill) => skill.id === "inkos-human-premise-review");
+    expect(premiseReviewSkill?.body).toContain("Review the candidates independently");
+    expect(premiseReviewSkill?.body).toContain("SURVIVE");
   });
 
   it("lets a project skill replace a built-in skill with the same id", async () => {

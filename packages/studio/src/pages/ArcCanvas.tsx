@@ -213,7 +213,7 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
         <div>
           <a href={`#/book/${encodeURIComponent(bookId)}`} className="mb-3 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-primary"><ArrowLeft size={13} /> 작품 대화</a>
           <div className="flex items-center gap-2 text-sm font-semibold"><MapIcon size={16} className="text-primary" /> Arc 지도</div>
-          <p className="mt-1 text-sm text-muted-foreground">위는 장기 성장선, 아래는 실제 1~3화 제작 Arc입니다.</p>
+          <p className="mt-1 text-sm text-muted-foreground">위는 장기 성장선, 아래는 B레일에 연결할 ArcPacket · 1~3화 실행 계획입니다.</p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-border/60 bg-card px-3 py-1.5 text-xs text-muted-foreground">
           <LockKeyhole size={12} /> 읽기 전용 · 정사는 수정하지 않음
@@ -246,7 +246,7 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
           {selectedArc ? (
             <div className="space-y-6">
               <div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-amber-600 dark:text-amber-400"><CheckCircle2 size={14} /> {selectedArc.id === data.activeArcId ? "현재 Arc" : "제작 Arc"}</div>
+                <div className="flex items-center gap-2 text-xs font-semibold text-amber-600 dark:text-amber-400"><CheckCircle2 size={14} /> {selectedArc.id === data.activeArcId ? "현재 ArcPacket" : "ArcPacket 실행 계획"}</div>
                 <h1 className="mt-2 text-xl font-semibold tracking-tight">{selectedArc.title}</h1>
                 <p className="mt-1 text-sm text-muted-foreground">{selectedArc.chapterNumbers.join("~")}화 · {selectedArc.episodeCount}화 구성 · {statusLabel(selectedArc.status)}</p>
               </div>
@@ -265,7 +265,7 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
                   </div>
                   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
                     <div className="rounded-xl border border-border/60 bg-background/60 p-3">
-                      <div className="text-xs font-semibold text-foreground">A 레일 · 실행과 보상</div>
+                      <div className="text-xs font-semibold text-foreground">실행과 보상</div>
                       <ul className="mt-2 space-y-1 text-xs leading-5 text-muted-foreground">
                         {selectedArc.futureAdvantageMove.bridgeSteps.map((step) => <li key={step}>• {step}</li>)}
                       </ul>
@@ -273,7 +273,7 @@ export default function ArcCanvas({ bookId }: { readonly bookId: string }) {
                       <p className="text-xs leading-5"><span className="font-semibold">보상</span> · {selectedArc.futureAdvantageMove.reward || "미정"}</p>
                     </div>
                     <div className="rounded-xl border border-border/60 bg-background/60 p-3">
-                      <div className="text-xs font-semibold text-foreground">B 레일 · 저항·후폭풍·기억 열화</div>
+                      <div className="text-xs font-semibold text-foreground">저항·후폭풍·기억 열화</div>
                       <ul className="mt-2 space-y-1 text-xs leading-5 text-muted-foreground">
                         {selectedArc.futureAdvantageMove.resistance.map((item) => <li key={`r-${item}`}>• {item}</li>)}
                         {selectedArc.futureAdvantageMove.downstreamConsequences.map((item) => <li key={`c-${item}`}>• {item}</li>)}

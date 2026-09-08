@@ -54,13 +54,13 @@ const StoryAnchorParam = Type.Object({
     description: "Use compound only for nearby anchors; distant anchors stay sparse.",
   }),
   state: Type.Union([Type.Literal("planned"), Type.Literal("reached"), Type.Literal("retired")]),
-  entryState: Type.String({ description: "Story state on entry to this anchor." }),
-  trigger: Type.String({ description: "External or internal trigger that starts the anchor conversion." }),
+  entryState: Type.String({ description: "Who is acting, where and when, with the relevant resources and information on entry. Inherit unchanged work-level context." }),
+  trigger: Type.String({ description: "Personal reason, preceding event or present opportunity that starts action now; do not invent a deadline." }),
   irreversibleChange: Type.String({ description: "Irreversible status, relationship, market, or world change." }),
-  humanAftermath: Type.String({ description: "Human aftermath that remains after the conversion." }),
+  humanAftermath: Type.String({ description: "What the protagonist can actually choose, use or enjoy after the result; include others only when relevant. No mandatory witness or family scene." }),
   readerDebt: Type.String({ description: "Reader promise or debt paid or carried at this anchor." }),
   payoffAxis: Type.String({ description: "Primary payoff or valuation axis." }),
-  nextPressure: Type.String({ description: "Pressure that propels the story toward the next anchor." }),
+  nextPressure: Type.String({ description: "A causal next choice or pressure, or clean closure. Do not manufacture a new crisis." }),
 });
 
 const AnchorRailParam = Type.Object({
@@ -91,10 +91,10 @@ const ArcRouteEntryParam = Type.Object({
     maximum: 3,
     description: "Required historical span only when status is closed; forbidden for active, provisional, hypothesis, or retired entries.",
   })),
-  narrativeFunction: Type.String({ description: "Durable narrative function; do not put exact future scenes here." }),
+  narrativeFunction: Type.String({ description: "How this Arc objective and action advance the target Anchor and the protagonist personal purpose; do not put exact distant scenes here." }),
   payoffAxis: Type.String({ description: "Durable payoff axis." }),
   carriedReaderDebt: Type.String({ description: "Reader debt this B carries or pays." }),
-  contrastRequirement: Type.String({ description: "How this B must differ from the preceding Arc." }),
+  contrastRequirement: Type.String({ description: "Useful variation in action or payoff, including enjoying an existing gain. Do not invent conflict just to differ." }),
 });
 
 const ArcRouteCapacityReservationParam = Type.Object({

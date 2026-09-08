@@ -1033,6 +1033,22 @@ describe("createLLMClient per-call maxTokens not capped (v2.0.0)", () => {
 });
 
 describe("createLLMClient with providers lookup", () => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra"])("uses Codex catalog limits and the explicit %s transport model", async (model) => {
+    const { createLLMClient } = await import("../llm/provider.js");
+    const { LLMConfigSchema } = await import("../models/project.js");
+    const client = createLLMClient(LLMConfigSchema.parse({
+      provider: "openai", service: "codex", model,
+      baseUrl: "http://127.0.0.1/codex-subscription",
+      extra: { codexReasoningEffort: "high", codexBin: "/Applications/Local Codex/codex" },
+    }));
+    expect(client._piModel).toMatchObject({
+      provider: "codex-cli", id: model, contextWindow: 272000,
+      maxTokens: 32768, codexReasoningEffort: "high",
+      codexBin: "/Applications/Local Codex/codex",
+    });
+    expect(client.defaults.maxTokens).toBe(32768);
+  });
+
   it("anthropic + claude-sonnet-4-6 拿到 modelCard 的 maxOutput (64000)，不是未知模型兜底", async () => {
     const { createLLMClient } = await import("../llm/provider.js");
     const { LLMConfigSchema } = await import("../models/project.js");

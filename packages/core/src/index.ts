@@ -1,3 +1,16 @@
+export { WEBNOVEL_PLAN_FORMAT_VERSION, webnovelPlanGuidance, renderEntryPlan } from "./planning/webnovel-plan-format.js";
+export * from "./planning/source-fact-repair.js";
+export {
+  buildBoundedJsonRepairRequest,
+  applyBoundedJsonRepair,
+  createBoundedJsonRepairPatch,
+  hashBoundedJson,
+  type BoundedJsonRepairIssue,
+  type BoundedJsonRepairRule,
+  type BoundedJsonRepairRequest,
+  type BoundedJsonRepairPatch,
+} from "./planning/bounded-json-repair.js";
+export { FIREFLY_PRODUCTION_MODEL, FIREFLY_PRODUCTION_REASONING, FireflyRuntimeModelSchema, type FireflyRuntimeModel } from "./production/model-policy.js";
 // Models
 export { type BookConfig, type Platform, type Genre, type BookStatus, type FanficMode, type ChapterReviewMode, type RevisionGate, BookConfigSchema, PlatformSchema, GenreSchema, BookStatusSchema, FanficModeSchema, normalizePlatformId, normalizePlatformOrOther, resolveChapterReviewMode, resolveRevisionGate } from "./models/book.js";
 export {
@@ -48,6 +61,44 @@ export {
   hashCanonicalJson as hashPitchReviewCanonicalJson,
   type FireflyPitchReviewPacketV3,
 } from "./storyyard/pitch-review-packet.js";
+export {
+  FireflyPitchSourceBindingSchema,
+  FireflyPitchRuntimeReceiptSchema,
+  FireflyHumanPremiseSchema,
+  FireflyHumanPremiseCandidateBaseSchema,
+  FireflyHumanPremiseCandidateSchema,
+  FireflyHumanPremiseSlateSchema,
+  FireflyHumanPremiseReviewSchema,
+  FireflyHumanPremiseDecisionSchema,
+  type FireflyPitchSourceBinding,
+  type FireflyPitchRuntimeReceipt,
+  type FireflyHumanPremiseCandidate,
+  type FireflyHumanPremiseSlate,
+  type FireflyHumanPremiseReview,
+  type FireflyHumanPremiseDecision,
+} from "./planning/human-premise.js";
+export {
+  FireflySpineRetentionContractSchema,
+  FireflySpineRetentionContractV2Schema,
+  FireflySpineRetentionContractUnionSchema,
+  type FireflySpineRetentionContract,
+  type FireflySpineRetentionContractV2,
+  type FireflySpineRetentionContractUnion,
+} from "./planning/spine-retention.js";
+export {
+  FireflyPremiseExpansionBindingSchema,
+  FireflyCommercialExpansionCandidateSchema,
+  FireflyCommercialExpansionSlateSchema,
+  type FireflyPremiseExpansionBinding,
+  type FireflyCommercialExpansionCandidate,
+  type FireflyCommercialExpansionSlate,
+} from "./planning/commercial-expansion.js";
+export {
+  FireflyHumanPremiseReviewCandidateV4Schema,
+  FireflyHumanPremiseReviewPacketV4Schema,
+  buildFireflyHumanPremiseReviewPacketV4,
+  type FireflyHumanPremiseReviewPacketV4,
+} from "./storyyard/human-premise-review-packet.js";
 export {
   ReferencePackSchema,
   ReferenceStoryIndexEntrySchema,
@@ -383,6 +434,8 @@ export {
   type ChapterSummaryRow,
   type ChapterSummariesState,
   type CurrentStateFact,
+  type EntityObservation,
+  type StoredEntityObservation,
   type CurrentStateState,
   type CurrentStatePatch,
   type HookOps,
@@ -396,6 +449,8 @@ export {
   ChapterSummaryRowSchema,
   ChapterSummariesStateSchema,
   CurrentStateFactSchema,
+  EntityObservationSchema,
+  StoredEntityObservationSchema,
   CurrentStateStateSchema,
   CurrentStatePatchSchema,
   HookOpsSchema,
@@ -902,9 +957,17 @@ export {
   buildCodexCliPrompt,
   buildCodexChildEnvironment,
   parseCodexJsonl,
+  parseCodexModelInstructions,
+  type CodexModelInstructionsBinding,
   type CodexCliStatus,
   type CodexCliResult,
 } from "./llm/codex-cli.js";
+export {
+  runWithModelInvocation,
+  currentModelInvocation,
+  type ModelInvocationContext,
+  type ModelInvocationMetadata,
+} from "./llm/model-invocation.js";
 export {
   SERVICE_PRESETS,
   SERVICE_TO_PI_PROVIDER,
@@ -1208,6 +1271,7 @@ export { ConsolidatorAgent } from "./agents/consolidator.js";
 export { MemoryDB, type Fact, type StoredSummary } from "./state/memory-db.js";
 export { StateValidatorAgent } from "./agents/state-validator.js";
 export { loadRuntimeStateSnapshot, buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts, type RuntimeStateArtifacts, type NarrativeMemorySeed } from "./state/runtime-state-store.js";
+export { ENTITY_OBSERVATION_CONTEXT_SOURCE, validateEntityObservations, readEntityObservationContext } from "./state/entity-observations.js";
 export { splitChapters, type SplitChapter } from "./utils/chapter-splitter.js";
 export * from "./translation/index.js";
 export { countChapterLength, resolveLengthCountingMode, formatLengthCount, buildLengthSpec, defaultChapterLength, DEFAULT_CHAPTER_LENGTH_ZH, DEFAULT_CHAPTER_LENGTH_EN, isOutsideSoftRange, isOutsideHardRange, chooseNormalizeMode, type LengthLanguage } from "./utils/length-metrics.js";
@@ -1386,6 +1450,13 @@ export {
   buildUpsertCharactersDelta,
 } from "./interactive-film/authoring-tools.js";
 export { writeCharacterFacts, readCharacterVoices } from "./interactive-film/memory-link.js";
+export * from "./planning/pitch-variation.js";
+export {
+  PROTAGONIST_CONTEXT_POLICY,
+  protagonistContextReviewGuidance,
+  validateProtagonistContextReview,
+  renderProtagonistContextReview,
+} from "./planning/protagonist-context.js";
 export {
   buildFillNodeDeltaFromLLMText,
   buildStructureDeltaFromLLMText,

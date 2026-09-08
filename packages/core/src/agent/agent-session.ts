@@ -1,3 +1,4 @@
+import { runWithModelInvocation, type ModelInvocationMetadata } from "../llm/model-invocation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
@@ -166,6 +167,10 @@ export interface AgentSessionConfig {
    * Changing this value evicts the cached Agent so the tool table stays current.
    */
   suppressProductionTools?: boolean;
+  /** Remove every InkOS tool for this session turn. Omitted preserves the existing tool table. */
+  toolPolicy?: "none";
+  /** Host-owned request metadata; never part of cached model state or prompt text. */
+  modelInvocation?: ModelInvocationMetadata;
 }
 
 export interface AgentSessionResult {
@@ -213,6 +218,7 @@ interface CachedAgent {
   allowSystemFileRead: boolean;
   backgroundTaskContext: string | undefined;
   suppressProductionTools: boolean;
+  toolPolicy: "none" | undefined;
   codexRequestState: { calls: number };
   productionTurnContext: {
     current?: {
@@ -297,6 +303,7 @@ function agentModelIdentity(model: Model<Api>): string {
     model.provider,
     model.baseUrl ?? "",
     model.id,
+    JSON.stringify(Object.fromEntries(["codexReasoningEffort", "codexBin", "codexModelCatalog", "codexModelInstructions"].map((key) => [key, (model as unknown as Record<string, unknown>)[key] ?? null]))),
   ].join("::");
 }
 
@@ -1439,6 +1446,8 @@ async function runAgentSessionUnlocked(
   const requestedModelIdentity = agentModelIdentity(model);
   const allowSystemFileRead = config.allowSystemFileRead ?? envFlagEnabled(process.env.INKOS_AGENT_ALLOW_SYSTEM_READ, false);
   const suppressProductionTools = config.suppressProductionTools ?? false;
+  const toolPolicy = config.toolPolicy;
+  if (toolPolicy !== undefined && toolPolicy !== "none") throw new Error("Unsupported Agent tool policy");
   const playWorldExists = sessionKind === "play"
     ? Boolean(await new PlayStore(projectRoot).loadWorld(sessionId))
     : false;
@@ -1487,6 +1496,7 @@ async function runAgentSessionUnlocked(
       playWorldChanged ||
       backgroundTaskContextChanged ||
       suppressProductionToolsChanged ||
+      cached.toolPolicy !== toolPolicy ||
       transcriptChanged
     ) {
       agentCache.delete(cacheKey);
@@ -1525,6 +1535,7 @@ async function runAgentSessionUnlocked(
     const allowIntentSkillSelection = actionSource === "free-text"
       && skillResolution.forcedSkillIds.length === 0;
     const baseSystemPrompt = buildAgentSystemPrompt(bookId, language, sessionKind, {
+      toolPolicy,
       actionSource,
       requestedIntent,
       playWorldExists,
@@ -1539,7 +1550,7 @@ async function runAgentSessionUnlocked(
         })
       : undefined;
     const productionTurnContext: CachedAgent["productionTurnContext"] = {};
-    const agentTools = createAgentToolsForMode({
+    const agentTools = toolPolicy === "none" ? [] : createAgentToolsForMode({
       pipeline,
       bookId,
       expectedSoulBinding: frozenSoulBinding,
@@ -1734,6 +1745,7 @@ async function runAgentSessionUnlocked(
       allowSystemFileRead,
       backgroundTaskContext: config.backgroundTaskContext,
       suppressProductionTools,
+      toolPolicy,
       codexRequestState,
       productionTurnContext,
       lastCommittedSeq: currentCommittedSeq ?? await latestCommittedSeq(projectRoot, sessionId),
@@ -1888,7 +1900,12 @@ async function runAgentSessionUnlocked(
         sessionKind,
         frozenSoulBinding,
       });
-      await runWithAgentTrajectory({
+      await runWithModelInvocation({
+        projectRoot, sessionId, requestId, ...(bookId ? { bookId } : {}),
+        stage: config.modelInvocation?.stage ?? "agent-session",
+        ...(config.modelInvocation?.candidateId ? { candidateId: config.modelInvocation.candidateId } : {}),
+        ...(config.modelInvocation?.attempt !== undefined ? { attempt: config.modelInvocation.attempt } : {}),
+      }, () => runWithAgentTrajectory({
         conversationId: opaqueConversationId(sessionId),
         runId: requestId,
         agentRole: "main",
@@ -1898,7 +1915,7 @@ async function runAgentSessionUnlocked(
         } else {
           await agent.prompt(promptMessage);
         }
-      });
+      }));
     } finally {
       await releaseSoulTurn?.();
     }

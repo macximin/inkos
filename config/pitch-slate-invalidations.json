@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "invalidations": [
+    {
+      "slateId": "chaebol-entry-hil-20260903-v1",
+      "sourceSlateSha256": "c9af1afc6b67440fe7585c4a25f0517583ff41ddf8666029d59a9afb08309fee",
+      "reason": "P0 human-grounding failure: generated without hash-bound story/style evidence or canary Soul binding; prior PASS is revoked"
+    }
+  ]
+}

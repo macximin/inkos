@@ -13,6 +13,7 @@ import { renderChapterSummariesProjection, renderCurrentStateProjection, renderH
 import { applyRuntimeStateDelta, type RuntimeStateSnapshot } from "./state-reducer.js";
 import { validateRuntimeState } from "./state-validator.js";
 import { arbitrateRuntimeStateDeltaHooks } from "../utils/hook-arbiter.js";
+import { validateEntityObservations } from "./entity-observations.js";
 
 export interface RuntimeStateArtifacts {
   readonly snapshot: RuntimeStateSnapshot;
@@ -61,7 +62,10 @@ export async function buildRuntimeStateArtifacts(params: {
   readonly delta: RuntimeStateDelta;
   readonly language: "zh" | "ko" | "en";
   readonly allowReapply?: boolean;
+  readonly chapterText?: string;
 }): Promise<RuntimeStateArtifacts> {
+  // Reject unsupported observations before bootstrap can write any state files.
+  validateEntityObservations(params.delta, params.chapterText);
   const snapshot = await loadRuntimeStateSnapshot(params.bookDir);
   const { resolvedDelta } = arbitrateRuntimeStateDeltaHooks({
     hooks: snapshot.hooks.hooks,
@@ -71,6 +75,7 @@ export async function buildRuntimeStateArtifacts(params: {
     snapshot,
     delta: resolvedDelta,
     allowReapply: params.allowReapply,
+    chapterText: params.chapterText,
   });
 
   return {

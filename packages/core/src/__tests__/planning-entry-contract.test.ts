@@ -6,11 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertApprovedFireflyPlanningAdmission,
   hashEntryContract,
+  FireflyEntryContractSchema,
 } from "../planning/entry-contract.js";
 import {
   buildFireflyPitchReviewPacketV3,
   hashCanonicalJson,
 } from "../storyyard/pitch-review-packet.js";
+
+import { renderEntryPlan } from "../planning/webnovel-plan-format.js";
 
 const entryContract = {
   humanDrive: {
@@ -45,6 +48,20 @@ describe("Firefly planning admission", () => {
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("projects all six questions without changing legacy contract bytes or inventing facts", () => {
+    const before = JSON.stringify(entryContract);
+    const hash = hashEntryContract(entryContract);
+    const parsed = FireflyEntryContractSchema.parse(entryContract);
+    const brief = renderEntryPlan(parsed, "남들이 버린 공장을 알아보는 전직 실무자");
+    for (const label of ["WHO", "WHAT", "HOW", "WHERE", "WHEN", "WHY"]) expect(brief).toContain(label);
+    for (const section of Object.values(entryContract)) {
+      for (const value of Object.values(section)) expect(brief).toContain(value);
+    }
+    expect(JSON.stringify(parsed)).toBe(before);
+    expect(hashEntryContract(parsed)).toBe(hash);
+    expect(JSON.stringify(entryContract)).toBe(before);
   });
 
   it("fails closed when planning HIL is absent", async () => {
@@ -108,7 +125,7 @@ describe("Storyyard planning HIL packet", () => {
       purpose: "planning-entry",
       source: { system: "inkos", slateId: "slate-a", sourceRevision: createHash("sha256").update("source").digest("hex") },
       work: { id: "slate-a", title: "기획 HIL", genre: "modern-fantasy-ko", status: "non-canonical", targetChapters: 200 },
-      artifact: { id: "pitch-slate-a", kind: "pitch-slate", title: "기획 HIL", status: "human-decision-pending" },
+      artifact: { id: "slate-a", kind: "pitch-slate", title: "기획 HIL", status: "human-decision-pending" },
       candidates: [candidate],
       recommendation: { candidateId: "p01", reason: "가장 빠르게 욕망과 지급이 보인다." },
       actions: ["select", "hold", "reject"],

@@ -86,9 +86,33 @@ export const CurrentStateFactSchema = z.object({
 
 export type CurrentStateFact = z.infer<typeof CurrentStateFactSchema>;
 
+export const EntityObservationSchema = z.object({
+  kind: z.enum(["person", "organization"]),
+  name: z.string().min(1).max(120).refine((value) => value.trim().length > 0 && !/[\r\n]/.test(value), "name must be a nonempty single line"),
+  evidence: z.string().min(1).max(1200).refine((value) => value.trim().length > 0, "evidence must not be blank"),
+}).strict();
+export type EntityObservation = z.infer<typeof EntityObservationSchema>;
+
+export const StoredEntityObservationSchema = EntityObservationSchema.extend({
+  sourceChapter: z.number().int().min(1),
+  chapterTextHash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict().refine((observation) => observation.evidence.includes(observation.name), {
+  path: ["evidence"], message: "stored entity observation must quote its name",
+});
+export type StoredEntityObservation = z.infer<typeof StoredEntityObservationSchema>;
+
 export const CurrentStateStateSchema = z.object({
   chapter: z.number().int().min(0),
   facts: z.array(CurrentStateFactSchema).default([]),
+  entityObservations: z.array(StoredEntityObservationSchema).optional(),
+}).superRefine((state, context) => {
+  for (const [index, observation] of (state.entityObservations ?? []).entries()) {
+    if (observation.sourceChapter > state.chapter) context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["entityObservations", index, "sourceChapter"],
+      message: "entity observation cannot come from a future chapter",
+    });
+  }
 });
 
 export type CurrentStateState = z.infer<typeof CurrentStateStateSchema>;
@@ -138,6 +162,7 @@ export const RuntimeStateDeltaSchema = z.object({
   subplotOps: z.array(LooseOpSchema).default([]),
   emotionalArcOps: z.array(LooseOpSchema).default([]),
   characterMatrixOps: z.array(LooseOpSchema).default([]),
+  entityObservations: z.array(EntityObservationSchema).max(128).optional(),
   notes: z.array(z.string()).default([]),
 });
 

@@ -1,3 +1,4 @@
+import { webnovelPlanGuidance } from "../planning/webnovel-plan-format.js";
 import type { BookConfig, FanficMode } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
@@ -195,6 +196,7 @@ ${fanficContext.fanficCanon}
 - 정확한 동사, 구체적인 행동과 감각, 직접 묘사 순으로 고릅니다. 비유는 장면당 한 번 이하로 줄입니다.
 - 인공지능식 총평, 장면 뒤의 의미 해설, 독자가 이미 본 감정의 재설명을 붙이지 않습니다.`,
     governance,
+    webnovelPlanGuidance("manuscript"),
     `## 재미와 장면
 
 ${funAnchorRule}
@@ -203,8 +205,8 @@ ${funAnchorRule}
 - 상대는 가진 정보와 이해관계 안에서 최선으로 대응합니다. 주인공을 돋보이게 하려고 무능해지지 않습니다.
 - 중요한 충돌, 반전, 지급 장면은 요약하지 말고 행동과 대화, 감각, 침묵까지 현장에서 보여 줍니다. 분량이 부족하면 사건 수를 줄입니다.
 - 인물은 아는 것만 판단합니다. 시점 인물이 모르는 사실을 서술자가 몰래 알려 주지 않습니다.
-- 일상과 전환 장면도 정보, 관계, 선택, 보상 가운데 하나를 실제로 바꿔야 합니다.
-- 화말에는 정보, 관계, 물리적 상태, 권력 중 적어도 하나가 달라져야 합니다.`,
+- 일상과 전환 장면은 필요한 정보·관계·선택·지급·후과를 보여 주거나 이미 얻은 성취를 즐기고 정착시킬 수 있습니다.
+- 화말에는 실제로 얻거나 달라진 결과, 또는 온전히 누리고 유지하는 상태가 읽히게 합니다.`,
     openingRule,
     genreRules,
     protagonistRules,

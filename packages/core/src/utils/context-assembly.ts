@@ -11,6 +11,7 @@ import {
   RuleStackSchema,
 } from "../models/input-governance.js";
 import type { PlanChapterOutput } from "../agents/planner.js";
+import { ENTITY_OBSERVATION_CONTEXT_SOURCE } from "../state/entity-observations.js";
 
 const MAX_OVERRIDE_REASON_CHARS = 80;
 
@@ -174,6 +175,7 @@ export function isProtectedContextSource(source: string): boolean {
     || source === "story/parent_canon.md"
     || source === "story/fanfic_canon.md"
     || source.startsWith("story/current_state.md")
+    || source === ENTITY_OBSERVATION_CONTEXT_SOURCE
     || source.startsWith("story/pending_hooks.md#")
     || source.startsWith("runtime/hook_debt#");
 }

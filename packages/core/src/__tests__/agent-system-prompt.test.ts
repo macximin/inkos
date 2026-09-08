@@ -55,6 +55,18 @@ describe("buildAgentSystemPrompt", () => {
       expect(prompt).not.toContain("sub_agent");
     });
 
+    it("keeps independent pitch review focused on submitted evidence without chat routing", () => {
+      const prompt = buildAgentSystemPrompt(null, "ko", "pitch-review");
+      expect(prompt).toContain("compare the complete submitted candidates and plans");
+      expect(prompt).toContain("creator's self-score or claim of fidelity is not evidence");
+      expect(prompt).toContain("source location and candidate field or paragraph");
+      expect(prompt).toContain("process every declared occurrence");
+      expect(prompt).not.toContain("propose_action");
+      expect(prompt).not.toContain("research_web");
+      expect(prompt).not.toContain("general chat assistant");
+      expect(Buffer.byteLength(prompt)).toBeLessThan(Buffer.byteLength(buildAgentSystemPrompt(null, "ko", "chat")));
+    });
+
     it("requires self-contained proposed action instructions", () => {
       const zhPrompt = buildAgentSystemPrompt(null, "zh", "chat");
       const enPrompt = buildAgentSystemPrompt(null, "en", "chat");

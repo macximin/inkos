@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { FireflyRuntimeModelSchema } from "../production/model-policy.js";
 import { scoreCommercialEvaluation, type CommercialEvaluation, type ReferenceTransformationHilCandidateView } from "../reference/hil-store.js";
 
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
@@ -120,7 +121,7 @@ const FireflyReviewPacketV2BodySchema = z.object({
     generatorMetadataExcluded: z.literal(true),
     runtime: z.object({
       kernel: z.literal("enforce"), piWorker: z.literal("off"), retrieval: z.literal("legacy"),
-      fts: z.literal("off"), model: z.literal("gpt-5.6-sol"), reasoning: z.literal("high"),
+      fts: z.literal("off"), model: FireflyRuntimeModelSchema, reasoning: z.literal("high"),
     }).strict(),
   }).strict(),
   candidates: z.tuple([FireflyReviewCandidateV2Schema, FireflyReviewCandidateV2Schema]),

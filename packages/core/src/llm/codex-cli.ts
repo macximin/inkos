@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { beginCodexInvocation, type ModelInvocationContext } from "./model-invocation.js";
 import {
   createAssistantMessageEventStream,
 } from "@mariozechner/pi-ai";
@@ -133,6 +134,35 @@ export interface CodexCliCompletionInput {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly codexBin?: string;
+  readonly modelCatalog?: CodexModelCatalogBinding;
+  readonly modelInstructions?: CodexModelInstructionsBinding;
+  readonly invocation?: ModelInvocationContext;
+}
+
+export interface CodexModelCatalogBinding {
+  readonly path: string;
+  readonly sha256: string;
+}
+
+export type CodexModelInstructionsBinding = CodexModelCatalogBinding;
+
+export function parseCodexModelInstructions(value: unknown): CodexModelInstructionsBinding | undefined {
+  try { return parseCodexModelCatalog(value); } catch {
+    throw new Error("llm.extra.codexModelInstructions must contain only an absolute path and SHA-256");
+  }
+}
+
+async function readBoundCodexModelInstructions(binding: CodexModelInstructionsBinding): Promise<Buffer> {
+  const bytes = await readFile(binding.path);
+  if (createHash("sha256").update(bytes).digest("hex") !== binding.sha256) {
+    throw new Error("Codex model instructions SHA-256 differs from the configured runtime snapshot");
+  }
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch {
+    throw new Error("Codex model instructions must be valid UTF-8");
+  }
+  if (!text.trim() || text.includes("\0")) throw new Error("Codex model instructions must be non-empty text without NUL");
+  return bytes;
 }
 
 function abortError(message = "Codex request aborted"): Error {
@@ -143,6 +173,42 @@ function abortError(message = "Codex request aborted"): Error {
 
 function codexBinary(explicit?: string): string {
   return explicit?.trim() || process.env.INKOS_CODEX_BIN?.trim() || "codex";
+}
+
+export function parseCodexBin(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim() || value.includes("\0")) {
+    throw new Error("llm.extra.codexBin must be a non-empty executable path or name");
+  }
+  return value.trim();
+}
+
+export function parseCodexModelCatalog(value: unknown): CodexModelCatalogBinding | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("llm.extra.codexModelCatalog must contain an absolute path and SHA-256");
+  }
+  const binding = value as Record<string, unknown>;
+  if (Object.keys(binding).length !== 2 || typeof binding.path !== "string" || !isAbsolute(binding.path)
+    || binding.path.includes("\0") || typeof binding.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(binding.sha256)) {
+    throw new Error("llm.extra.codexModelCatalog must contain only an absolute path and SHA-256");
+  }
+  return { path: binding.path, sha256: binding.sha256 };
+}
+
+async function readBoundCodexModelCatalog(binding: CodexModelCatalogBinding, model?: string): Promise<Buffer> {
+  const bytes = await readFile(binding.path);
+  if (createHash("sha256").update(bytes).digest("hex") !== binding.sha256) {
+    throw new Error("Codex model catalog SHA-256 differs from the configured runtime snapshot");
+  }
+  const catalog = JSON.parse(bytes.toString("utf8")) as { models?: unknown };
+  const selected = Array.isArray(catalog.models)
+    ? catalog.models.filter((entry) => entry !== null && typeof entry === "object" && entry.slug === model)
+    : [];
+  if (!model || model === CODEX_DEFAULT_MODEL || selected.length !== 1 || selected[0].tool_mode !== "direct") {
+    throw new Error("Codex runtime catalog must bind the exact requested model once in direct tool mode");
+  }
+  return bytes;
 }
 
 export function resolveCodexCliTimeoutMs(
@@ -172,6 +238,7 @@ async function runProcess(input: {
   readonly signal?: AbortSignal;
   readonly timeoutMs: number;
   readonly onStdoutLine?: (line: string) => void;
+  readonly onClose?: (exitCode: number | null) => void;
 }): Promise<ProcessResult> {
   if (input.signal?.aborted) throw abortError();
 
@@ -220,10 +287,14 @@ async function runProcess(input: {
       stopChild();
     };
     const inspectCompleteStdoutLines = (): void => {
-      if (!input.onStdoutLine || pendingError) return;
+      if (!input.onStdoutLine) return;
       const lines = stdoutLineBuffer.split(/\r?\n/);
       stdoutLineBuffer = lines.pop() ?? "";
-      for (const line of lines) input.onStdoutLine(line);
+      let lineError: unknown;
+      for (const line of lines) {
+        try { input.onStdoutLine(line); } catch (error) { lineError ??= error; }
+      }
+      if (lineError) throw lineError;
     };
     const onAbort = (): void => requestStop(abortError());
     const timeout = setTimeout(() => {
@@ -235,7 +306,7 @@ async function runProcess(input: {
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
-      if (settled || pendingError) return;
+      if (settled || Buffer.byteLength(stdout, "utf8") > MAX_STDOUT_BYTES) return;
       stdout += chunk;
       if (Buffer.byteLength(stdout, "utf8") > MAX_STDOUT_BYTES) {
         requestStop(new Error("Codex response exceeded the 2 MB safety limit"));
@@ -256,15 +327,16 @@ async function runProcess(input: {
     });
     child.once("error", (error) => requestStop(error));
     child.once("close", (exitCode) => {
+      input.onClose?.(exitCode);
       cleanupRequest();
       cleanupChild();
       if (settled) return;
       settled = true;
-      if (!pendingError && input.onStdoutLine && stdoutLineBuffer.trim()) {
+      if (input.onStdoutLine && stdoutLineBuffer.trim()) {
         try {
           input.onStdoutLine(stdoutLineBuffer);
         } catch (error) {
-          pendingError = error instanceof Error ? error : new Error(String(error));
+          pendingError ??= error instanceof Error ? error : new Error(String(error));
         }
       }
       if (pendingError) {
@@ -319,7 +391,7 @@ function textFromContent(content: unknown): string {
     .join("");
 }
 
-function contextForPrompt(context: PiContext): Record<string, unknown> {
+function contextForPrompt(context: PiContext): { systemPrompt: string; messages: readonly unknown[]; tools: readonly unknown[] } {
   return {
     systemPrompt: context.systemPrompt ?? "",
     messages: context.messages.map((message) => {
@@ -522,24 +594,45 @@ function codexToolRoundsSinceLastUser(context: PiContext): number {
 }
 
 export async function runCodexCliCompletion(input: CodexCliCompletionInput): Promise<CodexCliResult> {
-  if (codexToolRoundsSinceLastUser(input.context) >= CODEX_MAX_TOOL_ROUNDS) {
-    throw new Error(`Codex stopped after ${CODEX_MAX_TOOL_ROUNDS} InkOS tool rounds in one turn`);
-  }
-  const status = await probeCodexCli({ codexBin: input.codexBin, signal: input.signal });
-  if (!status.installed) {
-    throw new Error("Codex CLI is not installed or is not available on PATH");
-  }
-  if (!status.loggedIn) {
-    throw new Error("Codex is not signed in. Run `codex login` and try again");
-  }
-  if (status.authMode !== "chatgpt") {
-    throw new Error("Codex must be signed in with ChatGPT to use the subscription connection");
-  }
-
-  const runtimeDir = await mkdtemp(join(tmpdir(), "inkos-codex-"));
-  const schemaPath = join(runtimeDir, "output-schema.json");
+  const prompt = buildCodexCliPrompt(input.context);
+  const invocation = await beginCodexInvocation({
+    invocation: input.invocation, model: input.model ?? CODEX_DEFAULT_MODEL,
+    reasoningEffort: input.reasoningEffort, executable: codexBinary(input.codexBin),
+    prompt, context: contextForPrompt(input.context), modelCatalog: input.modelCatalog, modelInstructions: input.modelInstructions,
+  });
+  let phase = "preflight";
+  let exitCode: number | null = null;
+  let completionStartedAt: string | null = null;
+  let completionFinishedAt: string | null = null;
+  let runtimeDir: string | undefined;
   try {
+    if (codexToolRoundsSinceLastUser(input.context) >= CODEX_MAX_TOOL_ROUNDS) {
+      throw new Error(`Codex stopped after ${CODEX_MAX_TOOL_ROUNDS} InkOS tool rounds in one turn`);
+    }
+    const modelCatalog = parseCodexModelCatalog(input.modelCatalog);
+    const modelCatalogBytes = modelCatalog ? await readBoundCodexModelCatalog(modelCatalog, input.model) : undefined;
+    const modelInstructions = parseCodexModelInstructions(input.modelInstructions);
+    const modelInstructionsBytes = modelInstructions ? await readBoundCodexModelInstructions(modelInstructions) : undefined;
+    phase = "login-probe";
+    const status = await probeCodexCli({ codexBin: input.codexBin, signal: input.signal });
+    if (!status.installed) {
+      throw new Error("Codex CLI is not installed or is not available on PATH");
+    }
+    if (!status.loggedIn) {
+      throw new Error("Codex is not signed in. Run `codex login` and try again");
+    }
+    if (status.authMode !== "chatgpt") {
+      throw new Error("Codex must be signed in with ChatGPT to use the subscription connection");
+    }
+
+    phase = "runtime-setup";
+    runtimeDir = await mkdtemp(join(tmpdir(), "inkos-codex-"));
+    const schemaPath = join(runtimeDir, "output-schema.json");
     await writeFile(schemaPath, JSON.stringify(CODEX_OUTPUT_SCHEMA), "utf8");
+    const modelInstructionsPath = join(runtimeDir, "model-instructions.md");
+    if (modelInstructionsBytes) await writeFile(modelInstructionsPath, modelInstructionsBytes, { flag: "wx", mode: 0o600 });
+    const modelCatalogPath = join(runtimeDir, "model-catalog.json");
+    if (modelCatalogBytes) await writeFile(modelCatalogPath, modelCatalogBytes, { flag: "wx" });
     const args = [
       "exec",
       "--json",
@@ -561,24 +654,38 @@ export async function runCodexCliCompletion(input: CodexCliCompletionInput): Pro
     if (input.reasoningEffort) {
       args.push("--config", `model_reasoning_effort="${input.reasoningEffort}"`);
     }
+    if (modelCatalogBytes) args.push("--config", `model_catalog_json=${JSON.stringify(modelCatalogPath)}`);
+    if (modelInstructionsBytes) args.push("--config", `model_instructions_file=${JSON.stringify(modelInstructionsPath)}`);
     args.push("-");
+    phase = "completion";
+    completionStartedAt = new Date().toISOString();
 
     const result = await runProcess({
       command: codexBinary(input.codexBin),
       args,
-      stdin: buildCodexCliPrompt(input.context),
+      stdin: prompt,
       signal: input.signal,
       timeoutMs: resolveCodexCliTimeoutMs(input.timeoutMs),
-      onStdoutLine: assertCodexJsonlLineSafe,
+      onStdoutLine: (line) => { invocation.observeLine(line); assertCodexJsonlLineSafe(line); },
+      onClose: (code) => { exitCode = code; completionFinishedAt = new Date().toISOString(); },
     });
     if (result.exitCode !== 0) {
       const hint = result.stderr.trim().split(/\r?\n/).slice(-2).join(" ").slice(0, 800);
       throw new Error(`Codex exited with status ${result.exitCode}${hint ? `: ${hint}` : ""}`);
     }
+    phase = "response-validation";
     const parsed = parseCodexJsonl(result.stdout);
-    return parseStructuredResult(parsed, new Set((input.context.tools ?? []).map((tool) => tool.name)));
+    const completion = parseStructuredResult(parsed, new Set((input.context.tools ?? []).map((tool) => tool.name)));
+    await invocation.finish({ status: "succeeded", phase: "completed", exitCode, completionStartedAt, completionFinishedAt });
+    return completion;
+  } catch (error) {
+    await invocation.finish({
+      status: input.signal?.aborted || (error instanceof Error && error.name === "AbortError") ? "aborted" : "failed",
+      phase, exitCode, completionStartedAt, completionFinishedAt, errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+    throw error;
   } finally {
-    await rm(runtimeDir, { recursive: true, force: true });
+    if (runtimeDir) await rm(runtimeDir, { recursive: true, force: true });
   }
 }
 
@@ -613,6 +720,9 @@ export function codexCliAgentStream(
           reasoningEffort: parseCodexReasoningEffort(
             (model as Model<Api> & { readonly codexReasoningEffort?: unknown }).codexReasoningEffort,
           ),
+          codexBin: parseCodexBin((model as Model<Api> & { readonly codexBin?: unknown }).codexBin),
+          modelCatalog: parseCodexModelCatalog((model as Model<Api> & { readonly codexModelCatalog?: unknown }).codexModelCatalog),
+          modelInstructions: parseCodexModelInstructions((model as Model<Api> & { readonly codexModelInstructions?: unknown }).codexModelInstructions),
           signal: options?.signal,
         });
         partial.usage = result.usage;

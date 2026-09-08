@@ -7,12 +7,13 @@ import { directionTextSha256, hashCanonicalJson, PipelineRunner } from "@actalk/
 import {
   assertAgentOperatePipelineRuntime,
   assertAgentOperateWriterRuntime,
+  assertBoundProductionRuntime,
   parseAgentOperationIpcEnvelope,
   parseAgentWorkOrderV2,
 } from "../commands/production.js";
 import { buildPipelineConfig, loadConfigWithDiagnostics } from "../utils.js";
 
-function agentWorkOrder() {
+function agentWorkOrder(model: "gpt-5.6-sol" | "gpt-6-astra" = "gpt-5.6-sol") {
   const instruction = "다음 화에서 즉시 성취 보상을 보여 줘.";
   const modeEvidence = {
     lane: "neutral-baseline" as const,
@@ -38,8 +39,9 @@ function agentWorkOrder() {
   };
   const bookId = "neutral-canary";
   const expectedSoulBinding = null;
+  const runtime = { hermesProfile: modeEvidence.profileId, model, reasoning: "high" };
   const sessionId = `hq-agent-${hashCanonicalJson({
-    v: 1,
+    v: model === "gpt-6-astra" ? 2 : 1,
     bookId,
     lane: modeEvidence.lane,
     profileId: modeEvidence.profileId,
@@ -47,6 +49,7 @@ function agentWorkOrder() {
     soulVersion: modeEvidence.soulVersion,
     bindingSha256: null,
     isolationScopeSha256: modeEvidence.canaryIsolation.isolationScopeSha256,
+    ...(model === "gpt-6-astra" ? { runtime, profileConfigSha256: modeEvidence.profileConfigSha256 } : {}),
   }).slice(0, 40)}`;
   const args = { chapterCount: 1 as const, targetLength: { count: 1800, unit: "ko-chars" as const } };
   const instructionSha256 = directionTextSha256(instruction);
@@ -78,7 +81,7 @@ function agentWorkOrder() {
       argsSha256,
       decidedAt: "2026-09-02T00:00:00.000Z",
     },
-    runtime: { hermesProfile: modeEvidence.profileId, model: "gpt-5.6-sol", reasoning: "high" },
+    runtime,
     approvalMode: "human" as const,
     approvedInputs: [],
     privateInputs: [],
@@ -185,7 +188,7 @@ function artifact(bytes: Buffer) {
 }
 
 describe("production agent-operate strict ingress", () => {
-  it("keeps terra as the project default while a global sol override governs the InkOS writer", async () => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra"])("resolves an explicit %s override but only executes the current Firefly model", async (model) => {
     const projectRoot = await mkdtemp(join(tmpdir(), "inkos-agent-operate-config-"));
     try {
       await writeFile(join(projectRoot, "inkos.json"), JSON.stringify({
@@ -202,7 +205,7 @@ describe("production agent-operate strict ingress", () => {
           stream: false,
           services: [{
             service: "codex",
-            models: ["gpt-5.6-terra", "gpt-5.6-sol"],
+            models: ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"],
             temperature: 0.7,
             apiFormat: "responses",
             stream: false,
@@ -219,21 +222,25 @@ describe("production agent-operate strict ingress", () => {
 
       const effective = await loadConfigWithDiagnostics({
         projectRoot,
-        cli: { service: "codex", model: "gpt-5.6-sol" },
+        cli: { service: "codex", model },
       });
       const writer = new PipelineRunner(buildPipelineConfig(effective.config, projectRoot, { quiet: true }))
         .createAgentContext("writer", "contract-probe");
-      expect(writer.model).toBe("gpt-5.6-sol");
+      expect(writer.model).toBe(model);
       expect(writer.reasoningEffort).toBe("high");
+      if (model === "gpt-5.6-sol") {
+        expect(() => assertAgentOperateWriterRuntime(writer)).toThrow(/gpt-6-astra\/high/i);
+        return;
+      }
       expect(() => assertAgentOperateWriterRuntime(writer)).not.toThrow();
       expect(() => assertAgentOperateWriterRuntime({ ...writer, model: "gpt-5.6-terra" }))
-        .toThrow(/gpt-5\.6-sol\/high/i);
+        .toThrow(/gpt-6-astra\/high/i);
       expect(() => assertAgentOperatePipelineRuntime({
         createAgentContext: (role: string) => ({
           ...writer,
           model: role === "auditor" ? "gpt-5.6-terra" : writer.model,
         }),
-      }, "contract-probe")).toThrow(/auditor runtime gpt-5\.6-sol\/high/i);
+      }, "contract-probe")).toThrow(/auditor runtime gpt-6-astra\/high/i);
     } finally {
       await rm(projectRoot, { recursive: true, force: true });
     }
@@ -243,6 +250,23 @@ describe("production agent-operate strict ingress", () => {
     expect(agentWorkOrder().sessionId).toBe("hq-agent-2214ce47dfd0eba6202c3c6b657ff759c1fc5882");
     expect(parseAgentWorkOrderV2(agentWorkOrder())).toEqual(agentWorkOrder());
     expect(parseAgentWorkOrderV2(productionWorkOrder())).toEqual(productionWorkOrder());
+  });
+
+  it("isolates Astra sessions from legacy Sol and binds the current runtime and profile bytes", () => {
+    const current = agentWorkOrder("gpt-6-astra");
+    expect(parseAgentWorkOrderV2(current)).toEqual(current);
+    expect(current.sessionId).not.toBe(agentWorkOrder().sessionId);
+    expect(() => parseAgentWorkOrderV2({ ...current, runtime: { ...current.runtime, model: "gpt-5.6-sol" } })).toThrow(/deterministic/i);
+    expect(() => parseAgentWorkOrderV2({ ...current, runtime: { ...current.runtime, reasoning: "medium" } })).toThrow(/deterministic/i);
+    expect(() => parseAgentWorkOrderV2({ ...current, modeEvidence: { ...current.modeEvidence, profileConfigSha256: "0".repeat(64) } })).toThrow(/deterministic/i);
+  });
+
+  it("rejects a requested model or reasoning different from the effective runtime", () => {
+    const requested = { model: "gpt-6-astra", reasoning: "high" };
+    expect(() => assertBoundProductionRuntime(requested, { model: "gpt-6-astra", reasoningEffort: "high" })).not.toThrow();
+    expect(() => assertBoundProductionRuntime(requested, { model: "gpt-5.6-sol", reasoningEffort: "high" })).toThrow(/differs/);
+    expect(() => assertBoundProductionRuntime(requested, { model: "gpt-6-astra", reasoningEffort: "medium" })).toThrow(/differs/);
+    expect(() => assertBoundProductionRuntime({ model: "gpt-5.6-sol", reasoning: "high" }, { model: "gpt-5.6-sol", reasoningEffort: "high" })).not.toThrow();
   });
 
   it("rejects session, isolation, and lane/mode drift", () => {

@@ -1,6 +1,7 @@
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
+import { buildEntityObservationExtractionRules } from "./entity-observation-prompts.js";
 
 export function buildSettlerSystemPrompt(
   book: BookConfig,
@@ -69,6 +70,8 @@ ${hookRules}${fullCastBlock}
 ## 输出格式（必须严格遵循）
 
 ${buildSettlerOutputFormat(genreProfile)}
+
+${buildEntityObservationExtractionRules(resolvedLang)}
 
 ## 关键规则
 
@@ -147,6 +150,7 @@ function buildSettlerOutputFormat(gp: GenreProfile): string {
   "subplotOps": [],
   "emotionalArcOps": [],
   "characterMatrixOps": [],
+  "entityObservations": [],
   "notes": []
 }
 \`\`\`
@@ -213,6 +217,8 @@ ${fullCastBlock}
 
 ${buildKoreanSettlerOutputFormat(genreProfile)}
 
+${buildEntityObservationExtractionRules("ko")}
+
 ## 절대 규칙
 
 - 본문에 명시된 사건과 상태 변화만 기록하세요. 추측, 예측, 보강을 금지합니다.
@@ -275,6 +281,7 @@ function buildKoreanSettlerOutputFormat(gp: GenreProfile): string {
   "subplotOps": [],
   "emotionalArcOps": [],
   "characterMatrixOps": [],
+  "entityObservations": [],
   "notes": []
 }
 \`\`\`

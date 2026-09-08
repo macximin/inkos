@@ -1,3 +1,4 @@
+import { currentModelInvocation, type ModelInvocationContext } from "./model-invocation.js";
 import type { LLMConfig } from "../models/project.js";
 import {
   streamSimple as piStreamSimple,
@@ -19,7 +20,7 @@ import { fetchWithProxy } from "../utils/proxy-fetch.js";
 import { isApiKeyOptionalForEndpoint } from "../utils/llm-endpoint-auth.js";
 import { isLlmStubEnabled, stubChatCompletion } from "../agent/llm-stub.js";
 import { createLeadingThinkTagStripper, stripLeadingThinkBlock } from "./think-tag-stripper.js";
-import { CODEX_SERVICE_ID, parseCodexReasoningEffort, runCodexCliCompletion } from "./codex-cli.js";
+import { CODEX_SERVICE_ID, parseCodexBin, parseCodexModelCatalog, parseCodexModelInstructions, parseCodexReasoningEffort, runCodexCliCompletion } from "./codex-cli.js";
 import {
   agentTrajectoryHeaders,
   beginAgentModelCall,
@@ -447,6 +448,9 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   const codexReasoningEffort = inkosProvider?.id === CODEX_SERVICE_ID
     ? parseCodexReasoningEffort(config.extra?.codexReasoningEffort)
     : undefined;
+  const codexBin = inkosProvider?.id === CODEX_SERVICE_ID ? parseCodexBin(config.extra?.codexBin) : undefined;
+  const codexModelInstructions = inkosProvider?.id === CODEX_SERVICE_ID ? parseCodexModelInstructions(config.extra?.codexModelInstructions) : undefined;
+  const codexModelCatalog = inkosProvider?.id === CODEX_SERVICE_ID ? parseCodexModelCatalog(config.extra?.codexModelCatalog) : undefined;
 
   const piApi = resolvePiApi(serviceName, config.apiFormat, (inkosProvider?.api ?? preset?.api) as PiApi) as PiApi;
   const baseUrl = config.baseUrl || inkosProvider?.baseUrl || preset?.baseUrl || "";
@@ -486,6 +490,9 @@ export function createLLMClient(config: LLMConfig): LLMClient {
     ...(extraHeaders ? { headers: extraHeaders } : {}),
     ...(compat ? { compat } : {}),
     ...(codexReasoningEffort ? { codexReasoningEffort } : {}),
+    ...(codexBin ? { codexBin } : {}),
+    ...(codexModelCatalog ? { codexModelCatalog } : {}),
+    ...(codexModelInstructions ? { codexModelInstructions } : {}),
   };
 
   return {
@@ -1704,6 +1711,7 @@ export async function chatCompletion(
     // Diagnostics / connectivity checks want a fast pass-or-fail — set false to
     // skip the transient 502/503/429 retry+backoff (e.g. the doctor probe).
     readonly retry?: boolean;
+    readonly modelInvocation?: ModelInvocationContext;
   },
 ): Promise<LLMResponse> {
   if (isLlmStubEnabled()) {
@@ -1715,7 +1723,7 @@ export async function chatCompletion(
     const errorCtx = { baseUrl: "local://codex-subscription", model, service: client.service };
     const systemParts = messages.filter((message) => message.role === "system").map((message) => message.content);
     try {
-      const response = await withTransientLLMRetry(async () => {
+      const response = await withTransientLLMRetry(async (transportAttempt) => {
         signal?.throwIfAborted();
         assertWithinContextWindow({
           piModel: resolvePiModel(client, model),
@@ -1746,6 +1754,10 @@ export async function chatCompletion(
           },
           model,
           reasoningEffort: parseCodexReasoningEffort(client.defaults.extra.codexReasoningEffort),
+          codexBin: parseCodexBin(client.defaults.extra.codexBin),
+          modelCatalog: parseCodexModelCatalog(client.defaults.extra.codexModelCatalog),
+          modelInstructions: parseCodexModelInstructions(client.defaults.extra.codexModelInstructions),
+          invocation: { ...(options?.modelInvocation ?? currentModelInvocation() ?? { projectRoot: process.cwd(), stage: "chat-completion" }), transportAttempt },
           signal,
         });
         if (result.kind !== "text") {

@@ -1,3 +1,4 @@
+import { webnovelPlanGuidance } from "../planning/webnovel-plan-format.js";
 // Bilingual prompt builders for the narrative forecast agent, organized the
 // same way as prompts/short-fiction.ts: each builder switches on language.
 
@@ -16,6 +17,7 @@ export function buildForecastSystemPrompt(language: ForecastLanguage): string {
   if (language === "ko") {
     return [
       "당신은 장편소설의 서사 예측 조력자입니다.",
+      webnovelPlanGuidance("arc"),
       "임무: 정사 컨텍스트와 작가가 제시한 분기점에서 출발해, 서로 격리된 비정사 후보 미래를 여러 개 예측하여 작가가 나란히 비교할 수 있게 하세요.",
       "규칙:",
       "- 분기들은 서로 배타적입니다. 각 분기는 분기점에 대해 서로 다른 해결을 가정하며 다른 후보 분기를 참조하거나 의존하면 안 됩니다.",

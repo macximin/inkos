@@ -14,6 +14,7 @@ import {
 import { evaluateHookAdmission } from "../utils/hook-governance.js";
 import { resolveHookPayoffTiming } from "../utils/hook-lifecycle.js";
 import { validateRuntimeState } from "./state-validator.js";
+import { validateEntityObservations } from "./entity-observations.js";
 
 export interface RuntimeStateSnapshot {
   readonly manifest: StateManifest;
@@ -26,6 +27,7 @@ export function applyRuntimeStateDelta(params: {
   readonly snapshot: RuntimeStateSnapshot;
   readonly delta: RuntimeStateDelta;
   readonly allowReapply?: boolean;
+  readonly chapterText?: string;
 }): RuntimeStateSnapshot {
   const snapshot = {
     manifest: StateManifestSchema.parse(params.snapshot.manifest),
@@ -53,11 +55,21 @@ export function applyRuntimeStateDelta(params: {
   }
 
   const hooks = applyHookOps(snapshot.hooks, delta);
-  const currentState = applyCurrentStatePatch(
+  const patchedCurrentState = applyCurrentStatePatch(
     snapshot.currentState,
     snapshot.manifest.language,
     delta,
   );
+  const observations = validateEntityObservations(delta, params.chapterText);
+  const currentState: CurrentStateState = {
+    ...patchedCurrentState,
+    ...(snapshot.currentState.entityObservations !== undefined || delta.entityObservations !== undefined
+      ? { entityObservations: [
+          ...(snapshot.currentState.entityObservations ?? []).filter((entry) => entry.sourceChapter !== delta.chapter),
+          ...observations,
+        ] }
+      : {}),
+  };
   const chapterSummaries = applySummaryDelta(snapshot.chapterSummaries, delta, allowReapply);
 
   const next: RuntimeStateSnapshot = {
@@ -197,6 +209,7 @@ function applyCurrentStatePatch(
 ): CurrentStateState {
   if (!delta.currentStatePatch) {
     return {
+      ...currentState,
       chapter: delta.chapter,
       facts: [...currentState.facts],
     };
@@ -255,6 +268,7 @@ function applyCurrentStatePatch(
   }
 
   return {
+    ...currentState,
     chapter: delta.chapter,
     facts: nextFacts.sort((left, right) => (
       left.predicate.localeCompare(right.predicate)

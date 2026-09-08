@@ -132,6 +132,7 @@ async function soulArtifacts(
     readonly profileEvidenceBinding?: boolean;
     readonly routingDigestMismatch?: boolean;
     readonly incompleteManagerStructure?: boolean;
+    readonly executorModel?: "gpt-5.6-sol" | "gpt-6-astra";
   } = {},
 ): Promise<{
   manifestPath: string;
@@ -535,7 +536,7 @@ async function soulArtifacts(
       productionEnabled: status === "promoted",
       promotionDecisionSha256: hqDecision?.sha256 ?? null,
       provider: "openai-codex",
-      model: "gpt-5.6-sol",
+      model: options.executorModel ?? "gpt-5.6-sol",
       reasoning: "high",
       skillsPolicy: "none",
       configSha256: executorConfigSha256,
@@ -846,9 +847,9 @@ describe("Phase 4 BookSoulBinding", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("installs a content-addressed candidate, appends history, and forces a new session on rebind", async () => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra"] as const)("installs a %s-bound candidate without rewriting history and forces a new session on rebind", async (executorModel) => {
     const f = await fixture();
-    const firstArtifacts = await soulArtifacts(f.root, f.bookId, "v1", "owner-bind-v1");
+    const firstArtifacts = await soulArtifacts(f.root, f.bookId, "v1", "owner-bind-v1", "", "candidate", { executorModel });
     const first = await bindBookSoul({
       projectRoot: f.root,
       bookId: f.bookId,

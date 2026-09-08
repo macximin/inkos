@@ -29,8 +29,10 @@ import type {
 import { readEffectiveBookRules } from "./effective-book-rules.js";
 import {
   findUnauthorizedMandatoryMoralCorrectionsInText,
+  findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence,
   type ArchitectMoralAuthoritySource,
 } from "./architect.js";
+import { ENTITY_OBSERVATION_CONTEXT_SOURCE, readEntityObservationContext } from "../state/entity-observations.js";
 
 export interface ComposeChapterInput {
   readonly book: BookConfig;
@@ -210,7 +212,10 @@ async function assertSelectedContextMoralAuthority(input: {
     if (!entry.excerpt
       || ownerSources.has(entry.source)
       || foundationSources.some((source) => entry.source.startsWith(source))) continue;
-    for (const finding of findUnauthorizedMandatoryMoralCorrectionsInText(
+    const inspect = entry.source === ENTITY_OBSERVATION_CONTEXT_SOURCE
+      ? findUnauthorizedMandatoryMoralCorrectionsInNarrativeEvidence
+      : findUnauthorizedMandatoryMoralCorrectionsInText;
+    for (const finding of inspect(
       entry.excerpt,
       authoritySources,
     )) findings.add(finding);
@@ -739,6 +744,11 @@ async function collectSelectedContext(
       ),
     ]);
     const trailEntries = await buildRecentChapterTrailEntries(storyDir, plan.intent.chapter);
+    const entityContext = await readEntityObservationContext(dirname(storyDir), {
+      throughChapter: plan.intent.chapter - 1,
+      query: deriveRetrievalHints(plan).join("\n"),
+      language,
+    });
 
     const memorySelection = await retrieveMemorySelection({
       bookDir: dirname(storyDir),
@@ -785,6 +795,11 @@ async function collectSelectedContext(
       ...outlineEntries,
       ...canonEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== null),
       ...trailEntries,
+      ...(entityContext ? [{
+        source: ENTITY_OBSERVATION_CONTEXT_SOURCE,
+        reason: "Chapter-grounded character and organization observations relevant to this chapter.",
+        excerpt: entityContext,
+      }] : []),
       ...hookDebtEntries,
       ...factEntries,
       ...summaryEntries,

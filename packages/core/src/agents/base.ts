@@ -1,3 +1,4 @@
+import { currentModelInvocation } from "../llm/model-invocation.js";
 import type { LLMClient, LLMMessage, LLMResponse, OnStreamProgress } from "../llm/provider.js";
 import { chatCompletion } from "../llm/provider.js";
 import { appendPromptPackGuidance } from "../prompts/prompt-pack.js";
@@ -110,6 +111,7 @@ export abstract class BaseAgent {
         prepared?.messages ?? messages,
         {
           ...providerOptions,
+          modelInvocation: { ...currentModelInvocation(), projectRoot: this.ctx.projectRoot, bookId: this.ctx.bookId, stage: stage ?? agentName },
           onStreamProgress: this.ctx.onStreamProgress,
           signal: this.ctx.signal,
         },

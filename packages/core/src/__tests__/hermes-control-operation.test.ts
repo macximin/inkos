@@ -301,6 +301,12 @@ describe("Book-local Hermes control operation", () => {
     expect(HermesInvocationReceiptSchema.parse(currentReceipt).runtime.transportPolicy)
       .toEqual(HERMES_CONTROL_TRANSPORT_POLICY);
 
+    const astraReceipt = structuredClone(currentReceipt);
+    astraReceipt.runtime.model = "gpt-6-astra";
+    const { receiptSelfHash: _solSelf, ...astraUnsigned } = astraReceipt;
+    astraReceipt.receiptSelfHash = hashCanonicalJson(astraUnsigned);
+    expect(HermesInvocationReceiptSchema.parse(astraReceipt).runtime.model).toBe("gpt-6-astra");
+
     const tamperedPolicyReceipt = structuredClone(currentReceipt);
     tamperedPolicyReceipt.runtime.transportPolicy.invocationTimeoutMs = 1;
     const { receiptSelfHash: _currentSelf, ...tamperedUnsigned } = tamperedPolicyReceipt;

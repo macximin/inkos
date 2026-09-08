@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import { join, normalize, posix, sep } from "node:path";
 import { z } from "zod";
+import { FireflyRuntimeModelSchema } from "./model-policy.js";
 import {
   ChapterCommitReceiptSchema,
   chapterCommitReceiptRelativePath,
@@ -99,7 +100,7 @@ export const HermesInvocationReceiptSchema = z.object({
   profile: HermesProfileReceiptSchema,
   runtime: z.object({
     provider: z.literal("openai-codex"),
-    model: z.literal("gpt-5.6-sol"),
+    model: FireflyRuntimeModelSchema,
     reasoning: z.literal("high"),
     platform: z.literal("cli"),
     openaiRuntime: z.literal("auto"),

@@ -324,6 +324,8 @@ async function writeRefLabEvidence(
   root: string,
   transfer: BlindPairEvaluationTransfer,
   result: ReturnType<typeof evaluation>,
+  model: "gpt-5.6-sol" | "gpt-6-astra" = "gpt-5.6-sol",
+  hostModel: "gpt-5.6-sol" | "gpt-6-astra" = model,
 ) {
   const reviewInput = {
     schemaVersion: "firefly-blind-pair-evaluation-input/v2",
@@ -343,9 +345,11 @@ async function writeRefLabEvidence(
       { lane: "soul", actorId: "producer-soul", profileId: "producer-soul-profile", terminalReceiptSha256: sha("soul-terminal") },
     ],
     reviewer: {
-      actorId: "blind-reviewer", profileId: "inkos_blind_evaluator", provider: "openai-codex", model: "gpt-5.6-sol", reasoning: "high",
-      configSha256: "4124e16bc40d28732d1dd02f9f2e8b78127a202313e1ace21021f16fca809f46",
-      soulSha256: "5c4cca60c9971312682f7b71cac5d4d61b6f9e2c42d19af99c8fe6daedacd94b",
+      actorId: "blind-reviewer", profileId: "inkos_blind_evaluator", provider: "openai-codex", model, reasoning: "high",
+      configSha256: model === "gpt-6-astra" ? "e75d85c0085769a347820ba9f040e4098112f7ae84aa5c22f82a0b33f6476c27" : "4124e16bc40d28732d1dd02f9f2e8b78127a202313e1ace21021f16fca809f46",
+      soulSha256: model === "gpt-6-astra"
+        ? "abd78aa24facfaa885128aa3a995af5e7116d8f1038c856813fec000682bd2d1"
+        : "5c4cca60c9971312682f7b71cac5d4d61b6f9e2c42d19af99c8fe6daedacd94b",
     },
     contentContract: { id: "fiction-content-neutral-ko/v1", sha256: sha("contract"), intensityDirectiveSha256: sha("directive") },
     authority: { scope: "analysis-only", mayWriteInkOSCanon: false, mayPromoteSoul: false, ownerDecisionRequired: true },
@@ -381,7 +385,7 @@ async function writeRefLabEvidence(
     role: "blind-pair-commercial-evaluator",
     runId: "review-run-001",
     profileId: "inkos_blind_evaluator",
-    model: "gpt-5.6-sol",
+    model: hostModel,
     provider: "openai-codex",
     readCapabilitySha256: sha("read-capability"),
     readCapabilityTool: "firefly_read_source", readCapabilityToolset: "firefly-source-read",
@@ -454,7 +458,7 @@ async function writeRefLabEvidence(
     evaluatorBinding: { ...triple, tripleBindingSha256: sha(jsonBytes(triple)) }, reviewPacketSha256: reviewInput.reviewPacket.sha256,
     commonInputReceiptSha256: reviewInput.commonInputReceiptSha256, pairedGenerationReceiptSha256: reviewInput.pairedGenerationReceiptSha256,
     labelAssignmentReceiptSha256: reviewInput.labelAssignmentReceiptSha256,
-    reviewer: { actorId: reviewInput.reviewer.actorId, profileId: reviewInput.reviewer.profileId, configSha256: reviewInput.reviewer.configSha256, soulSha256: reviewInput.reviewer.soulSha256, model: "gpt-5.6-sol", reasoning: "high", actorDistinctFromProducers: true, runId: "review-run-001" },
+    reviewer: { actorId: reviewInput.reviewer.actorId, profileId: reviewInput.reviewer.profileId, configSha256: reviewInput.reviewer.configSha256, soulSha256: reviewInput.reviewer.soulSha256, model, reasoning: "high", actorDistinctFromProducers: true, runId: "review-run-001" },
     candidateBindings: bindings,
     outcome: {
       winner: result.winner,
@@ -470,7 +474,7 @@ async function writeRefLabEvidence(
   await writeJson(join(root, "evidence", "review-receipt.json"), { ...unsigned, receiptSelfHash: sha(jsonBytes(unsigned)) });
 }
 
-async function prepareAndEvidence(fixture: PairFixture, canonLeak = false) {
+async function prepareAndEvidence(fixture: PairFixture, canonLeak = false, model: "gpt-5.6-sol" | "gpt-6-astra" = "gpt-5.6-sol", hostModel: "gpt-5.6-sol" | "gpt-6-astra" = model) {
   const prepared = await prepareBlindPair({
     projectRoot: fixture.root,
     pairId: PAIR_ID,
@@ -484,7 +488,7 @@ async function prepareAndEvidence(fixture: PairFixture, canonLeak = false) {
   const mapping = JSON.parse(await readFile(join(fixture.root, ...blindPairMappingRelativePath(PAIR_ID).split("/")), "utf8"));
   const bodies = Object.fromEntries(mapping.mappings.map((item: { candidateId: string; lane: "neutral" | "soul" }) => [item.candidateId, fixture.bodies[item.lane]])) as Record<"candidate-A" | "candidate-B", string>;
   const result = evaluation(transfer, bodies, canonLeak);
-  await writeRefLabEvidence(fixture.root, transfer, result);
+  await writeRefLabEvidence(fixture.root, transfer, result, model, hostModel);
   return { prepared, transfer, mapping, bodies };
 }
 
@@ -585,14 +589,14 @@ describe("blind-pair materialization", () => {
     expect(RefLabBlindSurfaceScanReceiptSchema.parse(surfaceScan(prepared.transfer.value, "candidate-A", true)).matchCount).toBe(1);
   });
 
-  it("roundtrips exact terminal manuscripts into an opaque, evaluation-only packet and immutable ACK", async () => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra"] as const)("roundtrips %s terminal review evidence into a packet and immutable ACK", async (model) => {
     const fixture = await pairFixture();
     const canonicalBody = "정본 1화는 아직 후보를 적용하지 않은 현재 원고다.";
     await mkdir(join(fixture.root, "books", BOOK_ID, "chapters"), { recursive: true });
     await writeFile(join(fixture.root, "books", BOOK_ID, "chapters", "0001_현재_원고.md"), canonicalBody, "utf8");
     const sourceBookBefore = await readFile(join(fixture.root, "books", BOOK_ID, "book.json"));
     const laneBodiesBefore = await Promise.all(Object.values(fixture.artifactPaths).map((path) => readFile(path)));
-    const { prepared, transfer, mapping } = await prepareAndEvidence(fixture);
+    const { prepared, transfer, mapping } = await prepareAndEvidence(fixture, false, model);
     expect(await readFile(join(fixture.root, "evidence", "review-input.json")))
       .not.toEqual(await readFile(join(fixture.root, "evidence", "evaluator-input.json")));
     const publicJson = JSON.stringify(transfer);
@@ -617,6 +621,7 @@ describe("blind-pair materialization", () => {
       surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
     });
     expect(materialized.packet.generatedAt).toBe(NOW);
+    expect(materialized.packet.comparison.runtime.model).toBe(model);
     expect(materialized.packet.artifact).toMatchObject({
       title: "현재 원고",
       status: "ready-for-review",
@@ -686,6 +691,17 @@ describe("blind-pair materialization", () => {
     expect(await readFile(join(fixture.root, "books", BOOK_ID, "book.json"))).toEqual(sourceBookBefore);
     const laneBodiesAfter = await Promise.all(Object.values(fixture.artifactPaths).map((path) => readFile(path)));
     expect(laneBodiesAfter).toEqual(laneBodiesBefore);
+  });
+
+  it("rejects a re-sealed host receipt whose model differs from the Astra review request", async () => {
+    const fixture = await pairFixture();
+    await prepareAndEvidence(fixture, false, "gpt-6-astra", "gpt-5.6-sol");
+    await expect(materializeBlindPair({
+      projectRoot: fixture.root, pairId: PAIR_ID,
+      reviewInputPath: "evidence/review-input.json", evaluatorInputPath: "evidence/evaluator-input.json",
+      evaluatorResultPath: "evidence/result.json", evaluatorHostReceiptPath: "evidence/host-receipt.json",
+      reviewReceiptPath: "evidence/review-receipt.json", surfaceScanPaths: ["evidence/scan-a.json", "evidence/scan-b.json"],
+    })).rejects.toThrow(/host receipt does not bind/);
   });
 
   it("rejects cross-pair terminals and identical candidates before creating a mapping", async () => {

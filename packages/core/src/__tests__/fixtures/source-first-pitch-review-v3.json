@@ -1,0 +1,286 @@
+{
+  "schemaVersion": "firefly_review_packet/v3",
+  "packetId": "frp-f355e28ba6880c3d6ca8601d",
+  "packetSha256": "f355e28ba6880c3d6ca8601d1ef8af9dc369cde70f512bcecb61ca8b2843e63a",
+  "generatedAt": "2026-09-05T00:00:00.000Z",
+  "purpose": "planning-entry",
+  "source": {
+    "system": "inkos",
+    "slateId": "source-first-contract-fixture",
+    "sourceRevision": "d813ea10f2f45dd7ae8b7a1c7ad6625c7211e02fabac24fade020d4d8399506f"
+  },
+  "work": {
+    "id": "source-first-contract-fixture",
+    "title": "계약 검증용 합성 기획",
+    "genre": "modern-fantasy-ko",
+    "status": "non-canonical",
+    "targetChapters": 200
+  },
+  "artifact": {
+    "id": "source-first-contract-fixture",
+    "kind": "pitch-slate",
+    "title": "원작 중심 기획 계약 fixture",
+    "status": "human-decision-pending"
+  },
+  "candidates": [
+    {
+      "id": "p01",
+      "sha256": "f540c7da70a95740305d85944c1d27a865a0e0f2e18a0230022e38f8b5011894",
+      "titleCandidates": [
+        "내 공장에서 나오는 돈"
+      ],
+      "oneLinePromise": "남들이 버린 공장을 인수해 자기 자산과 수익을 늘린다.",
+      "entryContract": {
+        "humanDrive": {
+          "lackOrHumiliation": "현재 모욕은 없으며 자기 자본으로 첫 공장을 사려는 상태다.",
+          "personalDesire": "남의 허락 없이 자기 돈과 시간을 쓰고 싶다.",
+          "selfInterest": "지분과 매출을 자기 법인에 귀속한다.",
+          "emotionalCostLimit": "남의 인정 때문에 자기 몫을 포기하지 않는다."
+        },
+        "purpose": {
+          "seriesWhat": "자기 공장들의 지속적인 현금 흐름을 만든다.",
+          "arcWhat": "첫 공장을 소유하고 정상 가동한다.",
+          "chapterWant": "첫 공장의 상태와 가격을 직접 확인한다.",
+          "whyNow": "매도인이 오늘 현장 확인과 가격 협의를 제안했다."
+        },
+        "commercialPromise": {
+          "currentSituation": "합성 항구 도시의 매물 공장에 도착한 상태다.",
+          "repeatableReaderFantasy": "자산을 고르고 소유와 수익을 자기 몫으로 남긴다.",
+          "howAdvantage": "설비 점검 경험으로 인수 가격의 이익을 판단한다.",
+          "firstPayoff": "첫 공장 지분과 첫 매출을 받는다.",
+          "payoffWitness": "혼자 입금을 확인하고 다음 투자를 자기 뜻대로 결정한다.",
+          "nextPaymentQuestion": "늘어난 자본으로 다음 공장까지 살 수 있는가."
+        }
+      },
+      "protagonist": {
+        "startingIdentity": "자기 자본을 가진 생산 관리자",
+        "repeatedVerb": "싸게 사서 정상 가동한다",
+        "firstAsset": "첫 공장 인수 자금"
+      },
+      "openingEpisodes": [
+        {
+          "episode": 1,
+          "event": "1번째 공장 거래 판단",
+          "visiblePayoff": "1번째 자기 자산 증가"
+        },
+        {
+          "episode": 2,
+          "event": "2번째 공장 거래 판단",
+          "visiblePayoff": "2번째 자기 자산 증가"
+        },
+        {
+          "episode": 3,
+          "event": "3번째 공장 거래 판단",
+          "visiblePayoff": "3번째 자기 자산 증가"
+        },
+        {
+          "episode": 4,
+          "event": "4번째 공장 거래 판단",
+          "visiblePayoff": "4번째 자기 자산 증가"
+        }
+      ],
+      "firstReward": "첫 공장 지분과 첫 입금",
+      "railA": [
+        "첫 공장 소유",
+        "수익의 재투자",
+        "여러 공장의 현금 흐름"
+      ],
+      "railB": [],
+      "arcLadder": [
+        {
+          "arc": 1,
+          "externalMove": "현장 조사",
+          "visibleReward": "1번째 자기 자산과 판단의 축적",
+          "relationshipConversion": null
+        },
+        {
+          "arc": 2,
+          "externalMove": "첫 공장 인수",
+          "visibleReward": "2번째 자기 자산과 판단의 축적",
+          "relationshipConversion": null
+        },
+        {
+          "arc": 3,
+          "externalMove": "정상 가동",
+          "visibleReward": "3번째 자기 자산과 판단의 축적",
+          "relationshipConversion": null
+        },
+        {
+          "arc": 4,
+          "externalMove": "첫 납품",
+          "visibleReward": "4번째 자기 자산과 판단의 축적",
+          "relationshipConversion": null
+        },
+        {
+          "arc": 5,
+          "externalMove": "수익 재투자",
+          "visibleReward": "5번째 자기 자산과 판단의 축적",
+          "relationshipConversion": null
+        },
+        {
+          "arc": 6,
+          "externalMove": "다음 공장 검토",
+          "visibleReward": "6번째 자기 자산과 판단의 축적",
+          "relationshipConversion": null
+        }
+      ],
+      "longRunRisk": "실제 장편의 공급량과 독자 반응은 별도로 검증해야 한다.",
+      "spineRetention": {
+        "schemaVersion": "firefly_spine_retention/v2",
+        "primaryReference": {
+          "packId": "synthetic-ownership-fixture",
+          "packSha256": "ce430a652cc149436fbc00c5fd271c2240678bf44e9ac8a226ad67ed33022de7",
+          "sourceSha256": "d1629a3a86b586918a8cc4c8ba4cc33ca3c0b59a6f168c05ec90ff89f83fa837"
+        },
+        "referenceDisclosure": {
+          "workSlug": "synthetic-ownership-fixture",
+          "workTitle": "계약 검증용 합성 원작",
+          "usageRoles": [
+            "commercial-engine",
+            "opening-event",
+            "payoff"
+          ],
+          "selectionReason": "자기 자산을 얻는 선택과 실제 지급의 대응을 검증하는 합성 자료다.",
+          "preservedElements": [
+            "주인공의 소유 목표",
+            "정보로 저평가 자산 선점",
+            "주인공 명의로 수익 귀속",
+            "동일한 투자 판단의 반복"
+          ],
+          "transformedElements": [
+            "인물 이름과 공장 위치를 합성 사례에 맞게 변경한다."
+          ]
+        },
+        "preservedEngine": {
+          "industry": "합성 사례의 소형 제조업 인수",
+          "repeatedVerb": "남들이 버린 공장을 사고 정상화한다.",
+          "progressionLadder": "첫 공장 수익을 다음 공장 인수에 사용한다.",
+          "rewardGrammar": "본인의 소유와 현금 흐름이 실제로 늘어난다."
+        },
+        "sourceReconstruction": {
+          "protagonist": "자기 자본으로 첫 공장을 사려는 합성 인물 정시우다.",
+          "personalGoal": "남의 허락 없이 자기 돈을 운용하고 싶다.",
+          "longTermGoal": "자기 명의의 여러 공장에서 지속적인 현금 수익을 얻는다.",
+          "firstArcGoal": "첫 공장 지분과 첫 매출을 자기 법인에 귀속한다.",
+          "priorityRule": "타인의 인정보다 자기 자산과 결정권을 먼저 선택한다.",
+          "verifiedScope": "테스트를 위해 만든 사건 번호 1~4의 합성 대응이며 실제 원작 검증 결과가 아니다.",
+          "uncertainty": "실제 원작, 장편 전개, 독자 반응은 이 계약 fixture로 검증하지 않는다."
+        },
+        "openingEpisodeMappings": [
+          {
+            "episode": 1,
+            "sourceBeatSequence": 1,
+            "sourceArcId": "TEST-N01",
+            "retainedFunction": "1번째 선택에서 자기 자산 증가를 우선한다.",
+            "transformedEvent": "1번째 합성 공장 거래를 주인공의 조건으로 진행한다."
+          },
+          {
+            "episode": 2,
+            "sourceBeatSequence": 2,
+            "sourceArcId": "TEST-N01",
+            "retainedFunction": "2번째 선택에서 자기 자산 증가를 우선한다.",
+            "transformedEvent": "2번째 합성 공장 거래를 주인공의 조건으로 진행한다."
+          },
+          {
+            "episode": 3,
+            "sourceBeatSequence": 3,
+            "sourceArcId": "TEST-N01",
+            "retainedFunction": "3번째 선택에서 자기 자산 증가를 우선한다.",
+            "transformedEvent": "3번째 합성 공장 거래를 주인공의 조건으로 진행한다."
+          },
+          {
+            "episode": 4,
+            "sourceBeatSequence": 4,
+            "sourceArcId": "TEST-N01",
+            "retainedFunction": "4번째 선택에서 자기 자산 증가를 우선한다.",
+            "transformedEvent": "4번째 합성 공장 거래를 주인공의 조건으로 진행한다."
+          }
+        ],
+        "decisionComparisons": [
+          {
+            "sourceSequenceStart": 1,
+            "sourceSequenceEnd": 4,
+            "sourceArcId": "TEST-N01",
+            "sourceChoice": "칭찬 대신 첫 공장의 소유 지분을 선택한다.",
+            "sourceGain": "자기 법인에 지분과 매출이 들어온다.",
+            "targetChoice": "합성 공장의 인수 대금을 내고 자기 지분을 확보한다.",
+            "targetGain": "주인공 소유의 공장과 첫 매출이 남는다.",
+            "preservedReason": "자기 이익을 우선하는 선택과 그 선택의 실제 지급을 함께 유지한다."
+          }
+        ],
+        "relationshipConversion": null,
+        "hookProgression": [],
+        "surfaceChanges": [
+          {
+            "layer": "location",
+            "change": "공장 위치를 합성 항구 도시로 옮긴다.",
+            "causalAdjustment": "운송 거리만 조정하고 인수의 이유와 수익 귀속은 유지한다."
+          }
+        ],
+        "rewards": [
+          {
+            "kind": "소유",
+            "sourceReward": "첫 공장 지분과 매출의 귀속이다.",
+            "targetReward": "합성 공장 지분과 첫 입금이 주인공에게 귀속된다.",
+            "beneficiary": "주인공 정시우 본인이다.",
+            "witness": null
+          }
+        ]
+      },
+      "projectPlan": {
+        "format": "webnovel-project-plan/v1",
+        "markdown": "# 계약 검증용 합성 기획서\n\n이 문서는 모델이 만든 카나리나 실존 작품의 분석이 아니다. 생산 스키마와 검토 화면이 같은 기획서를 읽는지 확인하기 위한 합성 fixture다.\n\n## 1. 작품 정보와 독자 약속\n가제는 ‘내 공장에서 나오는 돈’이다. 현대 사업 성장물의 형식으로, 주인공이 자기 자본과 판단으로 공장을 인수하고 수익을 자기 몫으로 남기는 과정을 보여 준다. 독자는 거래의 근거와 성공 뒤 늘어나는 자산을 확인한다.\n\n## 2. 작품의 육하원칙\nWHO는 전직 생산 관리자 정시우다. WHAT은 첫 공장 지분과 매출을 자기 법인에 귀속하는 일이다. HOW는 직접 확인한 설비와 수주 조건을 이용한 인수다. WHERE는 합성 항구 도시의 공장이다. WHEN은 공장 주인이 매각을 제안한 날이다. WHY는 남의 허락 없이 자기 돈과 시간을 쓰기 위해서다.\n\n## 3. 장기·아크·회차의 목적 연결\n작품의 장기 목적은 자기 공장들의 안정적인 현금 흐름이다. 현재 B레일 아크의 목적은 첫 공장의 인수와 정상 가동이다. 첫 회차에서는 현장을 확인하고 제시한 가격이 자기 이익에 맞는지 판단한다. 첫 결정을 다음 수익과 다시 연결한다.\n\n## 4. 등장인물과 관계\n정시우는 자신의 소유와 선택을 우선한다. 매도인은 공장을 팔고 싶어 하며 거래 상대라는 역할을 가진다. 직원은 임금을 받는 조건으로 생산을 맡는다. 이 합성 사례에는 주인공이 타인의 인정을 얻기 위한 관계 변화가 없다. 없는 갈등이나 친밀감은 추가하지 않는다.\n\n## 5. 무대·시간·우위가 사건을 만드는 방식\n항구와 공장의 거리가 납품 비용에 영향을 준다. 주인공의 설비 점검 경험은 인수 가격 판단에 쓰인다. 그 경험은 절차 설명으로 끝나지 않고 자산을 고르는 행동과 주인공에게 남는 이익으로 이어진다.\n\n## 6. 전체 줄거리와 장기 전개\n현장 조사, 첫 인수, 정상 가동, 첫 납품, 수익 재투자, 두 번째 공장 검토를 합성 전개 여섯 항목으로 둔다. 이 순서는 실제 원작의 전체 줄거리를 확인했다는 주장이 아니다. 각 항목은 앞선 판단이 다음 자산 증가에 연결되는지를 시험한다.\n\n## 7. 독자 보상과 연재 지속성\n첫 공장 지분과 첫 매출이 지급된다. 주인공은 입금 내역을 확인하고 다음 투자를 자기 뜻대로 정한다. 목격자나 가족의 칭찬 없이도 소유와 향유 행동을 보여 준다. 다음 사건은 늘어난 자본으로 더 큰 선택을 할 수 있다는 기대에서 나온다.\n\n## 8. 참고 작품의 역설계·조합·변주\n참고 자료는 ‘계약 검증용 합성 원작’ 하나다. 소유 목표, 인수 판단, 자기 명의의 지급을 보존하고 인명과 위치만 바꾼다. 원작 선택과 후보 선택을 사건 번호 1~4로 비교한다. 실제 원문은 패킷에 포함하지 않는다.\n\n## 9. 기획 의도와 집필 계획\n이 기획의 목적은 자기 목표를 위해 행동하고 자기 몫을 얻는 구조가 기획 검토까지 보존되는지 확인하는 것이다. 기획서 표시와 결정 대상의 식별만 테스트한다. 실제 사람의 승인, Book 생성, A/B레일 배분, ArcPacket 또는 원고 생성은 이 fixture의 효과가 아니다."
+      },
+      "independentReview": {
+        "verdict": "HOLD",
+        "independentScore": {
+          "promise": 16,
+          "earlyPayoff": 16,
+          "repeatEngine": 16,
+          "railConversion": 16,
+          "longRunSupply": 16,
+          "total": 80
+        },
+        "entryGate": {
+          "passed": true,
+          "protagonistNow": "자기 자본을 가진 관리자",
+          "personalWant": "자기 자산의 수익을 누린다",
+          "whyNow": "매도인이 현장 확인을 제안했다",
+          "repeatableFantasy": "공장을 사고 자기 자산으로 남긴다",
+          "chapterGoal": "현장과 가격을 확인한다",
+          "failureReasons": []
+        },
+        "decisiveStrength": "자기 목표와 실제 지급의 대응을 확인할 수 있다.",
+        "decisiveRisk": "합성 테스트 자료이므로 실제 작품 품질을 판단할 수 없다.",
+        "requiredRepair": "실제 원문 검토와 사람의 판단은 별도로 진행한다.",
+        "sourceChecks": {
+          "selfInterest": {
+            "passed": true,
+            "evidence": "합성 원작과 후보 모두 칭찬 대신 자기 공장 지분과 매출을 선택한다."
+          },
+          "sourceFidelity": {
+            "passed": true,
+            "evidence": "사건 번호 1~4의 조사·인수·가동·매출 귀속이 후보에도 같은 순서로 이어진다."
+          },
+          "commercialReading": {
+            "assessment": "소유와 실제 입금이 분명히 보이는 합성 사례다.",
+            "evidence": "이 판단은 기획 문장의 구조만 확인하며 실제 원작과 독자 반응은 검증하지 않았다."
+          }
+        }
+      }
+    }
+  ],
+  "recommendation": null,
+  "actions": [
+    "select",
+    "hold",
+    "reject"
+  ],
+  "authority": {
+    "canon": "inkos",
+    "decisionSurface": "storyyard",
+    "decisionEffect": "planning-selection",
+    "manuscriptApply": false,
+    "reverseSync": false
+  }
+}

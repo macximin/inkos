@@ -44,6 +44,7 @@ import {
   readSubplotBoard,
 } from "./planner-context.js";
 import type { StoredHook } from "../state/memory-db.js";
+import { ENTITY_OBSERVATION_CONTEXT_SOURCE, readEntityObservationContext } from "../state/entity-observations.js";
 
 export interface PlanChapterInput {
   readonly book: BookConfig;
@@ -219,7 +220,7 @@ export class PlannerAgent extends BaseAgent {
       intent,
       memo,
       intentMarkdown,
-      plannerInputs: materials.plannerInputs,
+      plannerInputs: [...materials.plannerInputs, ENTITY_OBSERVATION_CONTEXT_SOURCE],
       runtimePath,
       ...(input.arcProvenance ? { arcProvenance: input.arcProvenance } : {}),
     };
@@ -287,7 +288,13 @@ export class PlannerAgent extends BaseAgent {
         ? "Fix and re-emit."
         : "请修正后重新输出。";
 
-    const userMessage = buildPlannerUserMessage({
+    const entityContext = await readEntityObservationContext(input.bookDir, {
+      throughChapter: input.chapterNumber - 1,
+      query: [input.fallbackGoal, input.chapterContext, input.arcContext].filter(Boolean).join("\n"),
+      language,
+    });
+    this.assertPlanningInputsMoralAuthority([entityContext], input.moralAuthoritySources ?? [], true);
+    const baseUserMessage = buildPlannerUserMessage({
       chapterNumber: input.chapterNumber,
       previousChapterEndingExcerpt: input.previousEndingExcerpt?.trim()
         ? input.previousEndingExcerpt.trim()
@@ -313,6 +320,7 @@ export class PlannerAgent extends BaseAgent {
       genreFunContract: input.genreFunContract,
       language,
     });
+    const userMessage = entityContext ? `${baseUserMessage}\n\n${entityContext}` : baseUserMessage;
 
     const systemPrompt = getPlannerMemoSystemPrompt(language);
 

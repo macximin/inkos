@@ -11,6 +11,7 @@ import {
 import { execFile } from "node:child_process";
 import { dirname, extname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { readGenreProfileWithReceipt } from "../agents/rules-reader.js";
+import { FireflyRuntimeModelSchema } from "./model-policy.js";
 import { StateManager } from "../state/manager.js";
 import { runBookMutationTransaction } from "../state/book-mutation-journal.js";
 import { commitAtomicFileSet, syncDirectory } from "../utils/atomic-file-set.js";
@@ -550,7 +551,7 @@ async function verifySoulAdoptionEvidence(input: {
     || executorProfile.soulSha256 !== executor.soulSha256
     || executorProfile.configSha256 !== executor.configSha256
     || executorProfile.provider !== "openai-codex"
-    || executorProfile.model !== "gpt-5.6-sol"
+    || !FireflyRuntimeModelSchema.safeParse(executorProfile.model).success
     || executorProfile.reasoning !== "high"
     || executorProfile.skillsPolicy !== "none"
   ) {

@@ -733,25 +733,9 @@ describe("WriterAgent", () => {
       .mockResolvedValueOnce({
         content: [
           "=== POST_SETTLEMENT ===",
-          "| 伏笔变动 | mentor-oath 推进 | 同步更新伏笔池 |",
-          "",
-          "=== UPDATED_STATE ===",
-          "状态卡",
-          "",
-          "=== UPDATED_HOOKS ===",
-          "伏笔池",
-          "",
-          "=== CHAPTER_SUMMARY ===",
-          "| 100 | A Decision | Lin Yue | Chooses the mentor debt | Focus narrowed | mentor-oath advanced | tense | decision |",
-          "",
-          "=== UPDATED_SUBPLOTS ===",
-          "支线板",
-          "",
-          "=== UPDATED_EMOTIONAL_ARCS ===",
-          "情感弧线",
-          "",
-          "=== UPDATED_CHARACTER_MATRIX ===",
-          "角色矩阵",
+          "- settled",
+          "=== RUNTIME_STATE_DELTA ===",
+          JSON.stringify({"chapter": 100, "entityObservations": [], "chapterSummary": {"chapter": 100, "title": "A Decision", "characters": "Lin Yue", "events": "Chooses the mentor debt", "stateChanges": "Focus narrowed", "hookActivity": "mentor-oath advanced", "mood": "tense", "chapterType": "decision"}}),
         ].join("\n"),
         usage: ZERO_USAGE,
       });
@@ -959,6 +943,7 @@ describe("WriterAgent", () => {
           "=== RUNTIME_STATE_DELTA ===",
           "```json",
           JSON.stringify({
+            entityObservations: [],
             chapter: 3,
             currentStatePatch: {
               currentGoal: "Trace the debt through the river-port ledger.",
@@ -1156,6 +1141,7 @@ describe("WriterAgent", () => {
           "=== RUNTIME_STATE_DELTA ===",
           "```json",
           JSON.stringify({
+            entityObservations: [],
             chapter: 3,
             currentStatePatch: { currentGoal: "Continue from the captured plan." },
             hookOps: { upsert: [], resolve: [], defer: [] },
@@ -1211,7 +1197,7 @@ describe("WriterAgent", () => {
     }
   });
 
-  it("falls back to legacy settlement tags when runtime-state delta JSON is malformed", async () => {
+  it("rejects malformed structured deltas instead of dropping state through legacy fallback", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-writer-bad-delta-test-"));
     const bookDir = join(root, "book");
     const storyDir = join(bookDir, "story");
@@ -1274,7 +1260,7 @@ describe("WriterAgent", () => {
       });
 
     try {
-      const output = await agent.settleChapterState({
+      await expect(agent.settleChapterState({
         book: {
           id: "writer-book",
           title: "Writer Book",
@@ -1291,13 +1277,8 @@ describe("WriterAgent", () => {
         chapterNumber: 3,
         title: "River Ledger",
         content: "Lin Yue follows the debt into the river-port ledger.",
-      });
-
-      expect(output.runtimeStateDelta).toBeUndefined();
-      expect(output.postSettlement).toContain("legacy settlement survived");
-      expect(output.updatedState).toContain("Keep tracing the debt");
-      expect(output.updatedHooks).toContain("mentor-debt");
-      expect(output.chapterSummary).toContain("Legacy fallback wrote summary");
+      })).rejects.toThrow("runtime state delta is not valid JSON");
+      expect(await readFile(join(storyDir, "current_state.md"), "utf-8")).toContain("| Current Chapter | 2 |");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1385,6 +1366,7 @@ describe("WriterAgent", () => {
           "=== RUNTIME_STATE_DELTA ===",
           "```json",
           JSON.stringify({
+            entityObservations: [],
             chapter: 1988,
             currentStatePatch: {
               currentGoal: "Trace the debt through the river-port ledger.",
@@ -1534,6 +1516,7 @@ describe("WriterAgent", () => {
           "=== RUNTIME_STATE_DELTA ===",
           "```json",
           JSON.stringify({
+            entityObservations: [],
             chapter: 3,
             hookOps: {
               upsert: [],
@@ -1657,25 +1640,9 @@ describe("WriterAgent", () => {
       .mockResolvedValueOnce({
         content: [
           "=== POST_SETTLEMENT ===",
-          "| 伏笔变动 | mentor-oath 推进 | 同步更新伏笔池 |",
-          "",
-          "=== UPDATED_STATE ===",
-          "状态卡",
-          "",
-          "=== UPDATED_HOOKS ===",
-          "伏笔池",
-          "",
-          "=== CHAPTER_SUMMARY ===",
-          "| 1 | 试炼前夜 | 林越 | 林越记起师门旧债 | 决心加深 | mentor-oath advanced | tense | setup |",
-          "",
-          "=== UPDATED_SUBPLOTS ===",
-          "支线板",
-          "",
-          "=== UPDATED_EMOTIONAL_ARCS ===",
-          "情感弧线",
-          "",
-          "=== UPDATED_CHARACTER_MATRIX ===",
-          "角色矩阵",
+          "- settled",
+          "=== RUNTIME_STATE_DELTA ===",
+          JSON.stringify({"chapter": 1, "entityObservations": [], "chapterSummary": {"chapter": 1, "title": "试炼前夜", "characters": "林越", "events": "林越记起师门旧债", "stateChanges": "决心加深", "hookActivity": "mentor-oath advanced", "mood": "tense", "chapterType": "setup"}}),
         ].join("\n"),
         usage: ZERO_USAGE,
       });
@@ -1786,25 +1753,9 @@ describe("WriterAgent", () => {
       .mockResolvedValueOnce({
         content: [
           "=== POST_SETTLEMENT ===",
-          "- ledger-fragment advanced",
-          "",
-          "=== UPDATED_STATE ===",
-          "state",
-          "",
-          "=== UPDATED_HOOKS ===",
-          "hooks",
-          "",
-          "=== CHAPTER_SUMMARY ===",
-          "| 4 | Pressure Ledger | Mara,Taryn | Pressure rises | Trail narrows | ledger-fragment advanced | tense | confrontation |",
-          "",
-          "=== UPDATED_SUBPLOTS ===",
-          "subplots",
-          "",
-          "=== UPDATED_EMOTIONAL_ARCS ===",
-          "arcs",
-          "",
-          "=== UPDATED_CHARACTER_MATRIX ===",
-          "matrix",
+          "- settled",
+          "=== RUNTIME_STATE_DELTA ===",
+          JSON.stringify({"chapter": 4, "entityObservations": [], "chapterSummary": {"chapter": 4, "title": "Pressure Ledger", "characters": "Mara,Taryn", "events": "Pressure rises", "stateChanges": "Trail narrows", "hookActivity": "ledger-fragment advanced", "mood": "tense", "chapterType": "confrontation"}}),
         ].join("\n"),
         usage: ZERO_USAGE,
       });
@@ -1916,25 +1867,9 @@ describe("WriterAgent", () => {
       .mockResolvedValueOnce({
         content: [
           "=== POST_SETTLEMENT ===",
-          "- ledger-fragment advanced",
-          "",
-          "=== UPDATED_STATE ===",
-          "state",
-          "",
-          "=== UPDATED_HOOKS ===",
-          "hooks",
-          "",
-          "=== CHAPTER_SUMMARY ===",
-          "| 4 | Archive Pressure | Mara,Taryn | Pressure rises | Trail narrows | ledger-fragment advanced | tense | confrontation |",
-          "",
-          "=== UPDATED_SUBPLOTS ===",
-          "subplots",
-          "",
-          "=== UPDATED_EMOTIONAL_ARCS ===",
-          "arcs",
-          "",
-          "=== UPDATED_CHARACTER_MATRIX ===",
-          "matrix",
+          "- settled",
+          "=== RUNTIME_STATE_DELTA ===",
+          JSON.stringify({"chapter": 4, "entityObservations": [], "chapterSummary": {"chapter": 4, "title": "Archive Pressure", "characters": "Mara,Taryn", "events": "Pressure rises", "stateChanges": "Trail narrows", "hookActivity": "ledger-fragment advanced", "mood": "tense", "chapterType": "confrontation"}}),
         ].join("\n"),
         usage: ZERO_USAGE,
       });
@@ -2065,25 +2000,9 @@ describe("WriterAgent", () => {
       .mockResolvedValueOnce({
         content: [
           "=== POST_SETTLEMENT ===",
-          "- ledger-fragment advanced",
-          "",
-          "=== UPDATED_STATE ===",
-          "state",
-          "",
-          "=== UPDATED_HOOKS ===",
-          "hooks",
-          "",
-          "=== CHAPTER_SUMMARY ===",
-          "| 4 | Archive Pressure | Mara,Taryn | Pressure rises | Trail narrows | ledger-fragment advanced | tense | confrontation |",
-          "",
-          "=== UPDATED_SUBPLOTS ===",
-          "subplots",
-          "",
-          "=== UPDATED_EMOTIONAL_ARCS ===",
-          "arcs",
-          "",
-          "=== UPDATED_CHARACTER_MATRIX ===",
-          "matrix",
+          "- settled",
+          "=== RUNTIME_STATE_DELTA ===",
+          JSON.stringify({"chapter": 4, "entityObservations": [], "chapterSummary": {"chapter": 4, "title": "Archive Pressure", "characters": "Mara,Taryn", "events": "Pressure rises", "stateChanges": "Trail narrows", "hookActivity": "ledger-fragment advanced", "mood": "tense", "chapterType": "confrontation"}}),
         ].join("\n"),
         usage: ZERO_USAGE,
       });

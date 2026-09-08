@@ -1,5 +1,6 @@
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
+import { buildEntityObservationExtractionRules } from "./entity-observation-prompts.js";
 
 /**
  * Observer phase: extract ALL facts from the chapter.
@@ -53,6 +54,8 @@ ${isEnglishControl ? `- Extract from the TEXT ONLY — do not infer what might h
 - 具体化："陆承烬左肩旧伤开裂" 而非 "陆承烬受伤了"
 - 记录章节内的时间标记
 - 标注每个场景中在场的角色`}
+
+${buildEntityObservationExtractionRules(resolvedLanguage)}
 
 ${isEnglishControl ? "## Output Format" : "## 输出格式"}
 

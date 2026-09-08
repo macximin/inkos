@@ -51,7 +51,7 @@ function candidate(id: "candidate-A" | "candidate-B", body: string) {
   };
 }
 
-function fixture() {
+function fixture(model: "gpt-5.6-sol" | "gpt-6-astra" = "gpt-5.6-sol") {
   return buildFireflyReviewPacketV2({
     generatedAt: preparedAt,
     body: {
@@ -66,7 +66,7 @@ function fixture() {
         labelAssignmentReceiptSha256: hash("labels"), runtimeReceiptSha256: hash("runtime"),
         canaryIsolation: isolation,
         candidateLabelsShuffled: true, generatorMetadataExcluded: true,
-        runtime: { kernel: "enforce", piWorker: "off", retrieval: "legacy", fts: "off", model: "gpt-5.6-sol", reasoning: "high" },
+        runtime: { kernel: "enforce", piWorker: "off", retrieval: "legacy", fts: "off", model, reasoning: "high" },
       },
       candidates: [candidate("candidate-A", "첫 후보 원고"), candidate("candidate-B", "둘째 후보 원고")],
       sealedGenerationEvidence: {
@@ -81,13 +81,14 @@ function fixture() {
 }
 
 describe("Storyyard review packet v2 evaluation contract", () => {
-  it("matches committed evaluation-only semantics and binds generatedAt into identity", () => {
-    const packet = fixture();
+  it.each(["gpt-5.6-sol", "gpt-6-astra"] as const)("reads %s evaluation-only packets and binds the runtime into identity", (model) => {
+    const packet = fixture(model);
     expect(FireflyReviewPacketV2Schema.parse(packet)).toEqual(packet);
     expect(() => assertFireflyReviewPacketV2Identity(packet)).not.toThrow();
     expect(packet.actions).toEqual(["select", "tie", "invalid"]);
     expect(packet.authority).toEqual({ canon: "inkos", decisionSurface: "storyyard", decisionEffect: "advisory", manuscriptApply: false, reverseSync: false });
     expect(() => assertFireflyReviewPacketV2Identity({ ...packet, generatedAt: "2026-09-02T06:00:01.000Z" })).toThrow(/identity/u);
+    expect(() => assertFireflyReviewPacketV2Identity({ ...packet, comparison: { ...packet.comparison, runtime: { ...packet.comparison.runtime, model: model === "gpt-6-astra" ? "gpt-5.6-sol" : "gpt-6-astra" } } })).toThrow(/identity/u);
   });
 
   it("enforces select versus tie/invalid candidate null rules", () => {

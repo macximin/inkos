@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { FireflyEntryContractSchema } from "../planning/entry-contract.js";
+import { FireflySpineRetentionContractUnionSchema } from "../planning/spine-retention.js";
 
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
 const ScoreSchema = z.object({
@@ -39,7 +40,23 @@ const ArcSchema = z.object({
   arc: z.number().int().min(1),
   externalMove: z.string().min(1),
   visibleReward: z.string().min(1),
-  relationshipConversion: z.string().min(1),
+  relationshipConversion: z.string().min(1).nullable(),
+}).strict();
+
+const SourceReviewTextSchema = z.string().min(1).refine((value) => value.trim().length > 0, {
+  message: "source review evidence must not be blank",
+});
+const SourceReviewCheckSchema = z.object({
+  passed: z.boolean(),
+  evidence: SourceReviewTextSchema,
+}).strict();
+const SourceReviewChecksSchema = z.object({
+  selfInterest: SourceReviewCheckSchema,
+  sourceFidelity: SourceReviewCheckSchema,
+  commercialReading: z.object({
+    assessment: SourceReviewTextSchema,
+    evidence: SourceReviewTextSchema,
+  }).strict(),
 }).strict();
 
 export const FireflyPitchReviewCandidateV3Schema = z.object({
@@ -56,9 +73,22 @@ export const FireflyPitchReviewCandidateV3Schema = z.object({
   openingEpisodes: z.array(OpeningEpisodeSchema).length(4),
   firstReward: z.string().min(1),
   railA: z.array(z.string().min(1)).min(3),
-  railB: z.array(z.string().min(1)).min(3),
+  railB: z.array(z.string().min(1)),
   arcLadder: z.array(ArcSchema).min(6),
   longRunRisk: z.string().min(1),
+  sourcePremise: z.object({
+    slateId: z.string().min(1),
+    candidateId: z.string().regex(/^p\d{2}$/u),
+    candidateSha256: Sha256Schema,
+    privateWant: z.string().min(1),
+    firstChoice: z.string().min(1),
+    emotionalPayment: z.string().min(1),
+  }).strict().optional(),
+  spineRetention: FireflySpineRetentionContractUnionSchema.optional(),
+  projectPlan: z.object({
+    format: z.literal("webnovel-project-plan/v1"),
+    markdown: z.string().trim().min(600).max(30_000),
+  }).strict().optional(),
   independentReview: z.object({
     verdict: z.enum(["SURVIVE", "HOLD", "KILL"]),
     independentScore: ScoreSchema,
@@ -66,8 +96,54 @@ export const FireflyPitchReviewCandidateV3Schema = z.object({
     decisiveStrength: z.string().min(1),
     decisiveRisk: z.string().min(1),
     requiredRepair: z.string().min(1),
+    sourceChecks: SourceReviewChecksSchema.optional(),
   }).strict(),
 }).strict().superRefine((candidate, context) => {
+  const sourceFirst = candidate.spineRetention?.schemaVersion === "firefly_spine_retention/v2";
+  if (sourceFirst) {
+    const sourceChecks = candidate.independentReview.sourceChecks;
+    if (sourceChecks === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["independentReview", "sourceChecks"], message: "source-first candidates require independent source checks" });
+    } else if ((!sourceChecks.selfInterest.passed || !sourceChecks.sourceFidelity.passed)
+      && (candidate.independentReview.entryGate.passed || candidate.independentReview.verdict === "SURVIVE")) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["independentReview", "sourceChecks"], message: "failed source checks cannot pass the entry gate or SURVIVE" });
+    }
+    if (candidate.projectPlan === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["projectPlan"], message: "source-first candidates require the full project plan" });
+    }
+    if (candidate.sourcePremise !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sourcePremise"], message: "source-first spine v2 must not include a source premise" });
+    }
+    candidate.railB.forEach((item, index) => {
+      if (!item.trim()) context.addIssue({ code: z.ZodIssueCode.custom, path: ["railB", index], message: "relationship entries must not be blank" });
+    });
+    candidate.arcLadder.forEach((arc, index) => {
+      if (arc.relationshipConversion !== null && !arc.relationshipConversion.trim()) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["arcLadder", index, "relationshipConversion"], message: "relationship conversion must be non-blank text or explicit null" });
+      }
+    });
+  } else {
+    if (candidate.independentReview.sourceChecks !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["independentReview", "sourceChecks"], message: "legacy candidates must not include source-first source checks" });
+    }
+    if (candidate.projectPlan !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["projectPlan"], message: "legacy candidates must not include a source-first project plan" });
+    }
+    if ((candidate.sourcePremise === undefined) !== (candidate.spineRetention === undefined)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "source premise and spine retention v1 must appear together" });
+    }
+    if (candidate.railB.length < 3) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["railB"], message: "legacy railB must contain at least three items" });
+    }
+    candidate.arcLadder.forEach((arc, index) => {
+      if (arc.relationshipConversion === null) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["arcLadder", index, "relationshipConversion"], message: "legacy relationship conversion must be text" });
+      }
+    });
+  }
+  if (!candidate.openingEpisodes.every((episode, index) => episode.episode === index + 1)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["openingEpisodes"], message: "opening episodes must be ordered 1 through 4" });
+  }
   const unsigned = { ...candidate } as Record<string, unknown>;
   delete unsigned.sha256;
   if (hashCanonicalJson(unsigned) !== candidate.sha256) {
@@ -113,6 +189,12 @@ export const FireflyPitchReviewPacketV3Schema = z.object({
     reverseSync: z.literal(false),
   }).strict(),
 }).strict().superRefine((packet, context) => {
+  if (packet.work.id !== packet.source.slateId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["work", "id"], message: "planning work ID must match its source slate ID" });
+  }
+  if (packet.artifact.id !== packet.source.slateId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["artifact", "id"], message: "planning artifact ID must match its source slate ID" });
+  }
   const candidateIds = new Set(packet.candidates.map((candidate) => candidate.id));
   if (candidateIds.size !== packet.candidates.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "candidate IDs must be unique" });

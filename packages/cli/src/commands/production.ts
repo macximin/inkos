@@ -6,6 +6,8 @@ import {
   CANARY_ISOLATION_RECEIPT_MAX_BYTES,
   PipelineRunner,
   HermesControlActionSchema,
+  HermesInvocationReceiptSchema,
+  FIREFLY_PRODUCTION_MODEL,
   ProductionExecutionTerminalError,
   createDetachedOwnerDirectionLease,
   directionTextSha256,
@@ -313,7 +315,7 @@ export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
     ) throw new Error("Genre Soul mode evidence must match expectedSoulBinding.");
   }
   const expectedSessionId = `hq-agent-${hashCanonicalJson({
-    v: 1,
+    v: isRecord(value.runtime) && value.runtime.model === "gpt-6-astra" ? 2 : 1,
     bookId: value.bookId,
     lane: evidence.lane,
     profileId: evidence.profileId,
@@ -321,6 +323,10 @@ export function parseAgentWorkOrderV2(value: unknown): AgentWorkOrderV2 {
     soulVersion: evidence.soulVersion,
     bindingSha256: isRecord(value.expectedSoulBinding) ? value.expectedSoulBinding.bindingSha256 : null,
     isolationScopeSha256: isRecord(evidence.canaryIsolation) ? evidence.canaryIsolation.isolationScopeSha256 : null,
+    ...(isRecord(value.runtime) && value.runtime.model === "gpt-6-astra" ? {
+      runtime: value.runtime,
+      profileConfigSha256: evidence.profileConfigSha256,
+    } : {}),
   }).slice(0, 40)}`;
   if (value.sessionId !== expectedSessionId) {
     throw new Error("Agent WorkOrder sessionId is not the deterministic Book/profile/Soul session.");
@@ -505,7 +511,7 @@ async function assertAgentModeGate(projectRoot: string, workOrder: AgentWorkOrde
   const evidence = workOrder.modeEvidence;
   if (
     workOrder.runtime.hermesProfile !== evidence.profileId
-    || workOrder.runtime.model !== "gpt-5.6-sol"
+    || workOrder.runtime.model !== FIREFLY_PRODUCTION_MODEL
     || workOrder.runtime.reasoning !== "high"
   ) throw new Error("Agent WorkOrder runtime does not match the owner-approved Executor Soul profile.");
   const binding = await loadActiveBookSoulBinding(projectRoot, workOrder.bookId);
@@ -545,8 +551,17 @@ export function assertAgentOperateWriterRuntime(input: {
   readonly model: string;
   readonly reasoningEffort?: string;
 }): void {
-  if (input.model !== "gpt-5.6-sol" || input.reasoningEffort !== "high") {
-    throw new Error("Agent operation requires the InkOS Writer runtime gpt-5.6-sol/high.");
+  if (input.model !== FIREFLY_PRODUCTION_MODEL || input.reasoningEffort !== "high") {
+    throw new Error(`Agent operation requires the InkOS Writer runtime ${FIREFLY_PRODUCTION_MODEL}/high.`);
+  }
+}
+
+export function assertBoundProductionRuntime(
+  requested: { readonly model: string; readonly reasoning: string },
+  effective: { readonly model: string; readonly reasoningEffort?: string },
+): void {
+  if (requested.model !== effective.model || requested.reasoning !== effective.reasoningEffort) {
+    throw new Error("Production request model/reasoning differs from the effective runtime.");
   }
 }
 
@@ -570,7 +585,7 @@ export function assertAgentOperatePipelineRuntime(
     try {
       assertAgentOperateWriterRuntime(context);
     } catch {
-      throw new Error(`Agent operation requires the InkOS ${role} runtime gpt-5.6-sol/high.`);
+      throw new Error(`Agent operation requires the InkOS ${role} runtime ${FIREFLY_PRODUCTION_MODEL}/high.`);
     }
     if (role === "writer") writer = context;
   }
@@ -764,7 +779,8 @@ productionCommand.command("write-next")
       surfaceGatewayMode: "kernel",
       productionKernelMode: effective.config.production?.kernel === "enforce" ? "enforce" : "observe",
     });
-    const effectiveWriter = pipeline.createAgentContext("writer", workOrder.bookId);
+    const effectiveWriter = assertAgentOperatePipelineRuntime(pipeline, workOrder.bookId);
+    assertBoundProductionRuntime(workOrder.runtime, effectiveWriter);
     const ownerDirection = await createDetachedOwnerDirectionLease({
       projectRoot: root,
       receiptId: workOrder.ownerDecision.receiptId,
@@ -851,6 +867,8 @@ productionCommand.command("agent-operate")
     ) throw new Error("Agent WorkOrder v2 byte hash mismatch.");
     if (!SHA256.test(String(opts.manifestCapabilitySha))) throw new Error("Manifest capability hash is invalid.");
     const workOrder = parseAgentWorkOrderV2(JSON.parse(ipc.workOrderBytes.toString("utf8")));
+    const declaredHermesReceipt = HermesInvocationReceiptSchema.parse(JSON.parse(ipc.receiptBytes.toString("utf8")));
+    assertBoundProductionRuntime(workOrder.runtime, { model: declaredHermesReceipt.runtime.model, reasoningEffort: declaredHermesReceipt.runtime.reasoning });
     const root = findProjectRoot();
     const canonicalAction = HermesControlActionSchema.parse(JSON.parse(ipc.actionBytes.toString("utf8")));
     if (canonicalAction.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
@@ -924,8 +942,8 @@ productionCommand.command("agent-operate")
         importReceipt: imported.importReceipt,
         hermesSessionId: imported.hermesReceipt.invocation.sessionId,
         configMode: "immutable-terminal-replay",
-        inkosModel: "gpt-5.6-sol",
-        inkosReasoning: "high",
+        inkosModel: workOrder.runtime.model,
+        inkosReasoning: workOrder.runtime.reasoning,
       });
       process.stdout.write(`${JSON.stringify(output)}\n`);
       if (terminal.status !== "succeeded") process.exitCode = 1;
@@ -977,6 +995,7 @@ productionCommand.command("agent-operate")
       productionKernelMode: effective.config.production?.kernel === "enforce" ? "enforce" : "observe",
     });
     const effectiveWriter = assertAgentOperatePipelineRuntime(pipeline, workOrder.bookId);
+    assertBoundProductionRuntime(workOrder.runtime, effectiveWriter);
     const imported = await importExactEvidence();
     if (imported.action.guidanceSha256 !== ipc.envelope.hermesAction.textSha256) {
       throw new Error("Agent operation envelope text hash does not match the canonical Hermes action.");

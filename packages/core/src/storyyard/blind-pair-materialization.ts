@@ -3,6 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readdir, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { FireflyRuntimeModelSchema } from "../production/model-policy.js";
 import {
   AgentOperationTerminalReceiptV2Schema,
   HermesControlImportReceiptV2Schema,
@@ -36,8 +37,14 @@ const MAX_REVIEW_ARTIFACT_BYTES = 10 * 1024 * 1024;
 // These are the audited RefLab evaluator profile bytes.  Accepting an arbitrary
 // digest here would let a caller relabel a different evaluator as the blind
 // evaluator while preserving the public schema shape.
-const BLIND_EVALUATOR_CONFIG_SHA256 = "4124e16bc40d28732d1dd02f9f2e8b78127a202313e1ace21021f16fca809f46";
-const BLIND_EVALUATOR_SOUL_SHA256 = "5c4cca60c9971312682f7b71cac5d4d61b6f9e2c42d19af99c8fe6daedacd94b";
+const BLIND_EVALUATOR_CONFIG_SHA256 = {
+  "gpt-5.6-sol": "4124e16bc40d28732d1dd02f9f2e8b78127a202313e1ace21021f16fca809f46",
+  "gpt-6-astra": "e75d85c0085769a347820ba9f040e4098112f7ae84aa5c22f82a0b33f6476c27",
+} as const;
+const BLIND_EVALUATOR_SOUL_SHA256 = {
+  "gpt-5.6-sol": "5c4cca60c9971312682f7b71cac5d4d61b6f9e2c42d19af99c8fe6daedacd94b",
+  "gpt-6-astra": "abd78aa24facfaa885128aa3a995af5e7116d8f1038c856813fec000682bd2d1",
+} as const;
 const SURFACE_CORPUS_BY_GENRE = {
   "modern-fantasy-ko": { soulId: "male-modern-fantasy-ko", soulVersion: "v1" },
   "fantasy-ko": { soulId: "male-fantasy-ko", soulVersion: "v1" },
@@ -182,7 +189,7 @@ export const RefLabBlindPairEvaluationInputV2Schema = z.object({
     actorId: z.string().min(1).max(240),
     profileId: z.literal("inkos_blind_evaluator"),
     provider: z.literal("openai-codex"),
-    model: z.literal("gpt-5.6-sol"),
+    model: FireflyRuntimeModelSchema,
     reasoning: z.literal("high"),
     configSha256: Sha256Schema,
     soulSha256: Sha256Schema,
@@ -350,7 +357,7 @@ export const RefLabBlindReviewReceiptV2Schema = z.object({
     profileId: z.literal("inkos_blind_evaluator"),
     configSha256: Sha256Schema,
     soulSha256: Sha256Schema,
-    model: z.literal("gpt-5.6-sol"),
+    model: FireflyRuntimeModelSchema,
     reasoning: z.literal("high"),
     actorDistinctFromProducers: z.literal(true),
     runId: z.string().min(1),
@@ -401,7 +408,7 @@ export type RefLabBlindReviewReceiptV2 = z.infer<typeof RefLabBlindReviewReceipt
 const RefLabBlindEvaluatorHostReceiptSchema = z.object({
   schemaVersion: z.literal("private-hermes-structured-run-receipt/v1"),
   role: z.literal("blind-pair-commercial-evaluator"), runId: z.string().min(1), profileId: z.literal("inkos_blind_evaluator"),
-  model: z.literal("gpt-5.6-sol"), provider: z.literal("openai-codex"),
+  model: FireflyRuntimeModelSchema, provider: z.literal("openai-codex"),
   readCapabilitySha256: Sha256Schema, readCapabilityTool: z.literal("firefly_read_source"), readCapabilityToolset: z.literal("firefly-source-read"),
   readExecutionEnvironmentSha256: Sha256Schema, readExecutionRuntimeIdentitySha256: Sha256Schema, readManifestSha256: Sha256Schema,
   reasoningEffort: z.literal("high"), runtimeAttestation: z.literal("current-attested"), promptSha256: Sha256Schema,
@@ -926,7 +933,7 @@ export async function materializeBlindPair(input: MaterializeBlindPairInput): Pr
         canaryIsolation: transfer.canaryIsolation,
         candidateLabelsShuffled: true,
         generatorMetadataExcluded: true,
-        runtime: { kernel: "enforce", piWorker: "off", retrieval: "legacy", fts: "off", model: "gpt-5.6-sol", reasoning: "high" },
+        runtime: { kernel: "enforce", piWorker: "off", retrieval: "legacy", fts: "off", model: reviewReceipt.reviewer.model, reasoning: "high" },
       },
       candidates: publicCandidates,
       sealedGenerationEvidence: { candidateEvidenceReceiptSha256s, contentNeutralReceiptSha256s },
@@ -1245,8 +1252,8 @@ function assertReviewInputMatchesTransfer(
     }
   }
   if (reviewInput.reviewer.profileId !== "inkos_blind_evaluator"
-    || reviewInput.reviewer.configSha256 !== BLIND_EVALUATOR_CONFIG_SHA256
-    || reviewInput.reviewer.soulSha256 !== BLIND_EVALUATOR_SOUL_SHA256) {
+    || reviewInput.reviewer.configSha256 !== BLIND_EVALUATOR_CONFIG_SHA256[reviewInput.reviewer.model]
+    || reviewInput.reviewer.soulSha256 !== BLIND_EVALUATOR_SOUL_SHA256[reviewInput.reviewer.model]) {
     throw new Error("Reference Lab public review input does not use the audited blind evaluator profile bytes.");
   }
 }
@@ -1317,6 +1324,8 @@ function assertEvaluatorHostReceiptMatchesEvidence(input: {
   const evaluatorResultSha256 = sha256Bytes(evaluatorResultBytes);
   const hostReceiptSha256 = sha256Bytes(hostReceiptBytes);
   if (hostReceipt.profileConfigSha256 !== receipt.reviewer.configSha256
+    || hostReceipt.model !== receipt.reviewer.model
+    || hostReceipt.reasoningEffort !== receipt.reviewer.reasoning
     || hostReceipt.soulSha256 !== receipt.reviewer.soulSha256
     || hostReceipt.runId !== receipt.reviewer.runId
     || hostReceipt.completedAt !== receipt.createdAt
@@ -1360,6 +1369,8 @@ function assertReviewReceiptMatchesEvidence(input: {
     || receipt.evaluatorBinding.evaluatorResultSha256 !== evaluatorResultSha256
     || receipt.evaluatorBinding.hostReceiptSha256 !== evaluatorHostReceiptSha256
     || receipt.reviewer.profileId !== reviewInput.reviewer.profileId
+    || receipt.reviewer.model !== reviewInput.reviewer.model
+    || receipt.reviewer.reasoning !== reviewInput.reviewer.reasoning
     || receipt.reviewer.configSha256 !== reviewInput.reviewer.configSha256
     || receipt.reviewer.soulSha256 !== reviewInput.reviewer.soulSha256) {
     throw new Error("Reference Lab blind review receipt does not bind the exact input/result/transfer evidence.");
