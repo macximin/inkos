@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { sourceFirstReferenceFixture, sourceFirstHandoffFixture, handoffFixturePlan, hashBytes, fixtureFile } from "../../../core/dist/__tests__/fixtures/source-first-handoff-fixture.js";
+import { hashPitchReviewCanonicalJson, StateManager, ReferencePackStore, StoryRailStore, ArcStore, assertApprovedFireflyPlanningAdmission } from "@actalk/inkos-core";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -170,22 +172,24 @@ describe("pitch slate command", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  async function sourceFirstSetup() {
+  async function sourceFirstSetup(completeReference = false) {
     const packet = JSON.parse(readFileSync(new URL("../../../core/src/__tests__/fixtures/source-first-pitch-review-v3.json", import.meta.url), "utf8"));
     const fixture = packet.candidates[0];
     const pack = { kind: "reference-transformation-pack", id: fixture.spineRetention.primaryReference.packId,
       source: { workSlug: fixture.spineRetention.referenceDisclosure.workSlug, workTitle: fixture.spineRetention.referenceDisclosure.workTitle,
         sourceSha256: fixture.spineRetention.primaryReference.sourceSha256, chapterCount: 100 } };
-    const packText = JSON.stringify(pack);
+    const reference = completeReference ? await sourceFirstReferenceFixture(root) : undefined;
+    const packText = reference ? await readFile(join(root, "source-pack.json"), "utf8") : JSON.stringify(pack);
     const packPath = join(root, "source-pack.json");
     const sourcePath = join(root, "source.md");
     await writeFile(packPath, packText);
-    await writeFile(sourcePath, "검수된 원문: 칭찬만 받지 않고 자기 지분을 요구하여 얻는다.");
-    const binding = { ...fixture.spineRetention.primaryReference, packSha256: createHash("sha256").update(packText).digest("hex") };
+    if (!reference) await writeFile(sourcePath, "검수된 원문: 칭찬만 받지 않고 자기 지분을 요구하여 얻는다.");
+    const binding = { ...fixture.spineRetention.primaryReference, packSha256: createHash("sha256").update(packText).digest("hex"),
+      ...(reference ? { sourceSha256: reference.sourceBinding.sourceSha256 } : {}) };
     function sourceCandidate(id = "p01") {
       return { ...candidate(id), railB: [], supportingReferenceRoutes: [] as Array<{ reference: string; role: string; targetArc: string }>,
         arcLadder: candidate(id).arcLadder.map((arc) => ({ ...arc, relationshipConversion: null })),
-        spineRetention: { ...fixture.spineRetention, primaryReference: binding }, projectPlan: fixture.projectPlan };
+        spineRetention: { ...fixture.spineRetention, primaryReference: binding }, projectPlan: reference ? { ...fixture.projectPlan, markdown: handoffFixturePlan(fixture.projectPlan.markdown) } : fixture.projectPlan };
     }
     const review = survivalReview();
     const sourceReview = { ...review, verdicts: review.verdicts.map((verdict) => ({ ...verdict,
@@ -207,7 +211,7 @@ describe("pitch slate command", () => {
       goalAndMeans: { passed: true, evidence: "목적과 수단의 후보 위치를 대조한 mock 판단이다." },
       readablePlan: { passed: true, evidence: "기획서 인물 소개와 첫 사건의 연결을 대조한 mock 판단이다." },
     };
-    return { packPath, sourcePath, sourceCandidate, sourceReview: { ...sourceReview,
+    return { packPath, sourcePath, sourceCandidate, reference, sourceReview: { ...sourceReview,
       verdicts: sourceReview.verdicts.map((verdict) => ({ ...verdict, protagonistContext: structuredClone(protagonistContext) })) } };
   }
 
@@ -256,6 +260,96 @@ describe("pitch slate command", () => {
     expect(process.exitCode).toBe(1);
     expect(stdout.join("")).toContain("Source-first Book promotion is not supported");
     await expect(readFile(join(root, "books/not-created/book.json"))).rejects.toThrow();
+  });
+
+  it("imports daily canary bytes and explicit mapping as pending native input, preserving origin", async () => {
+    const setup = await sourceFirstSetup(true);
+    const mappedCandidate = setup.sourceCandidate("p01");
+    const markdown = mappedCandidate.projectPlan.markdown;
+    const canary = { schemaVersion: "firefly-planning-canary/v1", id: `fcp-${"a".repeat(24)}`, batchId: "synthetic-daily-input", state: "complete", markdown,
+      inputSha256: hashBytes("input"), outputSha256: hashBytes(markdown), generatedAt: "2026-09-12T00:00:00.000Z", author: { route: "source-fixture-route", model: "synthetic-no-call" }, receipt: { inputSha256: hashBytes("input"), outputSha256: hashBytes(markdown) } };
+    const canaryRef = await fixtureFile(root, "daily-canary.json", canary);
+    await fixtureFile(root, "daily-mapping.json", { schemaVersion: "firefly_daily_planning_candidate_mapping/v1", canaryId: canary.id, canarySha256: canaryRef.sha256, outputSha256: canary.outputSha256, candidate: mappedCandidate });
+    const args = ["import-plan", "--id", "imported-daily", "--canary", "daily-canary.json", "--mapping", "daily-mapping.json", "--source-pack", setup.packPath, "--reference", setup.sourcePath, "--json"];
+    await createPitchCommand().parseAsync([...args, "--check"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    await expect(readFile(join(root, ".inkos/pitch-slates/imported-daily/slate.json"))).rejects.toThrow();
+    stdout.length = 0;
+    await createPitchCommand().parseAsync(args, { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    const importedDir = join(root, ".inkos/pitch-slates/imported-daily");
+    const slate = JSON.parse(await readFile(join(importedDir, "slate.json"), "utf8"));
+    expect(slate).toMatchObject({ planningMode: "source-first", canonStatus: "non-canonical", reviewStatus: "pending", candidateCount: 1,
+      sourceOrigin: { system: "v3_ff_foundry", canaryId: canary.id, originalAuthor: canary.author } });
+    expect(slate.candidates[0]).toEqual(mappedCandidate);
+    expect(await readFile(join(importedDir, "source-canary.json"))).toEqual(await readFile(join(root, "daily-canary.json")));
+    expect(mocks.runAgentSession).not.toHaveBeenCalled();
+    await expect(readFile(join(importedDir, "human-decision/decision.json"))).rejects.toThrow();
+    await createPitchCommand().parseAsync(["promote", "--id", "imported-daily", "--book", "cannot-create", "--json"], { from: "user" });
+    expect(process.exitCode).toBe(1);
+    await expect(readFile(join(root, "books/cannot-create/book.json"))).rejects.toThrow();
+    // Continue only with explicitly synthetic review/selection evidence; never infer them from complete/select UI state.
+    process.exitCode = 0; stdout.length = 0;
+    mocks.runAgentSession.mockResolvedValue({ responseText: JSON.stringify({ ...setup.sourceReview, ranking: ["p01"], verdicts: [setup.sourceReview.verdicts[0]] }), messages: [] });
+    await createPitchCommand().parseAsync(["review", "--id", "imported-daily", "--json"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    await createPitchCommand({ readInput: async () => "합성 fixture의 명시 선택" }).parseAsync(["decision", "--id", "imported-daily", "--candidate", "p01", "--decision", "select", "--json"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    const handoff = await sourceFirstHandoffFixture(root, { bookId: "daily-handoff-book", slateId: "imported-daily", candidateId: "p01", candidateSha256: hashPitchReviewCanonicalJson(mappedCandidate),
+      sourceSlateSha256: hashBytes(await readFile(join(importedDir, "slate.json"))), sourceReviewSha256: hashBytes(await readFile(join(importedDir, "survival-review/review.json"))),
+      sourceDecisionSha256: hashBytes(await readFile(join(importedDir, "human-decision/decision.json"))), candidate: mappedCandidate }, setup.reference!);
+    const modelCalls = mocks.runAgentSession.mock.calls.length;
+    await createPitchCommand().parseAsync(["promote", "--id", "imported-daily", "--book", "daily-handoff-book", "--handoff", handoff.manifestPath, "--json"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    expect(mocks.runAgentSession.mock.calls).toHaveLength(modelCalls);
+    expect(await new StateManager(root).listBooks()).toContain("daily-handoff-book");
+    const selection = JSON.parse(await readFile(join(root, "books/daily-handoff-book/story/pitch-selection.json"), "utf8"));
+    expect(selection.candidate.projectPlan.markdown).toBe(canary.markdown);
+  });
+
+  it("preflights and consumes an explicitly authorized source-first handoff without model generation", async () => {
+    const setup = await sourceFirstSetup(true);
+    mocks.runAgentSession.mockImplementation(async (config: { sessionKind: string }, prompt: string) => ({
+      responseText: JSON.stringify(config.sessionKind === "pitch-review" ? setup.sourceReview
+        : setup.sourceCandidate(prompt.match(/candidateId는 정확히 (p\d{2})/)?.[1] ?? "p01")), messages: [] }));
+    const slateId = "source-handoff";
+    await createPitchCommand({ readInput: async () => "합성 전달 검증" }).parseAsync([
+      "slate", "--id", slateId, "--source-first", "--source-pack", setup.packPath, "--count", "2", "--reference", setup.sourcePath, "--json"], { from: "user" });
+    await createPitchCommand().parseAsync(["review", "--id", slateId, "--json"], { from: "user" });
+    await createPitchCommand({ readInput: async () => "합성 fixture 선택" }).parseAsync(["decision", "--id", slateId, "--candidate", "p01", "--decision", "select", "--json"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    const slateDir = join(root, ".inkos", "pitch-slates", slateId);
+    const slateBytes = await readFile(join(slateDir, "slate.json"));
+    const reviewBytes = await readFile(join(slateDir, "survival-review", "review.json"));
+    const decisionBytes = await readFile(join(slateDir, "human-decision", "decision.json"));
+    const selected = JSON.parse(slateBytes.toString()).candidates[0];
+    const handoff = await sourceFirstHandoffFixture(root, { bookId: "source-handoff-book", slateId, candidateId: "p01", candidateSha256: hashPitchReviewCanonicalJson(selected),
+      sourceSlateSha256: hashBytes(slateBytes), sourceReviewSha256: hashBytes(reviewBytes), sourceDecisionSha256: hashBytes(decisionBytes), candidate: selected }, setup.reference!);
+    const callsBefore = mocks.runAgentSession.mock.calls.length;
+    stdout.length = 0;
+    await createPitchCommand().parseAsync(["promote", "--id", slateId, "--book", "source-handoff-book", "--handoff", handoff.manifestPath, "--check", "--json"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({ status: "validated-planning-promotion", bookCreated: false, modelCalls: 0 });
+    await expect(readFile(join(root, "books/source-handoff-book/book.json"))).rejects.toThrow();
+    stdout.length = 0;
+    await createPitchCommand().parseAsync(["promote", "--id", slateId, "--book", "source-handoff-book", "--handoff", handoff.manifestPath, "--json"], { from: "user" });
+    expect(process.exitCode, stdout.join("")).toBe(0);
+    expect(mocks.runAgentSession.mock.calls).toHaveLength(callsBefore);
+    const bookDir = join(root, "books", "source-handoff-book");
+    const book = JSON.parse(await readFile(join(bookDir, "book.json"), "utf8"));
+    expect(await new StateManager(root).listBooks()).toContain(book.id);
+    expect((await new StoryRailStore(bookDir).load())?.arcRouteRail.entries[0].arcId).toBe("opening-arc");
+    expect((await new ArcStore(bookDir).getActive())?.id).toBe("opening-arc");
+    expect((await new ReferencePackStore(root, bookDir).buildWriterContext({ book, chapterNumber: 1, arcId: "opening-arc" }))?.storyEntries).toHaveLength(4);
+    expect(await assertApprovedFireflyPlanningAdmission({ bookDir, bookId: book.id })).toEqual(handoff.authorization.admission);
+    expect(JSON.parse(await readFile(join(bookDir, "chapters", "index.json"), "utf8"))).toEqual([]);
+    const promotion = JSON.parse(await readFile(join(slateDir, "promotion.json"), "utf8"));
+    expect(promotion.handoff.status).toBe("planning-seed-imported");
+    expect(promotion.handoff.manuscriptAuthorized).toBe(false);
+    const filesBeforeRetry = await readdir(bookDir);
+    await createPitchCommand().parseAsync(["promote", "--id", slateId, "--book", "source-handoff-book", "--handoff", handoff.manifestPath, "--json"], { from: "user" });
+    expect(process.exitCode).toBe(1);
+    expect(await readdir(bookDir)).toEqual(filesBeforeRetry);
   });
 
   it("requires the new independent context record and rechecks it on export and decision", async () => {

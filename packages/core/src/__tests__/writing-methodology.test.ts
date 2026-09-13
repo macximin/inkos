@@ -5,6 +5,20 @@ import {
 } from "../utils/writing-methodology.js";
 
 describe("fun-first writing methodology", () => {
+  it("updates only generated Korean methodology and preserves an owner's separate stylistic direction", () => {
+    const rule = "- 감정 이름을 직접 붙이기보다 손동작, 시선, 호흡, 말의 속도로 드러냅니다.";
+    const original = `# 사용자 지정 문체\n${rule}\n\n# 집필 방법론 참고\n\n## 1. 감정을 행동으로 보여 주기\n${rule}\n\n# 별도 메모\n${rule}\n`;
+    const projected = sanitizeLegacyFunFirstMethodology(original);
+    expect(projected.startsWith(`# 사용자 지정 문체\n${rule}`)).toBe(true);
+    expect(projected.endsWith(`# 별도 메모\n${rule}\n`)).toBe(true);
+    expect(projected).toContain("욕심·의심·망설임·결단의 이유가 핵심이면 내면을 남깁니다");
+    expect(sanitizeLegacyFunFirstMethodology(projected)).toBe(projected);
+    const fresh = buildWritingMethodologySection("ko");
+    expect(fresh).toContain("모두가 반격할 필요는 없습니다");
+    expect(fresh).toContain("원고에 차례대로 설명할 필요는 없습니다");
+    expect(fresh).not.toContain("1-2명의 구체적인 반응");
+  });
+
   it("allows clean closure and present-function quiet scenes in ko/zh/en", () => {
     const ko = buildWritingMethodologySection("ko");
     expect(ko).toContain("완전 수습·후과·자연스러운 다음 선택이나 압력");

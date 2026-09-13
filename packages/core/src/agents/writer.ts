@@ -1,3 +1,9 @@
+import { createHash } from "node:crypto";
+import { parseNarrativeEvidenceOutput, buildNarrativeEvidenceExtractionRules, readNarrativeEvidenceContext, buildNarrativeEvidenceArtifact, validateNarrativeEvidenceArtifactPaths } from "../state/narrative-evidence.js";
+import { parseDraftDiscoverySuggestions } from "../planning/draft-discovery.js";
+import { prepareDraftDiscoveryRequest, bindDraftDiscoveryObservation, type DraftDiscoveryObservation } from "../planning/draft-discovery-runtime.js";
+import { resolveBookCreativeBrief, recordBookCreativeBrief } from "../planning/creative-brief.js";
+import { projectSceneDecisionForWriter } from "../planning/scene-decision.js";
 import { BaseAgent } from "./base.js";
 import { estimateTextTokens } from "../llm/provider.js";
 import type { BookConfig } from "../models/book.js";
@@ -46,6 +52,7 @@ import {
   buildGovernedHookWorkingSet,
 } from "../utils/governed-working-set.js";
 import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
+import { resolveAuthorCraftContext, recordAuthorCraftContext, availableAuthorCraftTokens } from "../reference/author-craft.js";
 import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, loadRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import { ENTITY_OBSERVATION_CONTEXT_SOURCE, readEntityObservationContext, validateEntityObservations } from "../state/entity-observations.js";
@@ -142,7 +149,17 @@ export interface TokenUsage {
   readonly totalTokens: number;
 }
 
+export interface NarrativeEvidenceObservation {
+  readonly bookId: string;
+  readonly chapterTextSha256: string;
+  readonly entries: unknown[];
+}
+
 export interface WriteChapterOutput {
+  readonly authorCraftReceiptPath?: string;
+  readonly creativeBriefReceiptPath?: string;
+  readonly draftDiscoveryObservation?: DraftDiscoveryObservation;
+  readonly narrativeEvidenceObservation?: NarrativeEvidenceObservation;
   readonly chapterNumber: number;
   readonly title: string;
   readonly content: string;
@@ -364,10 +381,12 @@ export class WriterAgent extends BaseAgent {
     assertCurrentProductionGenreProfileReceipt(resolvedGenreProfile.receipt);
     const { profile: genreProfile, body: genreBody } = resolvedGenreProfile;
     const effectiveBookRules = await readEffectiveBookRules(bookDir, book.id);
+    const authorPovCharacter = extractPOVFromOutline(volumeOutline, chapterNumber);
     const { contextPackage, entityContext } = await this.loadEntityObservationContext({
       bookDir, chapterNumber, language: book.language ?? genreProfile.language,
       contextPackage: input.contextPackage,
       query: [input.chapterMemo?.goal, input.chapterIntent, ownerExternalContext].filter(Boolean).join("\n"),
+      povCharacter: authorPovCharacter ?? undefined,
     });
     const bookRules = effectiveBookRules?.automatic ?? null;
     const bookRulesGuidance = effectiveBookRules?.guidance ?? "";
@@ -509,10 +528,11 @@ export class WriterAgent extends BaseAgent {
       ? `${baseCreativeSystemPrompt}\n\n${referenceContext.rendered}`
       : baseCreativeSystemPrompt;
 
-    const baseCreativeUserPrompt = input.chapterMemo && contextPackage && verifiedRuleStack
+    const writerMemo = input.chapterMemo ? projectSceneDecisionForWriter(input.chapterMemo, resolvedLanguage) : undefined;
+    const baseCreativeUserPrompt = writerMemo && contextPackage && verifiedRuleStack
       ? this.buildGovernedUserPrompt({
           chapterNumber,
-          chapterMemo: input.chapterMemo,
+          chapterMemo: writerMemo,
           chapterIntentData: input.chapterIntentData,
           contextPackage: contextPackage,
           ruleStack: verifiedRuleStack,
@@ -566,9 +586,31 @@ export class WriterAgent extends BaseAgent {
         })();
 
     const isGovernedCreative = Boolean(input.chapterMemo && contextPackage && verifiedRuleStack);
-    const creativeUserPrompt = entityContext && !isGovernedCreative
-      ? `${baseCreativeUserPrompt}\n\n${entityContext}`
-      : baseCreativeUserPrompt;
+    const bookCreativeBriefContext = await resolveBookCreativeBrief({ bookDir, bookId: book.id, chapterNumber,
+      language: resolvedLanguage, maxInputTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+        outputTokens: this.ctx.client.defaults.maxTokens,
+        reservedText: [creativeSystemPrompt, baseCreativeUserPrompt, entityContext && !isGovernedCreative ? entityContext : ""].join("\n\n") }) });
+    const creativeBriefReceiptPath = await recordBookCreativeBrief(bookDir, chapterNumber, "writing", bookCreativeBriefContext).catch(() => { this.ctx.logger?.warn("[creative-brief] Optional input receipt could not be saved."); return undefined; });
+    const narrativeContext = await readNarrativeEvidenceContext(bookDir, { bookId: book.id, throughChapter: chapterNumber - 1,
+      povCharacter: extractPOVFromOutline(volumeOutline, chapterNumber) ?? undefined, language: resolvedLanguage,
+      query: [writerMemo?.goal, writerMemo?.body, input.chapterIntentData?.goal].filter(Boolean).join("\n"),
+      maxInputTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+        outputTokens: this.ctx.client.defaults.maxTokens,
+        reservedText: [creativeSystemPrompt, baseCreativeUserPrompt, entityContext && !isGovernedCreative ? entityContext : "", bookCreativeBriefContext.rendered].join("\n\n") }),
+    });
+    const authorCraft = await resolveAuthorCraftContext({
+      projectRoot: this.ctx.projectRoot,
+      bookId: book.id,
+      config: book.writing?.authorCraft,
+      language: resolvedLanguage,
+      stage: "writing",
+      query: [writerMemo?.goal, writerMemo?.body, input.chapterIntent, input.chapterIntentData?.goal].filter(Boolean).join("\n"),
+      maxContextTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+        outputTokens: this.ctx.client.defaults.maxTokens,
+        reservedText: [creativeSystemPrompt, baseCreativeUserPrompt, entityContext && !isGovernedCreative ? entityContext : "", bookCreativeBriefContext.rendered, narrativeContext.rendered].join("\n\n") }),
+    });
+    const authorCraftReceiptPath = await recordAuthorCraftContext(bookDir, chapterNumber, authorCraft);
+    const creativeUserPrompt = [baseCreativeUserPrompt, entityContext && !isGovernedCreative ? entityContext : "", bookCreativeBriefContext.rendered, narrativeContext.rendered, authorCraft?.rendered].filter(Boolean).join("\n\n");
     const entityContextReceiptPath = join(bookDir, "story", "runtime", `chapter-${String(chapterNumber).padStart(4, "0")}.entity-context.json`);
     await mkdir(join(bookDir, "story", "runtime"), { recursive: true });
     await writeFile(entityContextReceiptPath, JSON.stringify({
@@ -641,6 +683,7 @@ export class WriterAgent extends BaseAgent {
       : characterMatrix;
 
     const settleResult = await this.settle({
+      bookDir: input.bookDir,
       book,
       genreProfile,
       bookRules,
@@ -756,11 +799,15 @@ export class WriterAgent extends BaseAgent {
 
     return {
       chapterNumber,
+      ...(authorCraftReceiptPath ? { authorCraftReceiptPath } : {}),
+      ...(creativeBriefReceiptPath ? { creativeBriefReceiptPath } : {}),
       title: creative.title,
       content: surfaceNormalizedContent,
       wordCount: surfaceNormalizedWordCount,
       preWriteCheck: creative.preWriteCheck,
       postSettlement: settlement.postSettlement,
+      ...(settlement.draftDiscoveryObservation ? { draftDiscoveryObservation: settlement.draftDiscoveryObservation } : {}),
+      ...(settlement.narrativeEvidenceObservation ? { narrativeEvidenceObservation: settlement.narrativeEvidenceObservation } : {}),
       runtimeStateDelta: resolvedRuntimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
@@ -863,6 +910,7 @@ export class WriterAgent extends BaseAgent {
     );
 
     const settleResult = await this.settle({
+      bookDir: input.bookDir,
       book: input.book,
       genreProfile,
       bookRules,
@@ -919,6 +967,8 @@ export class WriterAgent extends BaseAgent {
       ),
       preWriteCheck: "",
       postSettlement: settlement.postSettlement,
+      ...(settlement.draftDiscoveryObservation ? { draftDiscoveryObservation: settlement.draftDiscoveryObservation } : {}),
+      ...(settlement.narrativeEvidenceObservation ? { narrativeEvidenceObservation: settlement.narrativeEvidenceObservation } : {}),
       runtimeStateDelta: runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
@@ -938,6 +988,7 @@ export class WriterAgent extends BaseAgent {
   }
 
   private async settle(params: {
+    readonly bookDir: string;
     readonly book: BookConfig;
     readonly genreProfile: GenreProfile;
     readonly bookRules: BookRules | null;
@@ -965,6 +1016,8 @@ export class WriterAgent extends BaseAgent {
     settlement: ReturnType<typeof parseSettlementOutput> & {
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
+      draftDiscoveryObservation?: DraftDiscoveryObservation;
+      narrativeEvidenceObservation?: NarrativeEvidenceObservation;
     };
     usage: TokenUsage;
   }> {
@@ -1035,10 +1088,24 @@ export class WriterAgent extends BaseAgent {
       language: resolvedLang,
     });
 
+    const discoveryRequest = params.book.writing?.authorCraft
+      ? await prepareDraftDiscoveryRequest(params.bookDir, params.book.id, resolvedLang,
+          availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+            outputTokens: this.ctx.client.defaults.maxTokens, reservedText: `${settlerSystem}\n\n${settlerUser}` }))
+      : { rendered: "", basePlanSha256: undefined, diagnostics: [] };
+    const narrativeRules = params.book.writing?.authorCraft ? buildNarrativeEvidenceExtractionRules(resolvedLang) : "";
+    const narrativeBudget = availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+      outputTokens: this.ctx.client.defaults.maxTokens,
+      reservedText: [settlerSystem, settlerUser, discoveryRequest.rendered].join("\n\n") });
+    const narrativeRulesFit = narrativeRules && (narrativeBudget === undefined || estimateTextTokens(narrativeRules) <= narrativeBudget) ? narrativeRules : "";
+    const priorNarrative = narrativeRulesFit ? await readNarrativeEvidenceContext(params.bookDir, {
+      bookId: params.book.id, throughChapter: params.chapterNumber - 1, language: resolvedLang, query: params.content,
+      maxInputTokens: narrativeBudget === undefined ? undefined : Math.max(0, narrativeBudget - estimateTextTokens(narrativeRulesFit)),
+    }) : undefined;
     const response = await this.chat(
       [
         { role: "system", content: settlerSystem },
-        { role: "user", content: settlerUser },
+        { role: "user", content: [settlerUser, discoveryRequest.rendered, narrativeRulesFit, priorNarrative?.rendered].filter(Boolean).join("\n\n") },
       ],
       {
         temperature: 0.3,
@@ -1053,7 +1120,16 @@ export class WriterAgent extends BaseAgent {
     if (deltaOutput.runtimeStateDelta.entityObservations === undefined) {
       throw new Error("Settler must output entityObservations (use [] when no named entities occur)");
     }
+    const discovery = parseDraftDiscoverySuggestions(response.content);
+    const draftDiscoveryObservation = discoveryRequest.basePlanSha256 && discovery.status === "valid"
+      ? bindDraftDiscoveryObservation({ bookId: params.book.id, chapter: params.chapterNumber, content: params.content,
+          basePlanSha256: discoveryRequest.basePlanSha256, suggestions: discovery.suggestions }) : undefined;
+    const narrative = parseNarrativeEvidenceOutput(response.content);
+    const narrativeEvidenceObservation = narrativeRulesFit && narrative.status === "parsed" && narrative.entries
+      ? { bookId: params.book.id, chapterTextSha256: createHash("sha256").update(params.content).digest("hex"), entries: narrative.entries } : undefined;
     const mergedSettlement = {
+      ...(narrativeEvidenceObservation ? { narrativeEvidenceObservation } : {}),
+      ...(draftDiscoveryObservation ? { draftDiscoveryObservation } : {}),
       postSettlement: deltaOutput.postSettlement,
       runtimeStateDelta: deltaOutput.runtimeStateDelta,
       updatedState: "", updatedLedger: "", updatedHooks: "", chapterSummary: "",
@@ -1153,6 +1229,21 @@ export class WriterAgent extends BaseAgent {
       writes.push({ relativePath: join("story", "particle_ledger.md"), content: output.updatedLedger });
     }
 
+    if (output.narrativeEvidenceObservation) {
+      const observation = output.narrativeEvidenceObservation;
+      const bodyMatches = createHash("sha256").update(output.content).digest("hex") === observation.chapterTextSha256;
+      try {
+        const sourceBook = JSON.parse(await readFile(join(bookDir, "book.json"), "utf8"));
+        if (sourceBook.id !== observation.bookId) throw new Error("Narrative evidence Book mismatch");
+        const artifact = buildNarrativeEvidenceArtifact({ bookId: observation.bookId, chapterNumber: output.chapterNumber,
+          chapterText: output.content, chapterPath: `chapters/${filename}`, chapterFileContent: chapterContent,
+          entries: bodyMatches ? observation.entries : [] });
+        await validateNarrativeEvidenceArtifactPaths(bookDir, artifact.writes);
+        writes.push(...artifact.writes);
+      } catch {
+        this.ctx.logger?.warn("[narrative-evidence] Optional evidence could not bind the saved Book/Chapter; evidence excluded.");
+      }
+    }
     await commitAtomicFileSet({
       rootDir: bookDir,
       writes,
@@ -1321,7 +1412,7 @@ ${lengthRequirementBlock}
       DIRECTION_SOURCES.has(entry.source),
     );
     const otherEntries = params.contextPackage.selectedContext.filter((entry) =>
-      !DIRECTION_SOURCES.has(entry.source),
+      !DIRECTION_SOURCES.has(entry.source) && entry.source !== "runtime/chapter_memo",
     );
     const contextSections = renderNarrativeSelectedContext(otherEntries, language);
     const userDirectionBlock = directionEntries.length > 0
@@ -1878,6 +1969,7 @@ ${overrides}\n`;
     readonly language: "zh" | "ko" | "en";
     readonly contextPackage?: ContextPackage;
     readonly query?: string;
+    readonly povCharacter?: string;
   }): Promise<{ contextPackage: ContextPackage | undefined; entityContext: string }> {
     // Refresh even when a supplied package has this source: a cached package
     // must not retain removed observations or leak later chapters into a replay.
@@ -1904,6 +1996,7 @@ ${overrides}\n`;
       language: params.language,
       maxChars,
       maxContextTokens,
+      povCharacter: params.povCharacter,
     });
     const contextPackage = params.contextPackage ? {
       ...params.contextPackage,

@@ -1,3 +1,5 @@
+import { loadRevisionExperienceContext, recordRevisionExperience } from "../planning/revision-experience.js";
+import { resolveBookCreativeBrief, recordBookCreativeBrief } from "../planning/creative-brief.js";
 import { BaseAgent } from "./base.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
@@ -37,6 +39,7 @@ import {
 } from "../utils/narrative-control.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readBookAuthorCraftConfig, resolveAuthorCraftContext, recordAuthorCraftContext, availableAuthorCraftTokens } from "../reference/author-craft.js";
 import {
   readStoryFrame,
   readVolumeMap,
@@ -49,6 +52,9 @@ export type ReviseMode = "auto" | "polish" | "rewrite" | "rework" | "anti-detect
 export const DEFAULT_REVISE_MODE: ReviseMode = "auto";
 
 export interface ReviseOutput {
+  readonly authorCraftReceiptPath?: string;
+  readonly creativeBriefReceiptPath?: string;
+  readonly revisionExperienceId?: string;
   readonly revisedContent: string;
   readonly wordCount: number;
   readonly fixedIssues: ReadonlyArray<string>;
@@ -176,11 +182,11 @@ const KOREAN_MODE_DESCRIPTIONS: Record<ReviseMode, string> = {
   rework: "전면 재구성: 장면 순서와 충돌의 진행을 다시 짤 수 있지만, 정본 설정과 핵심 사건의 결과는 바꾸지 않습니다.",
   "anti-detect": `기계적인 문장 제거: 사건은 유지하면서 반복되는 문장 틀과 해설투를 걷어냅니다.
 
-- 같은 길이의 문장과 문단이 이어지지 않게 호흡을 바꿉니다.
-- 'A가 아니라 B', '단순한 X를 넘어 Y' 같은 대조문을 직설문으로 고칩니다.
-- 추상 명사가 행동하는 문장을 인물의 행동과 대사로 바꿉니다.
-- 이미 보여 준 감정과 장면의 의미를 다시 설명하지 않습니다.
-- 집단의 과장된 반응을 한두 사람의 구체적인 반응으로 바꿉니다.`,
+- 의도한 문장과 문단의 호흡을 먼저 보존하고, 의미 없이 같은 틀이 반복될 때만 조절합니다.
+- 'A가 아니라 B' 같은 대조가 새로운 판단을 전달하는지 확인하고 같은 결론의 반복만 고칩니다.
+- 추상적인 표현 때문에 누가 무엇을 했는지 흐려진 곳을 구체화합니다. 필요한 비유와 인물의 목소리는 남깁니다.
+- 이미 보여 준 의미의 재설명은 덜어내되, 선택 이유·욕망·오해·판단 갱신에 필요한 내면은 보존합니다.
+- 추측을 단정으로 바꾸지 않습니다. 인물의 정보 경계와 의도적인 반복, 필요한 집단 반응을 남깁니다.`,
   "spot-fix": "정해진 부분만 수정: 지적된 문장이나 문단과 필요한 최소 문맥만 고칩니다. 나머지 원고는 그대로 둡니다.",
 };
 
@@ -483,10 +489,45 @@ ${sanitizeNarrativeEvidenceBlock(hookDebtBlock, resolvedLanguage) ?? ""}${saniti
 ## 待修正章节
 ${chapterContent}`;
 
+    let briefBookId = this.ctx.bookId;
+    if (!briefBookId) {
+      try {
+        const value = JSON.parse(await readFile(join(bookDir, "book.json"), "utf8"));
+        if (typeof value.id === "string" && value.id.trim()) briefBookId = value.id;
+      } catch { /* Old standalone revision fixtures need no optional Book projection. */ }
+    }
+    const bookCreativeBriefContext = briefBookId ? await resolveBookCreativeBrief({ bookDir, bookId: briefBookId,
+      chapterNumber, language: resolvedLanguage,
+      maxInputTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+        outputTokens: this.ctx.client.defaults.maxTokens, reservedText: `${systemPrompt}\n\n${userPrompt}` }),
+    }) : undefined;
+    const creativeBriefReceiptPath = bookCreativeBriefContext
+      ? await recordBookCreativeBrief(bookDir, chapterNumber, "revision", bookCreativeBriefContext).catch(() => { this.ctx.logger?.warn("[creative-brief] Optional input receipt could not be saved."); return undefined; }) : undefined;
+    let revisionExperienceContext = "";
+    if (briefBookId) {
+      try {
+        const remaining = availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+          outputTokens: this.ctx.client.defaults.maxTokens,
+          reservedText: [systemPrompt, userPrompt, bookCreativeBriefContext?.rendered].filter(Boolean).join("\n\n") });
+        revisionExperienceContext = (await loadRevisionExperienceContext(bookDir, { bookId: briefBookId, chapterNumber,
+          issues: revisionIssues, query: options?.revisionInstruction, language: resolvedLanguage, maxCharacters: Math.min(6000, remaining ?? 6000) })).rendered;
+      } catch { this.ctx.logger?.warn("[revision-experience] Optional prior editing evidence unavailable."); }
+    }
+    const authorCraft = await resolveAuthorCraftContext({
+      projectRoot: this.ctx.projectRoot,
+      bookId: this.ctx.bookId,
+      config: await readBookAuthorCraftConfig(bookDir),
+      language: resolvedLanguage,
+      stage: "revision",
+      query: [options?.revisionInstruction, options?.chapterMemo?.goal, ...revisionIssues.map((issue) => `${issue.description} ${issue.suggestion ?? ""}`)].filter(Boolean).join("\n"),
+      maxContextTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+        outputTokens: this.ctx.client.defaults.maxTokens, reservedText: `${systemPrompt}\n\n${userPrompt}\n\n${bookCreativeBriefContext?.rendered ?? ""}\n\n${revisionExperienceContext}` }),
+    });
+    const authorCraftReceiptPath = await recordAuthorCraftContext(bookDir, chapterNumber, authorCraft);
     const response = await this.chat(
       [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: "user", content: [userPrompt, bookCreativeBriefContext?.rendered, revisionExperienceContext, authorCraft?.rendered].filter(Boolean).join("\n\n") },
       ],
       { temperature: 0.3 },
     );
@@ -523,7 +564,15 @@ ${chapterContent}`;
     const wordCount = options?.lengthSpec
       ? countChapterLength(guardedOutput.revisedContent, options.lengthSpec.countingMode)
       : guardedOutput.wordCount;
-    return { ...guardedOutput, wordCount, tokenUsage: response.usage };
+    let revisionExperienceId: string | undefined;
+    if (briefBookId) {
+      try {
+        revisionExperienceId = (await recordRevisionExperience(bookDir, { bookId: briefBookId, chapterNumber,
+          beforeContent: chapterContent, output: guardedOutput, issues: revisionIssues,
+          revisionInstruction: options?.revisionInstruction, mode })).record.experienceId;
+      } catch { this.ctx.logger?.warn("[revision-experience] Optional revision record could not be saved."); }
+    }
+    return { ...guardedOutput, wordCount, ...(revisionExperienceId ? { revisionExperienceId } : {}), tokenUsage: response.usage, ...(authorCraftReceiptPath ? { authorCraftReceiptPath } : {}), ...(creativeBriefReceiptPath ? { creativeBriefReceiptPath } : {}) };
   }
 
   private parseOutput(
@@ -820,8 +869,8 @@ REVISED_CONTENT는 구조, 인과, 분량, 사건 배열처럼 회차 전체를 
 2. 사건의 방향, 정본 사실, 인물의 욕망과 말투를 보존합니다.
 3. 복선 상태와 실제 원고를 맞춥니다.
 4. 원문의 한국어 호흡을 보존합니다. 외국어 문장을 번역한 듯한 어순으로 바꾸지 않습니다.
-5. 추상 명사가 행동하는 문장, 반복되는 대조문, 장면 뒤의 의미 해설을 걷어냅니다.
-6. 인물의 감정과 달라진 관계는 행동, 대사, 선택으로 보여 줍니다.
+5. 누가 무엇을 했는지 흐리는 표현과 같은 결론의 재설명을 고칩니다. 필요한 인과, 비유, 판단 갱신을 함께 지우지 않습니다.
+6. 인물의 감정과 달라진 관계는 문맥에 맞게 내면, 행동, 대사, 선택으로 전달합니다. 욕망·오해·망설임·결단의 이유를 몸짓으로 일괄 치환하지 않고, 추측을 확정된 사실로 바꾸지 않습니다.
 7. 수정 과정에서 새 사건이나 새 설정을 발명하지 않습니다.
 8. ${funAnchorPreservation} 원고에서 이미 살아 있는 주인공의 선택, 반전, 가시적 보상, 그리고 의도된 화말 기능(완전 수습·후과·자연스러운 다음 선택이나 압력)을 삭제하거나 요약하거나 약화하지 않습니다.
 9. 복선 부채 문맥이 주어졌다면 원고에 이미 구현된 지급 장면을 보존합니다. 원문의 완급과 필요한 숨 고르기도 감리 지적과 직접 관계없으면 그대로 둡니다.

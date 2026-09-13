@@ -30,6 +30,17 @@ function snapshot(chapterNumber = 0, observations?: StoredEntityObservation[]): 
 }
 
 describe("chapter-backed entity observations", () => {
+  it("stores a character belief as quoted perspective without turning its proposition into a fact", () => {
+    const evidence = "도현은 형이 보증금을 돌려줄 것이라고 믿었다.";
+    const belief: EntityObservation = { kind: "person", name: "도현", evidence, perspective: "belief" };
+    const result = applyRuntimeStateDelta({ snapshot: snapshot(), chapterText: evidence,
+      delta: RuntimeStateDeltaSchema.parse({ chapter: 1, entityObservations: [belief] }) });
+    expect(result.currentState.entityObservations).toEqual([stored(belief, 1)]);
+    expect(result.currentState.facts).toEqual([]);
+    expect(() => RuntimeStateDeltaSchema.parse({ chapter: 1, entityObservations: [{ ...organization, perspective: "belief" }] })).toThrow(/requires a person/);
+    expect(() => validateEntityObservations({ chapter: 1, entityObservations: [{ ...belief, evidence: "도현은 형을 의심했다." }] }, evidence)).toThrow(/exact chapter quotation/);
+  });
+
   it("records the exact quotation and original text hash without inventing identity or alias facts", () => {
     const result = validateEntityObservations({ chapter: 1, entityObservations: [organization, person] }, chapter);
     expect(result).toEqual([
@@ -126,6 +137,54 @@ describe("entity observation reading context", () => {
     }
     return root;
   }
+
+  it("recalls relevant Korean experience while labelling belief separately and respecting an explicit POV", async () => {
+    const experience: EntityObservation = { kind: "person", name: "도현", perspective: "experience", evidence: "도현은 보증금을 잃고 추운 창고에서 잤다." };
+    const belief: EntityObservation = { kind: "person", name: "도현", perspective: "belief", evidence: "도현은 형의 약속이 진심이라고 믿었다." };
+    const otherMind: EntityObservation = { kind: "person", name: "형", perspective: "intention", evidence: "형은 도현 몰래 인감부터 가져갈 생각이었다." };
+    const recent: EntityObservation = { kind: "person", name: "도현", evidence: "도현은 아침을 먹었다." };
+    const root = await book(snapshot(30, [stored(experience, 2), stored(belief, 3), stored(otherMind, 4), stored(recent, 30)]).currentState);
+    const text = await readEntityObservationContext(root, { throughChapter: 30, query: "보증금을 돌려받는다", povCharacter: "도현" });
+    expect(text.indexOf(experience.evidence)).toBeLessThan(text.indexOf(recent.evidence));
+    expect(text).toContain("믿음·오해");
+    expect(text).toContain("사실의 진위와 구분");
+    expect(text).not.toContain(otherMind.evidence);
+    const author = await readEntityObservationContext(root, { throughChapter: 30 });
+    expect(author).toContain(otherMind.evidence);
+    expect(author).toContain("자동 추출");
+  });
+
+  it("keeps changed beliefs dated and removes observations deleted by revision", async () => {
+    const old: EntityObservation = { kind: "person", name: "윤서", perspective: "belief", evidence: "윤서는 계약이 유효하다고 믿었다." };
+    const newEvidence: EntityObservation = { kind: "person", name: "윤서", perspective: "experience", evidence: "윤서는 위조된 서명을 발견했다." };
+    const current = applyRuntimeStateDelta({ snapshot: snapshot(1, [stored(old, 1)]), chapterText: newEvidence.evidence,
+      delta: RuntimeStateDeltaSchema.parse({ chapter: 2, entityObservations: [newEvidence] }) });
+    const root = await book(current.currentState);
+    const before = await readEntityObservationContext(root, { throughChapter: 2, query: "윤서" });
+    expect(before.indexOf(newEvidence.evidence)).toBeLessThan(before.indexOf(old.evidence));
+    expect(before).toContain("2화 · 경험");
+    expect(before).toContain("1화 · 믿음·오해");
+    const revised = applyRuntimeStateDelta({ snapshot: current, allowReapply: true, delta: RuntimeStateDeltaSchema.parse({ chapter: 2, entityObservations: [] }) });
+    expect(revised.currentState.entityObservations).toEqual([stored(old, 1)]);
+  });
+
+  it.each(["belief", "desire", "intention"] as const)("keeps newer %s evidence ahead of a stronger old keyword match without declaring either true", async (perspective) => {
+    const old: EntityObservation = { kind: "person", name: "윤서", perspective, evidence: "윤서는 계약과 보증금과 서명을 믿고 거래를 진행하기로 했다." };
+    const recent: EntityObservation = { kind: "person", name: "윤서", perspective, evidence: "윤서는 이제 그를 믿지 않았다." };
+    const future: EntityObservation = { kind: "person", name: "윤서", perspective, evidence: "윤서는 나중에 진상을 알았다." };
+    const root = await book(snapshot(8, [stored(old, 1), stored(recent, 5), stored(future, 8)]).currentState);
+    const options = { throughChapter: 5, query: "계약 보증금 서명 거래", povCharacter: "윤서" };
+    const full = await readEntityObservationContext(root, options);
+    expect(full.indexOf(recent.evidence)).toBeLessThan(full.indexOf(old.evidence));
+    expect(full).not.toContain(future.evidence);
+    expect(full).toContain("사실의 진위와 구분");
+    const limited = await readEntityObservationContext(root, { ...options, maxChars: full.indexOf(old.evidence) });
+    expect(limited).toContain(recent.evidence);
+    expect(limited).not.toContain(old.evidence);
+    const earlier = await readEntityObservationContext(root, { ...options, throughChapter: 1 });
+    expect(earlier).toContain(old.evidence);
+    expect(earlier).not.toContain(recent.evidence);
+  });
 
   it("does not expose later chapters and prefers requested names before recent unrelated observations", async () => {
     const future: EntityObservation = { kind: "organization", name: "미래회사", evidence: "미래회사가 인수했다." };

@@ -86,17 +86,28 @@ export const CurrentStateFactSchema = z.object({
 
 export type CurrentStateFact = z.infer<typeof CurrentStateFactSchema>;
 
-export const EntityObservationSchema = z.object({
+export const CharacterPerspectiveKindSchema = z.enum(["belief", "desire", "intention", "experience", "public-claim"]);
+export type CharacterPerspectiveKind = z.infer<typeof CharacterPerspectiveKindSchema>;
+
+const EntityObservationBaseSchema = z.object({
   kind: z.enum(["person", "organization"]),
   name: z.string().min(1).max(120).refine((value) => value.trim().length > 0 && !/[\r\n]/.test(value), "name must be a nonempty single line"),
   evidence: z.string().min(1).max(1200).refine((value) => value.trim().length > 0, "evidence must not be blank"),
+  // A classification of quoted narrative evidence, never an objective fact or rule.
+  perspective: CharacterPerspectiveKindSchema.optional(),
 }).strict();
+function checkPerspective(observation: z.infer<typeof EntityObservationBaseSchema>, context: z.RefinementCtx) {
+  if (observation.perspective !== undefined && observation.kind !== "person") context.addIssue({
+    code: z.ZodIssueCode.custom, path: ["perspective"], message: "character perspective requires a person observation",
+  });
+}
+export const EntityObservationSchema = EntityObservationBaseSchema.superRefine(checkPerspective);
 export type EntityObservation = z.infer<typeof EntityObservationSchema>;
 
-export const StoredEntityObservationSchema = EntityObservationSchema.extend({
+export const StoredEntityObservationSchema = EntityObservationBaseSchema.extend({
   sourceChapter: z.number().int().min(1),
   chapterTextHash: z.string().regex(/^[a-f0-9]{64}$/),
-}).strict().refine((observation) => observation.evidence.includes(observation.name), {
+}).strict().superRefine(checkPerspective).refine((observation) => observation.evidence.includes(observation.name), {
   path: ["evidence"], message: "stored entity observation must quote its name",
 });
 export type StoredEntityObservation = z.infer<typeof StoredEntityObservationSchema>;

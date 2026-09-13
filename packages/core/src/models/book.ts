@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AuthorCraftConfigSchema } from "./author-craft.js";
 
 export const PlatformSchema = z.enum(["tomato", "feilu", "qidian", "other"]);
 export type Platform = z.infer<typeof PlatformSchema>;
@@ -73,6 +74,7 @@ export const BookConfigSchema = z.object({
     entryContractPolicy: z.enum(["optional", "auto-required"]).optional(),
     referencePackId: z.string().min(1).optional(),
     spineReference: z.string().min(1).optional(),
+    authorCraft: AuthorCraftConfigSchema.optional(),
   }).optional(),
 });
 

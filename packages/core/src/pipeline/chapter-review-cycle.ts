@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { recordNormalizedRevisionExperience, recordRevisionOutcome } from "../planning/revision-experience.js";
 import { isAutomaticRevisionIssue, type AuditIssue, type AuditResult } from "../agents/continuity.js";
 import type { ReviseMode, ReviseOutput } from "../agents/reviser.js";
 import type { SensitiveWordResult } from "../agents/sensitive-words.js";
@@ -46,7 +48,7 @@ interface ReviewSnapshot {
 }
 
 export async function runChapterReviewCycle(params: {
-  readonly book: Pick<{ genre: string }, "genre">;
+  readonly book: { readonly genre: string; readonly id?: string; readonly language?: "ko" | "en" | "zh" };
   readonly bookDir: string;
   readonly chapterNumber: number;
   readonly initialOutput: Pick<WriteChapterOutput, "content" | "wordCount" | "postWriteErrors">;
@@ -242,6 +244,7 @@ export async function runChapterReviewCycle(params: {
     publicationCompatibility: initial.publicationCompatibility,
   }];
 
+  const revisionExperienceIds: string[] = [];
   let currentAudit = initial;
   let postReviseCount = 0;
 
@@ -295,6 +298,7 @@ export async function runChapterReviewCycle(params: {
         },
       );
       totalUsage = params.addUsage(totalUsage, reviseOutput.tokenUsage);
+      if (reviseOutput.revisionExperienceId) revisionExperienceIds.push(reviseOutput.revisionExperienceId);
 
       if (reviseOutput.revisedContent.length === 0 || reviseOutput.revisedContent === finalContent) {
         params.logWarn({
@@ -306,6 +310,24 @@ export async function runChapterReviewCycle(params: {
 
       params.assertChapterContentNotEmpty(reviseOutput.revisedContent, `repair iteration ${iteration + 1}`);
       const revisedContent = params.normalizePostWriteSurface?.(reviseOutput.revisedContent) ?? reviseOutput.revisedContent;
+      if (params.book.id && params.book.language && reviseOutput.revisionExperienceId
+        && revisedContent !== reviseOutput.revisedContent) {
+        try {
+          const normalizedExperience = await recordNormalizedRevisionExperience(params.bookDir, {
+            bookId: params.book.id,
+            chapterNumber: params.chapterNumber,
+            experienceId: reviseOutput.revisionExperienceId,
+            effectiveContent: revisedContent,
+            language: params.book.language,
+          });
+          revisionExperienceIds[revisionExperienceIds.length - 1] = normalizedExperience.record.experienceId;
+        } catch {
+          params.logWarn({
+            zh: "未能绑定表面整理后的修稿经验；继续审稿，原始记录不变",
+            en: "Could not bind the surface-normalized revision experience; continuing review with the original record preserved.",
+          });
+        }
+      }
       const revisedWordCount = countChapterLength(revisedContent, params.lengthSpec.countingMode);
 
       // Re-assess revised content. If REVISED_CONTENT drifted on length,
@@ -399,6 +421,18 @@ export async function runChapterReviewCycle(params: {
       lengthInRange: bestSnapshot.lengthInRange,
       publicationCompatibility: bestSnapshot.publicationCompatibility,
     };
+  }
+
+  if (params.book.id && revisionExperienceIds.length) {
+    const cycleId = randomUUID();
+    for (const experienceId of new Set(revisionExperienceIds)) {
+      try {
+        await recordRevisionOutcome(params.bookDir, { bookId: params.book.id, chapterNumber: params.chapterNumber,
+          experienceId, cycleId, selectedContent: finalContent, snapshots });
+      } catch {
+        params.logWarn({ zh: "可选修改案例结果无法保存；不改变已选正文。", en: "Optional editing outcome could not be saved; selected prose is unchanged." });
+      }
+    }
   }
 
   return {

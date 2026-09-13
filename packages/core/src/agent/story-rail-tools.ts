@@ -1,3 +1,4 @@
+import { readDraftDiscoveryPlanningContext } from "../planning/draft-discovery-runtime.js";
 import { Type, type Static } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { readFile } from "node:fs/promises";
@@ -244,6 +245,7 @@ export function createGetStoryRailsTool(
       }
 
       const pendingReflow = await reflowStore.getPending(bookId);
+      const discovery = await readDraftDiscoveryPlanningContext(join(projectRoot, "books", bookId), bookId, "en");
 
       const currentTargetChapters = await readCurrentTargetChapters(join(projectRoot, "books", bookId));
       const warnings = currentTargetChapters !== null
@@ -258,6 +260,7 @@ export function createGetStoryRailsTool(
         [
           `Complete A/B Rail plan for book ${JSON.stringify(bookId)}:`,
           JSON.stringify(plan, null, 2),
+          discovery.rendered,
           ...warnings.map((warning) => `WARNING: ${warning}`),
           ...(pendingReflow
             ? [
@@ -270,7 +273,7 @@ export function createGetStoryRailsTool(
             : []),
           "replace_story_rails is full replacement: include every existing id; retire items explicitly instead of omitting them.",
         ].join("\n"),
-        { kind: "story_rails", bookId, path: store.planPath, plan, pendingReflow, warnings },
+        { kind: "story_rails", bookId, path: store.planPath, plan, pendingReflow, warnings, draftDiscoveries: discovery },
       );
     },
   };

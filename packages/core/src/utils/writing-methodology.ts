@@ -57,14 +57,33 @@ export function sanitizeLegacyFunFirstMethodology(styleGuide: string): string {
     ],
   ];
 
-  return replacements.reduce(
+  const funFirst = replacements.reduce(
     (current, [legacy, funFirst]) => current.replaceAll(legacy, funFirst),
     styleGuide,
   );
+  // Only upgrade the known generated Korean methodology section. An owner's
+  // separate instruction with similar wording remains exactly as written.
+  return funFirst.split(/(?=^#\s+)/m).map((section) => {
+    if (!/^# 집필 방법론 참고\s*(?:\n|$)/.test(section)) return section;
+    return KOREAN_LEGACY_CRAFT_REPLACEMENTS.reduce((text, [before, after]) => text.replaceAll(before, after), section);
+  }).join("");
 }
 
+const KOREAN_LEGACY_CRAFT_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
+  ["## 1. 감정을 행동으로 보여 주기", "## 1. 판단과 감정을 전하는 방식"],
+  ["- 감정 이름을 직접 붙이기보다 손동작, 시선, 호흡, 말의 속도로 드러냅니다.", "- 독자가 알아야 할 판단과 감정을 기준으로 내면, 대사, 행동 중 알맞은 방식을 고릅니다. 욕심·의심·망설임·결단의 이유가 핵심이면 내면을 남깁니다."],
+  ["- 인과 접속사를 반복하지 말고 인물의 다음 행동으로 장면을 전환합니다.", "- 같은 인과를 되풀이하는 접속과 설명은 줄입니다. 행동의 이유를 이해하는 데 필요한 인과는 보존합니다."],
+  ["- 같은 길이의 문단을 이어 붙이지 말고 충격은 짧게, 몰입 묘사는 길게 조절합니다.", "- 문단 길이는 관심이 움직이는 순간과 장면의 속도에 맞춥니다. 의도한 짧은 호흡을 깨려고 긴 문단을 억지로 넣지 않습니다."],
+  ["## 2. 인물 행동의 여섯 단계", "## 2. 중요한 선택을 확인할 때 골라 쓸 질문"],
+  ["3. 인물이 아는 정보와 모르는 정보를 나눕니다.", "3. 인물이 아는 것, 추측하는 것, 잘못 믿는 것을 실제 사실과 나누어 봅니다."],
+  ["6. 선택의 감정을 몸짓, 표정, 말투로 외화합니다.", "6. 선택이 내면, 말, 행동에 어떻게 드러날지 정합니다. 여섯 항목을 원고에 차례대로 설명할 필요는 없습니다."],
+  ["- 조연도 자기 이해관계와 반격 수단을 가져야 합니다.", "- 조연이 협력·거절·조건 제시 중 무엇을 선택할지 자기 이해관계에서 정합니다. 모두가 반격할 필요는 없습니다."],
+  ["- 주인공은 멍청한 상대를 짓밟는 대신 영리한 상대보다 한 수 앞서야 합니다.", "- 상대의 선택이 그 사람의 처지와 정보에 맞아야 합니다. 주인공을 돋보이게 하려고 상대가 가진 이유를 없애지 않습니다."],
+  ["- 군중의 반응을 한 문장으로 뭉개지 말고 1-2명의 구체적인 반응을 골라 씁니다.", "- 반응이 필요한 순간에 적절한 인물이나 집단의 반응을 고릅니다. 매 장면에 구경꾼을 넣거나 반응 인원수를 고정하지 않습니다."],
+];
+
 function buildKoreanMethodology(): string {
-  return `---
+  const legacy = `---
 
 # 집필 방법론 참고
 
@@ -97,6 +116,7 @@ function buildKoreanMethodology(): string {
 4. 정보 경계를 어긴 인물이 없는가?
 5. 이번 회차가 약속한 결과를 보여 주고, 완전 수습·후과·자연스러운 다음 선택이나 압력 가운데 의도한 종결 기능을 수행하는가?
 6. 일상 장면도 감정, 관계, 정보, 선택, 지급, 후과 가운데 하나를 실제로 바꾸는가? 새 복선은 의무가 아닙니다.`;
+  return KOREAN_LEGACY_CRAFT_REPLACEMENTS.reduce((text, [before, after]) => text.replaceAll(before, after), legacy);
 }
 
 function buildChineseMethodology(): string {

@@ -4,6 +4,10 @@ import { dirname, join, relative, resolve } from "node:path";
 import { Command } from "commander";
 import {
   applyBoundedJsonRepair,
+  validateSourceFirstHandoff,
+  initializeSourceFirstHandoffBook,
+  mapDailyPlanningCandidate,
+  type ValidatedSourceFirstHandoff,
   buildBoundedJsonRepairRequest,
   createBoundedJsonRepairPatch,
   hashBoundedJson,
@@ -137,6 +141,21 @@ function pitchPaths(projectRoot: string, slateId: string) {
   };
 }
 
+async function assertImportedPlanEvidence(projectRoot: string, slate: JsonObject): Promise<void> {
+  if (slate.sourceOrigin === undefined) return;
+  if (!isObject(slate.sourceOrigin) || slate.sourceOrigin.schemaVersion !== "firefly_daily_planning_origin/v1"
+    || slate.sourceOrigin.canaryArtifact !== "source-canary.json" || slate.sourceOrigin.candidateMappingArtifact !== "candidate-mapping.json") {
+    throw new Error("Imported daily plan has unknown or incomplete original-source provenance");
+  }
+  const paths = pitchPaths(projectRoot, String(slate.slateId));
+  const mapped = mapDailyPlanningCandidate({ canaryBytes: await readFile(join(paths.slateDir, "source-canary.json")), mappingBytes: await readFile(join(paths.slateDir, "candidate-mapping.json")) });
+  const expectedOrigin = { ...mapped.sourceOrigin, canaryArtifact: "source-canary.json", candidateMappingArtifact: "candidate-mapping.json" };
+  if (hashPitchReviewCanonicalJson(expectedOrigin) !== hashPitchReviewCanonicalJson(slate.sourceOrigin)
+    || !objectArray(slate.candidates) || slate.candidates.length !== 1 || hashPitchReviewCanonicalJson(slate.candidates[0]) !== hashPitchReviewCanonicalJson(mapped.candidate)) {
+    throw new Error("Imported daily plan candidate or original source evidence changed; import a new slate instead of rewriting provenance");
+  }
+}
+
 async function loadReviewedSlate(projectRoot: string, slateId: string) {
   const paths = pitchPaths(projectRoot, slateId);
   const [{ value: slate, bytes: slateBytes }, { value: review, bytes: reviewBytes }] = await Promise.all([
@@ -151,6 +170,7 @@ async function loadReviewedSlate(projectRoot: string, slateId: string) {
   if (!objectArray(slate.candidates)) throw new Error("pitch slate has no candidates");
   const slateSha256 = sha256Bytes(slateBytes);
   if (review.sourceSlateSha256 !== slateSha256) throw new Error("pitch survival review does not match the current slate hash");
+  await assertImportedPlanEvidence(projectRoot, slate);
   const mode = assertSlatePlanningMode(slate);
   if (mode === "source-first") {
     const references = await reloadSourceFirstReferences(projectRoot, slate);
@@ -932,7 +952,7 @@ function renderSurvivalReviewMarkdown(review: JsonObject): string {
   return `${lines.join("\n")}\n`;
 }
 
-async function persistSlate(projectRoot: string, slateId: string, slate: JsonObject) {
+async function persistSlate(projectRoot: string, slateId: string, slate: JsonObject, sourceArtifacts: ReadonlyArray<{ name: "source-canary.json" | "candidate-mapping.json"; bytes: Uint8Array }> = []) {
   const slatesRoot = join(projectRoot, ".inkos", "pitch-slates");
   const targetDir = join(slatesRoot, slateId);
   try {
@@ -950,6 +970,7 @@ async function persistSlate(projectRoot: string, slateId: string, slate: JsonObj
     const reviewPath = join(temporaryDir, "review.md");
     await writeFile(jsonPath, `${JSON.stringify(slate, null, 2)}\n`, "utf8");
     await writeFile(reviewPath, renderReviewMarkdown(slate), "utf8");
+    for (const artifact of sourceArtifacts) await writeFile(join(temporaryDir, artifact.name), artifact.bytes);
     await rename(temporaryDir, targetDir);
   } catch (error) {
     await rm(temporaryDir, { recursive: true, force: true });
@@ -957,7 +978,7 @@ async function persistSlate(projectRoot: string, slateId: string, slate: JsonObj
   }
 
   const artifacts = [];
-  for (const [fileName, role] of [["slate.json", "pitch-slate-data"], ["review.md", "pitch-slate-review"]] as const) {
+  for (const [fileName, role] of [["slate.json", "pitch-slate-data"], ["review.md", "pitch-slate-review"], ...sourceArtifacts.map((artifact) => [artifact.name, "original-planning-import-evidence"])] as const) {
     const absolutePath = join(targetDir, fileName);
     artifacts.push({
       repo: "inkos",
@@ -1138,6 +1159,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         if (slate.slateId !== slateId) throw new Error("pitch slate id does not match its path");
         if (slate.canonStatus !== "non-canonical") throw new Error("pitch review only accepts non-canonical slates");
         if (!objectArray(slate.candidates)) throw new Error("pitch slate has no candidates");
+        await assertImportedPlanEvidence(projectRoot, slate);
         const planningMode = assertSlatePlanningMode(slate);
         const reviewedReferences = planningMode === "source-first" ? await reloadSourceFirstReferences(projectRoot, slate) : undefined;
         const candidateIds = (slate.candidates as JsonObject[]).map((candidate) => String(candidate.candidateId ?? ""));
@@ -1440,10 +1462,62 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
     });
 
   command
+    .command("import-plan")
+    .description("Import an exact daily plan plus explicit candidate mapping as a non-canonical, unreviewed source-first slate")
+    .requiredOption("--id <slateId>", "New native slate ID")
+    .requiredOption("--canary <path>", "Original firefly-planning-canary/v1 JSON")
+    .requiredOption("--mapping <path>", "Explicit firefly_daily_planning_candidate_mapping/v1 JSON")
+    .requiredOption("--source-pack <path>", "Exact primary source reference pack")
+    .option("--reference <paths...>", "Additional already-selected reference evidence")
+    .option("--check", "Validate mapping without writing a slate")
+    .option("--json", "Emit structured JSON")
+    .action(async (opts) => {
+      try {
+        const slateId = String(opts.id ?? "").trim();
+        if (!SAFE_SLATE_ID.test(slateId)) throw new Error("slate id must use 1-80 safe filename characters");
+        const projectRoot = findProjectRoot();
+        try { await access(pitchPaths(projectRoot, slateId).slateDir); throw new Error(`pitch slate already exists: ${slateId}`); }
+        catch (error) { if (!isObject(error) || error.code !== "ENOENT") throw error; }
+        const canaryBytes = await readFile(resolve(projectRoot, String(opts.canary)));
+        const mappingBytes = await readFile(resolve(projectRoot, String(opts.mapping)));
+        const mapped = mapDailyPlanningCandidate({ canaryBytes, mappingBytes });
+        const sourceBinding = await loadSourceFirstBinding(projectRoot, String(opts.sourcePack));
+        const errors = validatePitchCandidate(mapped.candidate, "p01", "source-first", sourceBinding);
+        if (errors.length) throw new Error(`Incomplete explicit daily-plan mapping: ${errors.join("; ")}`);
+        const referencePaths = [...new Set([String(opts.sourcePack), ...((opts.reference ?? []) as string[])])];
+        const references = await loadReferenceContext(projectRoot, referencePaths);
+        const origin = { ...mapped.sourceOrigin, canaryArtifact: "source-canary.json", candidateMappingArtifact: "candidate-mapping.json" };
+        const instruction = "기존 일일 기획 본문과 명시 매핑을 그대로 반입한다. 출처와 미검토 상태를 보존한다.";
+        const slate: JsonObject = { schemaVersion: 2, planningMode: "source-first", sourceFirstReference: sourceBinding,
+          protagonistContextPolicy: PROTAGONIST_CONTEXT_POLICY, slateId, canonStatus: "non-canonical", reviewStatus: "pending",
+          candidateCount: 1, genre: "modern-fantasy-ko", instruction, instructionSha256: sha256Bytes(instruction),
+          referenceInputs: references.inputs, generatedAt: mapped.sourceOrigin.originalGeneratedAt, importedAt: (hooks.now?.() ?? new Date()).toISOString(),
+          sourceOrigin: origin, candidates: [mapped.candidate] };
+        if (opts.check) {
+          process.stdout.write(`${JSON.stringify({ status: "validated-candidate-mapping", slateCreated: false, sourceOrigin: origin,
+            reviewStatus: "pending", manuscriptAuthorized: false, modelCalls: 0, nextRequirements: ["native independent review", "exact select decision", "source-first A/B/foundation handoff and planning-only authorization"] }, null, 2)}\n`);
+          return;
+        }
+        const persisted = await persistSlate(projectRoot, slateId, slate, [
+          { name: "source-canary.json", bytes: canaryBytes }, { name: "candidate-mapping.json", bytes: mappingBytes },
+        ]);
+        process.stdout.write(`${JSON.stringify({ status: "non-canonical-plan-imported", slateId, sourceOrigin: origin, reviewStatus: "pending",
+          manuscriptAuthorized: false, modelCalls: 0, artifacts: persisted.artifacts }, null, 2)}\n`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (opts.json) process.stdout.write(`${JSON.stringify({ error: message })}\n`);
+        else process.stderr.write(`Planning import failed: ${message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  command
     .command("promote")
     .description("Promote a selected pitch into an InkOS planning Book without drafting manuscript")
     .requiredOption("--id <slateId>", "Slate with an immutable select decision")
     .requiredOption("--book <bookId>", "Target InkOS Book identifier")
+    .option("--handoff <path>", "Explicit source-first mapping and existing planning-only authorization manifest")
+    .option("--check", "Validate promotion inputs without creating a Book or calling a model")
     .option("--json", "Emit structured JSON for external agents")
     .action(async (opts) => {
       let createdBookDir: string | null = null;
@@ -1456,7 +1530,9 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         }
         const projectRoot = findProjectRoot();
         const loaded = await loadReviewedSlate(projectRoot, slateId);
-        if (loaded.slate.planningMode === "source-first") throw new Error("Source-first Book promotion is not supported until source binding and A/B handoff are implemented");
+        const sourceFirst = loaded.slate.planningMode === "source-first";
+        if (sourceFirst && !opts.handoff) throw new Error("Source-first Book promotion is not supported without an explicit --handoff source binding, A/B mapping and planning-only authorization");
+        if (!sourceFirst && opts.handoff) throw new Error("--handoff requires a source-first slate");
         await assertPitchSlateNotInvalidated(projectRoot, slateId, loaded.slateSha256);
         const { value: decision, bytes: decisionBytes } = await readJsonObject(
           join(loaded.paths.decisionDir, "decision.json"),
@@ -1466,7 +1542,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
           throw new Error("pitch promotion requires an immutable select decision for this slate");
         }
         if (decision.schemaVersion !== 1
-          || decision.canonEffect !== "planning-promotion-authorized"
+          || decision.canonEffect !== (sourceFirst ? "planning-selection-only" : "planning-promotion-authorized")
           || decision.manuscriptAuthorized !== false) {
           throw new Error("pitch human decision does not authorize planning-only promotion");
         }
@@ -1479,6 +1555,14 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         const entryContract = FireflyEntryContractSchema.parse(candidate.entryContract);
         const verdict = (loaded.review.verdicts as JsonObject[] | undefined)
           ?.find((item) => item.candidateId === decision.candidateId);
+        let handoff: ValidatedSourceFirstHandoff | undefined;
+        if (sourceFirst) {
+          handoff = await validateSourceFirstHandoff({ projectRoot, manifestPath: String(opts.handoff), subject: {
+            bookId, slateId, candidateId: String(candidate.candidateId), candidateSha256: hashPitchReviewCanonicalJson(candidate),
+            sourceSlateSha256: loaded.slateSha256, sourceReviewSha256: loaded.reviewSha256,
+            sourceDecisionSha256: sha256Bytes(decisionBytes), candidate,
+          } });
+        }
         try {
           await access(loaded.paths.promotionPath);
           throw new Error(`pitch promotion already exists: ${slateId}`);
@@ -1494,6 +1578,13 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
           if (error instanceof Error && error.message.startsWith("target Book already exists")) throw error;
           if (!isObject(error) || error.code !== "ENOENT") throw error;
         }
+        if (opts.check) {
+          process.stdout.write(`${JSON.stringify({ status: "validated-planning-promotion", slateId, candidateId: candidate.candidateId, bookId,
+            ...(handoff ? { manifestSha256: handoff.manifestSha256, mappingSha256: handoff.mappingSha256,
+              authorizationSha256: handoff.authorizationSha256, sourceReadScope: handoff.sourceReadScope } : {}),
+            semanticMappingReviewPerformed: false, bookCreated: false, manuscriptAuthorized: false, modelCalls: 0 }, null, 2)}\n`);
+          return;
+        }
         const brief = renderPitchBrief({ slateId, candidate, verdict, decision });
         const promotedAt = (hooks.now?.() ?? new Date()).toISOString();
         const title = (candidate.titleCandidates as string[])[0];
@@ -1503,14 +1594,18 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
           platform: normalizePlatformOrOther("other"),
           genre: "chaebol-modern-fantasy-ko",
           status: "outlining",
-          targetChapters: 200,
+          targetChapters: handoff?.mapping.railPlan.routeCapacity.targetChaptersSnapshot ?? 200,
           chapterWordCount: defaultChapterLength("ko"),
           language: "ko",
           createdAt: promotedAt,
           updatedAt: promotedAt,
-          writing: { reviewMode: "manual", entryContractPolicy: "auto-required" },
+          writing: { reviewMode: "manual", entryContractPolicy: "auto-required",
+            ...(handoff ? { referencePackId: handoff.mapping.sourceBinding.packId, spineReference: handoff.mapping.transformation.spineReference } : {}) },
         };
-        if (hooks.initializePromotedBook) {
+        let handoffReceipt: Awaited<ReturnType<typeof initializeSourceFirstHandoffBook>> | undefined;
+        if (handoff) {
+          handoffReceipt = await initializeSourceFirstHandoffBook({ projectRoot, book, brief, handoff, now: hooks.now });
+        } else if (hooks.initializePromotedBook) {
           await hooks.initializePromotedBook({ book, brief });
         } else {
           const config = await loadConfig({ requireApiKey: false, projectRoot });
@@ -1533,7 +1628,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
         const selectionArtifacts = await writeArtifacts(projectRoot, [
           {
             path: `books/${bookId}/story/entry-contract.json`,
-            content: `${JSON.stringify({
+            content: `${JSON.stringify(handoff ? handoff.authorization.admission : {
               schemaVersion: "firefly_planning_admission/v1",
               bookId,
               status: "approved",
@@ -1577,6 +1672,7 @@ export function createPitchCommand(hooks: PitchCommandHooks = {}): Command {
           sourceDecisionSha256: sha256Bytes(decisionBytes),
           canonEffect: "planning-seed-created",
           manuscriptCreated: false,
+          ...(handoffReceipt ? { handoff: handoffReceipt } : {}),
           lineageEdges: [
             { type: "selects", from: `pitch-candidate:${slateId}/${candidate.candidateId}`, to: `human-decision:${decision.decisionId}` },
             { type: "promotes_to", from: `human-decision:${decision.decisionId}`, to: `book:${bookId}` },

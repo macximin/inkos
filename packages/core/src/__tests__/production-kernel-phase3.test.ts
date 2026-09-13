@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChapterMeta } from "../models/chapter.js";
 import type { ChapterPipelineResult } from "../pipeline/runner.js";
 import { StateManager } from "../state/manager.js";
+import { installAuthorCraftPack, resolveAuthorCraftContext, authorCraftPackPath } from "../reference/author-craft.js";
+import { configureBookAuthorCraft } from "../reference/author-craft-config.js";
+import { currentProductionInputBundle } from "../production/production-input.js";
 import {
   writeChapterCommitReceipt,
   type ChapterCommitReceipt,
@@ -226,6 +229,53 @@ describe("Phase 3 production command authority", () => {
 });
 
 describe("Phase 3 observe-only write-next kernel", () => {
+  async function craftFixture(suffix: string) {
+    const f = await fixture(suffix);
+    const path = join(f.root, "craft.json");
+    await writeFile(path, JSON.stringify({
+      schemaVersion: "author-craft-pack/v1", id: "kernel-craft", language: "ko", authority: "advisory",
+      sources: [{ id: "source", title: "Test evidence", reference: "fixture.md", readingScope: "test only", kind: "research-summary" }],
+      cases: [{ id: "wanted", title: "원하는 순간", stages: ["writing"], functions: ["reader-payoff"], triggers: ["승리"], observation: "Test observation", method: "Test method", preserve: [], counterexamples: ["Not a compulsory outcome"], sourceIds: ["source"] }],
+    }));
+    const installed = await installAuthorCraftPack(f.root, path);
+    const configured = await configureBookAuthorCraft(f.root, f.bookId, { packSha256: installed.packSha256, maxCases: 3, maxCharacters: 6000 });
+    return { ...f, installed, configured };
+  }
+
+  it("admits the exact enabled craft pack and exposes it to the existing execution without another call", async () => {
+    const f = await craftFixture("craft-admission");
+    let calls = 0;
+    const result = await executeObserveOnlyWriteNext({
+      projectRoot: f.root, kernelMode: "observe", persistedCommand: f.command, currentBinding: f.binding, now: () => NOW,
+      executeWithinBookLock: async (input) => {
+        calls += 1;
+        expect(currentProductionInputBundle()?.receipt.authorCraft).toEqual(f.configured.receipt);
+        const selected = await resolveAuthorCraftContext({ projectRoot: f.root, bookId: f.bookId, config: f.configured.config!, language: "ko", stage: "writing", query: OWNER_DIRECTION });
+        expect(selected?.receipt.selectedCaseIds).toEqual(["wanted"]);
+        return persistCommittedChapter({ root: f.root, bookId: f.bookId, bookDir: f.bookDir, productionAttempt: input.productionAttempt });
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result.run.context.productionInputs?.authorCraft).toEqual(f.configured.receipt);
+    expect(result.run.approvalStatus).toBe("pending");
+  });
+
+  it("rejects a changed selected pack before entering production execution", async () => {
+    const f = await craftFixture("craft-tamper");
+    const before = await captureChapterPersistenceFingerprint(f.bookDir, 1);
+    const changed = { ...JSON.parse(await readFile(join(f.root, "craft.json"), "utf8")), id: "changed" };
+    await writeFile(authorCraftPackPath(f.root, f.installed.packSha256), JSON.stringify(changed));
+    const execute = vi.fn();
+    await expect(executeObserveOnlyWriteNext({
+      projectRoot: f.root, kernelMode: "observe", persistedCommand: f.command, currentBinding: f.binding, now: () => NOW,
+      executeWithinBookLock: execute,
+    })).rejects.toThrow(/SHA-256 mismatch/);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await captureChapterPersistenceFingerprint(f.bookDir, 1)).toEqual(before);
+    const release = await f.state.acquireBookLock(f.bookId);
+    await release();
+  });
+
   it("keeps legacy and observe canon bytes equal while invoking the writer once", async () => {
     const observed = await fixture("parity-observed");
     const legacy = await fixture("parity-legacy");

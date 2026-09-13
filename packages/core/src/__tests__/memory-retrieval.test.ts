@@ -82,6 +82,70 @@ describe("retrieveMemorySelection", () => {
     }
   });
 
+  sqliteIt("retrieves the earlier fact interval and excludes later revelations when revisiting a chapter", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-memory-temporal-"));
+    const bookDir = join(root, "book");
+    await mkdir(join(bookDir, "story"), { recursive: true });
+    const db = new MemoryDB(bookDir);
+    try {
+      db.addFact({ subject: "서준", predicate: "현재 위치", object: "월세방", validFromChapter: 1, validUntilChapter: 5, sourceChapter: 1 });
+      db.addFact({ subject: "서준", predicate: "현재 위치", object: "새 아파트", validFromChapter: 5, validUntilChapter: null, sourceChapter: 5 });
+      db.addFact({ subject: "서준", predicate: "숨겨진 관계", object: "7화에서 공개된 친자 관계", validFromChapter: 1, validUntilChapter: null, sourceChapter: 7 });
+      expect(db.getAllFactsAt(4).map((fact) => fact.object)).toEqual(["월세방"]);
+      expect(db.getAllFactsAt(5).map((fact) => fact.object)).toEqual(["새 아파트"]);
+    } finally { db.close(); }
+    const old = await retrieveMemorySelection({ bookDir, chapterNumber: 5, goal: "서준의 주거 문제" });
+    expect(old.facts.map((fact) => fact.object)).toEqual(["월세방"]);
+    const next = await retrieveMemorySelection({ bookDir, chapterNumber: 6, goal: "서준의 주거 문제" });
+    expect(next.facts.map((fact) => fact.object)).toEqual(["새 아파트"]);
+  });
+
+  it.each([false, true])("uses an exact historical snapshot without importing future facts (sqlite unavailable: %s)", async (withoutSqlite) => {
+    root = await mkdtemp(join(tmpdir(), "inkos-memory-snapshot-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    const snapshotDir = join(storyDir, "snapshots", "4", "state");
+    await mkdir(join(storyDir, "state"), { recursive: true });
+    await mkdir(snapshotDir, { recursive: true });
+    const fact = (object: string, sourceChapter: number) => ({ subject: "서준", predicate: "현재 목표", object, validFromChapter: sourceChapter, validUntilChapter: null, sourceChapter });
+    await writeFile(join(storyDir, "state", "current_state.json"), JSON.stringify({ chapter: 8, facts: [fact("건물을 산다", 8)] }));
+    await writeFile(join(snapshotDir, "current_state.json"), JSON.stringify({ chapter: 4, facts: [fact("밀린 월세를 낸다", 4)] }));
+    let retrieve = retrieveMemorySelection;
+    if (withoutSqlite) {
+      vi.resetModules();
+      vi.doMock("../state/memory-db.js", () => ({ MemoryDB: class { constructor() { throw new Error("sqlite unavailable"); } } }));
+      retrieve = (await import("../utils/memory-retrieval.js")).retrieveMemorySelection;
+    }
+    const selected = await retrieve({ bookDir, chapterNumber: 5, goal: "서준의 주거 문제" });
+    expect(selected.facts.map((entry) => entry.object)).toEqual(["밀린 월세를 낸다"]);
+    expect(JSON.parse(await readFile(join(storyDir, "state", "current_state.json"), "utf-8")).chapter).toBe(8);
+    await rm(join(storyDir, "snapshots"), { recursive: true });
+    const noHistory = await retrieve({ bookDir, chapterNumber: 5, goal: "서준의 주거 문제" });
+    expect(noHistory.facts).toEqual([]);
+  });
+
+  sqliteIt("restores historical hook status and respects an empty snapshot instead of borrowing future DB hooks", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-memory-hook-history-"));
+    const bookDir = join(root, "book");
+    const stateDir = join(bookDir, "story", "state");
+    const previousDir = join(bookDir, "story", "snapshots", "4", "state");
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(previousDir, { recursive: true });
+    await writeFile(join(stateDir, "current_state.json"), JSON.stringify({ chapter: 8, facts: [] }));
+    const old = { hookId: "promise", startChapter: 1, lastAdvancedChapter: 3, status: "open", type: "relationship", expectedPayoff: "약속을 지킨다", notes: "아직 보증금을 갚지 못했다" };
+    const future = { ...old, lastAdvancedChapter: 8, status: "resolved", notes: "보증금을 돌려줬다" };
+    await writeFile(join(stateDir, "hooks.json"), JSON.stringify({ hooks: [future] }));
+    await writeFile(join(previousDir, "hooks.json"), JSON.stringify({ hooks: [old] }));
+    const db = new MemoryDB(bookDir);
+    try { db.upsertHook({ ...future, hookId: "future-only", status: "open" }); } finally { db.close(); }
+    const request = { bookDir, chapterNumber: 5, goal: "보증금과 약속" };
+    expect((await retrieveMemorySelection(request)).activeHooks).toEqual([expect.objectContaining(old)]);
+    await writeFile(join(previousDir, "hooks.json"), JSON.stringify({ hooks: [] }));
+    expect((await retrieveMemorySelection(request)).activeHooks).toEqual([]);
+    await rm(join(bookDir, "story", "snapshots"), { recursive: true });
+    expect((await retrieveMemorySelection(request)).activeHooks).toEqual([]);
+  });
+
   it("does not treat unpromoted hook seeds as active debt", async () => {
     root = await mkdtemp(join(tmpdir(), "inkos-memory-retrieval-hook-seeds-"));
     const bookDir = join(root, "book");
@@ -149,6 +213,44 @@ describe("retrieveMemorySelection", () => {
     expect(terms).toContain("师债");
     expect(terms).not.toContain("商会");
     expect(terms).not.toContain("商会路线");
+  });
+
+  it("extracts Korean particles and action variants while preserving names and character refusals", () => {
+    const terms = memoryRetrieval.extractQueryTerms("도현은 스승의 빚을 회수한다.\n금지: 공장 확장과 길드 계약", undefined, []);
+    expect(terms).toEqual(expect.arrayContaining(["도현", "스승", "빚", "회수"]));
+    expect(terms).not.toContain("공장");
+    expect(terms).not.toContain("길드");
+    expect(memoryRetrieval.extractQueryTerms("조건상은 소설가의 제안을 믿지 않는다.", undefined, [])).toContain("조건상");
+    expect(memoryRetrieval.extractQueryTerms("조건상은 소설가의 제안을 믿지 않는다.", undefined, [])).toContain("제안");
+  });
+
+  it("retrieves a distant Korean experience and Korean current priorities instead of only recent recaps", async () => {
+    root = await mkdtemp(join(tmpdir(), "inkos-memory-retrieval-ko-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(storyDir, "current_state.md"), [
+        "| 항목 | 내용 |", "| --- | --- |", "| 현재 회차 | 50 |",
+        "| 현재 목표 | 원계약의 조건을 확인한다. |", "| 현재 갈등 | 집주인은 선지급을 요구한다. |",
+        "| 현재 위치 | 오래된 사무실 |", "| 주인공 상태 | 이전 손실을 기억한다. |", "",
+      ].join("\n")),
+      writeFile(join(storyDir, "pending_hooks.md"), "# 복선\n"),
+      writeFile(join(storyDir, "chapter_summaries.md"), [
+        "| chapter | title | characters | events | stateChanges | hookActivity | mood | chapterType |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 7 | 사라진 보증금 | 도현 | 보증금을 돌려받지 못해 이사를 취소했다. | 거처를 잃음 | | 분노 | 사건 |",
+        ...[47, 48, 49, 50].map((n) => `| ${n} | 다른 만남 | 도현 | 조연과 식사했다. | 없음 | | 평온 | 일상 |`),
+        "| 51 | 아직 쓰지 않은 해답 | 도현 | 보증금을 회수한다. | | | | |", "",
+      ].join("\n")),
+      writeFile(join(storyDir, "volume_summaries.md"), "## 첫 계약의 실패\n보증금을 잃고 거처를 옮겼다.\n## 새로운 동료\n함께 저녁을 먹는다.\n"),
+    ]);
+    const result = await retrieveMemorySelection({ bookDir, chapterNumber: 51, goal: "보증금을 회수한다." });
+    expect(result.summaries.map((row) => row.chapter)).toContain(7);
+    expect(result.summaries.map((row) => row.chapter)).not.toContain(51);
+    expect(result.facts.map((fact) => fact.predicate)).toEqual(expect.arrayContaining(["현재 목표", "현재 갈등", "주인공 상태"]));
+    expect(result.volumeSummaries.map((row) => row.anchor)).toContain("첫-계약의-실패");
+    expect(new Set(result.volumeSummaries.map((row) => row.anchor)).size).toBe(result.volumeSummaries.length);
   });
 
   it("prefers the mentor-debt recap chapter over nearby guild-noise chapters in English retrieval", async () => {

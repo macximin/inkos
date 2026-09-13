@@ -2,6 +2,17 @@ import { describe, it, expect } from "vitest";
 import { analyzeAITells } from "../agents/ai-tells.js";
 
 describe("analyzeAITells", () => {
+  it("does not mistake Korean word-internal syllables or one uncertain thought for repeated hedging", () => {
+    const falseHits = analyzeAITells("아마추어 선수는 승리를 원하지만 긴장했다. 아마추어라서 휴식을 원하지만 버텼다. 아마추어 대회에서 도움을 원하지만 말하지 못했다.", "ko");
+    expect(falseHits.issues.some((issue) => issue.category === "모호 표현 밀도" || issue.category === "접속어 반복")).toBe(false);
+    const thought = analyzeAITells("아마 형이 서명했을 것이다. 도현은 확인하려고 문을 열었다.", "ko");
+    expect(thought.issues.some((issue) => issue.category === "모호 표현 밀도")).toBe(false);
+    const repeated = analyzeAITells("아마 형일 것이다. 어쩌면 형이 아닐지도 모른다. 아마 내일 알 수 있을 것이다.", "ko");
+    const issue = repeated.issues.find((item) => item.category === "모호 표현 밀도");
+    expect(issue?.suggestion).toContain("추측·불확실성·정보 부족은 보존");
+    expect(issue?.description).toContain("이 수치만으로");
+  });
+
   it("returns no issues for varied paragraph lengths", () => {
     const content = [
       "短段。",

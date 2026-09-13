@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { AuthorCraftPackReceiptSchema } from "../models/author-craft.js";
 import type { LLMMessage } from "../llm/provider.js";
 import {
   GenreProfileReadReceiptSchema,
@@ -83,6 +84,7 @@ const ProductionInputReceiptUnsignedSchema = z.object({
   soul: ProductionSoulInputReceiptSchema.nullable(),
   skills: z.array(ProductionSkillReceiptSchema),
   writerGenreProfile: GenreProfileReadReceiptSchema.optional(),
+  authorCraft: AuthorCraftPackReceiptSchema.optional(),
   externalContextSha256: Sha256HexSchema,
   promptInjectionSha256: Sha256HexSchema,
 }).strict();

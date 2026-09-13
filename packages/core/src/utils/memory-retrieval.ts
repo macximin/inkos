@@ -8,6 +8,7 @@ import {
 } from "../models/runtime-state.js";
 import { MemoryDB, type Fact, type StoredHook, type StoredSummary } from "../state/memory-db.js";
 import { bootstrapStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
+import { extractKoreanQueryTerms, stripKoreanQueryExclusions } from "./korean-query.js";
 import {
   filterActiveHooks,
   isFuturePlannedHook,
@@ -88,6 +89,12 @@ export async function retrieveMemorySelection(params: {
     currentStateMarkdown,
     fallbackChapter,
   );
+  // A chapter-N writing request may be revisiting a book already advanced past N.
+  // Prefer its exact N-1 snapshot when present; never relabel today's state as old.
+  const revisitingHistory = (structuredCurrentState?.chapter ?? Math.max(0, ...facts.map((fact) => fact.sourceChapter))) > fallbackChapter;
+  const [historicalFacts, historicalHooks] = revisitingHistory
+    ? await Promise.all([readHistoricalFacts(params.bookDir, fallbackChapter), readHistoricalHooks(params.bookDir, fallbackChapter)])
+    : [null, null];
   const narrativeQueryTerms = extractQueryTerms(
     params.goal,
     params.outlineNode,
@@ -105,7 +112,7 @@ export async function retrieveMemorySelection(params: {
   // Hooks stay on the authority path instead of the SQLite acceleration path:
   // the DB table intentionally stores only a small subset and cannot preserve
   // promoted/core/dependency metadata, which is load-bearing for hook debt.
-  const hooks = structuredHooks?.hooks ?? parsePendingHooksMarkdown(hooksMarkdown);
+  const hooks = hooksAvailableAt(historicalHooks ?? structuredHooks?.hooks ?? parsePendingHooksMarkdown(hooksMarkdown), fallbackChapter, revisitingHistory);
   const activeHooks = filterActiveHooks(hooks);
 
   const memoryDb = openMemoryDB(params.bookDir);
@@ -128,9 +135,9 @@ export async function retrieveMemorySelection(params: {
       // projects that projection can be absent or empty while SQLite already
       // has usable hook rows, so fall back only when the authority path yields
       // no active hooks at all.
-      const effectiveActiveHooks = activeHooks.length > 0
+      const effectiveActiveHooks = activeHooks.length > 0 || historicalHooks !== null
         ? activeHooks
-        : filterActiveHooks(memoryDb.getActiveHooks());
+        : filterActiveHooks(hooksAvailableAt(memoryDb.getActiveHooks(), fallbackChapter, revisitingHistory));
 
       return {
         summaries: selectRelevantSummaries(
@@ -141,7 +148,10 @@ export async function retrieveMemorySelection(params: {
         hooks: selectRelevantHooks(effectiveActiveHooks, narrativeQueryTerms, params.chapterNumber),
         activeHooks: effectiveActiveHooks,
         recyclableHooks: computeRecyclableHooks(effectiveActiveHooks, params.chapterNumber),
-        facts: selectRelevantFacts(memoryDb.getCurrentFacts(), factQueryTerms),
+        facts: selectRelevantFacts(
+          factsAvailableAt(historicalFacts ?? memoryDb.getAllFactsAt(fallbackChapter), fallbackChapter),
+          factQueryTerms,
+        ),
         volumeSummaries,
         dbPath: join(storyDir, "memory.db"),
       };
@@ -160,9 +170,36 @@ export async function retrieveMemorySelection(params: {
     hooks: selectRelevantHooks(activeHooks, narrativeQueryTerms, params.chapterNumber),
     activeHooks,
     recyclableHooks: computeRecyclableHooks(activeHooks, params.chapterNumber),
-    facts: selectRelevantFacts(facts, factQueryTerms),
+    facts: selectRelevantFacts(factsAvailableAt(historicalFacts ?? facts, fallbackChapter), factQueryTerms),
     volumeSummaries,
   };
+}
+
+function factsAvailableAt(facts: ReadonlyArray<Fact>, chapter: number): Fact[] {
+  return facts.filter((fact) => fact.validFromChapter <= chapter && fact.sourceChapter <= chapter
+    && (fact.validUntilChapter === null || fact.validUntilChapter > chapter));
+}
+
+async function readHistoricalFacts(bookDir: string, chapter: number): Promise<ReadonlyArray<Fact> | null> {
+  const snapshotDir = join(bookDir, "story", "snapshots", String(chapter));
+  const structured = await readStructuredState(join(snapshotDir, "state", "current_state.json"), CurrentStateStateSchema);
+  if (structured?.chapter === chapter) return structured.facts;
+  const markdown = await readFile(join(snapshotDir, "current_state.md"), "utf-8").catch(() => null);
+  return markdown === null ? null : parseCurrentStateFacts(markdown, chapter);
+}
+
+function hooksAvailableAt(hooks: ReadonlyArray<StoredHook>, chapter: number, historical: boolean): ReadonlyArray<StoredHook> {
+  // Planned seeds with no actual advancement retain the existing look-ahead
+  // policy. A later recorded advancement is not evidence of the earlier state.
+  return historical ? hooks.filter((hook) => hook.lastAdvancedChapter <= chapter) : hooks;
+}
+
+async function readHistoricalHooks(bookDir: string, chapter: number): Promise<ReadonlyArray<StoredHook> | null> {
+  const snapshotDir = join(bookDir, "story", "snapshots", String(chapter));
+  const structured = await readStructuredState(join(snapshotDir, "state", "hooks.json"), HooksStateSchema);
+  if (structured) return structured.hooks;
+  const markdown = await readFile(join(snapshotDir, "pending_hooks.md"), "utf-8").catch(() => null);
+  return markdown === null ? null : parsePendingHooksMarkdown(markdown);
 }
 
 /**
@@ -284,7 +321,7 @@ function extractTermsFromText(text: string): string[] {
   const chineseSegments = normalized.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
   const chinese = chineseSegments.flatMap((segment) => extractChineseFocusTerms(segment));
 
-  return [...english, ...chinese];
+  return [...english, ...chinese, ...extractKoreanQueryTerms(normalized)];
 }
 
 function extractChineseFocusTerms(segment: string): string[] {
@@ -312,7 +349,7 @@ function extractChineseFocusTerms(segment: string): string[] {
 function stripNegativeGuidance(text: string): string {
   if (!text) return "";
 
-  return text
+  return stripKoreanQueryExclusions(text)
     .replace(/\b(do not|don't|avoid|without|instead of)\b[\s\S]*$/i, " ")
     .replace(/(?:不要|不让|别|禁止|避免|但不允许)[\s\S]*$/u, " ")
     .trim();
@@ -426,12 +463,12 @@ function selectRelevantFacts(
   queryTerms: ReadonlyArray<string>,
 ): Fact[] {
   const prioritizedPredicates = [
-    /^(当前冲突|current conflict)$/i,
-    /^(当前目标|current goal)$/i,
-    /^(主角状态|protagonist state)$/i,
-    /^(当前限制|current constraint)$/i,
-    /^(当前位置|current location)$/i,
-    /^(当前敌我|current alliances|current relationships)$/i,
+    /^(当前冲突|current conflict|현재 갈등)$/i,
+    /^(当前目标|current goal|현재 목표)$/i,
+    /^(主角状态|protagonist state|주인공 상태)$/i,
+    /^(当前限制|current constraint|현재 제약)$/i,
+    /^(当前位置|current location|현재 위치)$/i,
+    /^(当前敌我|current alliances|current relationships|현재 동맹|현재 관계)$/i,
   ];
 
   return facts
@@ -524,7 +561,7 @@ function slugifyAnchor(value: string): string {
   return value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     || "volume-summary";
 }

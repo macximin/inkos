@@ -244,6 +244,8 @@ async function collectChapterPersistencePaths(
   const paddedChapter = String(chapterNumber).padStart(4, "0");
   const paths = new Set<string>(CHAPTER_PERSISTENCE_FILES);
   paths.add(join("story", "runtime", `chapter-${paddedChapter}.truth-receipt.json`));
+  // Restore the current advisory pointer with its exact manuscript on rollback.
+  paths.add(join("story", "runtime", "narrative-evidence", "chapters", `${String(chapterNumber).padStart(6, "0")}.json`));
   for (const relativePath of additionalRelativePaths) paths.add(safeRelativePath(relativePath));
   const chaptersDir = join(bookDir, "chapters");
   try {

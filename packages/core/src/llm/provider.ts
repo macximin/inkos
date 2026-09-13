@@ -716,9 +716,12 @@ export function __resetFixedTemperatureWarnings(): void {
 
 export function estimateTextTokens(text: string): number {
   if (!text) return 0;
-  const cjk = text.match(/[\u3400-\u9fff]/g)?.length ?? 0;
-  const nonCjk = text.length - cjk;
-  return Math.ceil(cjk + nonCjk / 4);
+  // A budgeting heuristic, not a provider tokenizer. Korean and Japanese must
+  // not use the Latin four-characters-per-token shortcut. Count code points so
+  // supplementary Han characters do not leave a spare surrogate in Latin units.
+  const eastAsian = text.match(/[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}]/gu) ?? [];
+  const eastAsianUnits = eastAsian.reduce((sum, character) => sum + character.length, 0);
+  return Math.ceil(eastAsian.length + (text.length - eastAsianUnits) / 4);
 }
 
 function estimateJsonTokens(value: unknown): number {

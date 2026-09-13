@@ -166,6 +166,17 @@ export class MemoryDB {
     ).all() as unknown as Fact[];
   }
 
+  /** Facts available at the end of a chapter, excluding later revelations. */
+  getAllFactsAt(chapter: number): ReadonlyArray<Fact> {
+    return this.db.prepare(
+      `SELECT ${FACT_SELECT_COLUMNS}
+       FROM facts
+       WHERE valid_from_chapter <= ? AND source_chapter <= ?
+       AND (valid_until_chapter IS NULL OR valid_until_chapter > ?)
+       ORDER BY subject, predicate, valid_from_chapter, id`,
+    ).all(chapter, chapter, chapter) as unknown as Fact[];
+  }
+
   /** Get facts about a specific subject that are valid at a given chapter. */
   getFactsAt(subject: string, chapter: number): ReadonlyArray<Fact> {
     return this.db.prepare(

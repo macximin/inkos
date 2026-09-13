@@ -1,3 +1,4 @@
+import { projectSceneDecisionForWriter } from "../planning/scene-decision.js";
 import { readFile, readdir, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { BaseAgent } from "./base.js";
@@ -672,7 +673,7 @@ async function collectSelectedContext(
   outlineSectionSelector?: OutlineSectionSelector,
 ): Promise<ContextPackage["selectedContext"]> {
     const retrievalHints = deriveRetrievalHints(plan);
-    const memoBodyExcerpt = plan.memo.body.trim();
+    const memoBodyExcerpt = projectSceneDecisionForWriter(plan.memo, language).body.trim();
     const chapterMemoEntry = memoBodyExcerpt.length > 0
       ? [{
           source: "runtime/chapter_memo",
@@ -1151,7 +1152,7 @@ function deriveOutlineSelectionHints(plan: PlanChapterOutput): string[] {
       ...plan.intent.mustAvoid,
       ...plan.intent.styleEmphasis,
       plan.memo.goal,
-      plan.memo.body,
+      projectSceneDecisionForWriter(plan.memo).body,
       ...plan.memo.threadRefs,
     ].filter((value): value is string => Boolean(value && value.trim()));
 }

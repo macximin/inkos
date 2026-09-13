@@ -147,6 +147,10 @@ description: Detective evidence and suspect-board play.
 Use evidence chains; do not turn clues into generic atmosphere.
 ```
 
+### Selected author-craft references
+
+`inkos craft import /path/to/pack.json` validates a bounded reference pack. Use `craft preview` to inspect the selected input, `craft enable <book-id> --pack <sha256>` to select it for a Book, and `craft status` or `craft disable` to inspect or remove that selection. Planning, writing, and revision use relevant complete cases within their input budgets, with source and selection receipts. Installation and preview require no model call or new human feedback. See [author craft inputs](docs/author-craft-inputs.md) for the format, scope, and tests.
+
 ### Configure
 
 InkOS now separates two configuration paths: **Studio uses visual service settings**, while **CLI / daemon / deployment can still use env overrides**. They do not silently overwrite each other.

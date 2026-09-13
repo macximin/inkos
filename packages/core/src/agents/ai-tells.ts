@@ -55,6 +55,17 @@ function countPatternMatches(content: string, patterns: ReadonlyArray<RegExp>): 
   return patterns.reduce((total, pattern) => total + (content.match(pattern)?.length ?? 0), 0);
 }
 
+function expressionPattern(word: string, language: AITellLanguage): RegExp {
+  const literal = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (language === "ko") {
+    // Korean endings may attach to a preceding word. Standalone adverbs should
+    // not match inside nouns (아마추어) or unrelated verbs (원하지만).
+    const leftBoundary = word === "듯했다" ? "" : "(?<![가-힣])";
+    return new RegExp(`${leftBoundary}${literal}(?![가-힣])`, "gu");
+  }
+  return new RegExp(literal, language === "en" ? "gi" : "g");
+}
+
 function analyzeKoreanFictionSignals(content: string): AITellIssue[] {
   const issues: AITellIssue[] = [];
 
@@ -91,7 +102,7 @@ function analyzeKoreanFictionSignals(content: string): AITellIssue[] {
       severity: "warning",
       category: "해설식 결론 반복",
       description: `행동이나 결과를 다시 풀이하는 결론형 문장틀이 ${interpretiveClosureCount}회 반복됩니다.`,
-      suggestion: "독자가 이미 확인한 의미는 재설명하지 말고, 필요한 정보만 인물의 선택·반응·손익 결과로 남기세요.",
+      suggestion: "같은 의미를 되풀이한 곳만 줄이세요. 선택 이유·새 추론·오해가 바뀌는 내면과 필요한 인과는 보존합니다.",
     });
   }
 
@@ -144,7 +155,7 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
           suggestion: isEnglish
             ? "Increase paragraph-length contrast: use shorter beats for impact and longer blocks for immersive detail"
             : isKorean
-              ? "충격과 속도감에는 짧은 문단을, 몰입 묘사에는 긴 문단을 사용해 길이 대비를 키우세요."
+              ? "현재 호흡이 장면에 맞는지 보고 의미 없는 획일화만 조절하세요. 길이 대비 자체를 목표로 삼거나 의도한 짧은 리듬을 늘리지 않습니다."
             : "增加段落长度差异：短段落用于节奏加速或冲击，长段落用于沉浸描写",
         });
       }
@@ -156,24 +167,24 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
   if (totalChars > 0) {
     let hedgeCount = 0;
     for (const word of HEDGE_WORDS[language]) {
-      const regex = new RegExp(word, isEnglish ? "gi" : "g");
+      const regex = expressionPattern(word, language);
       const matches = content.match(regex);
       hedgeCount += matches?.length ?? 0;
     }
     const hedgeDensity = hedgeCount / (totalChars / 1000);
-    if (hedgeDensity > 3) {
+    if (hedgeDensity > 3 && (!isKorean || hedgeCount >= 3)) {
       issues.push({
         severity: "warning",
         category: isEnglish ? "Hedge density" : isKorean ? "모호 표현 밀도" : "套话密度",
         description: isEnglish
           ? `Hedge-word density is ${hedgeDensity.toFixed(1)} per 1k characters (threshold >3), making the prose sound overly tentative`
           : isKorean
-            ? `모호 표현 밀도가 1천 자당 ${hedgeDensity.toFixed(1)}회(기준 >3)로, 서술이 지나치게 유보적으로 들립니다.`
+            ? `추정 표현이 ${hedgeCount}회, 1천 자당 ${hedgeDensity.toFixed(1)}회 반복됩니다. 이 수치만으로 인물의 불확실성이 불필요하다고 판단할 수는 없습니다.`
           : `套话词（似乎/可能/或许等）密度为${hedgeDensity.toFixed(1)}次/千字（阈值>3），语气过于模糊犹豫`,
         suggestion: isEnglish
           ? "Replace hedges with firmer narration: remove vague qualifiers and use concrete detail instead"
           : isKorean
-            ? "모호한 한정어를 덜어 내고 구체적인 행동과 감각 정보로 바꾸세요."
+              ? "불필요하게 반복된 유보 표현만 덜어냅니다. 인물의 추측·불확실성·정보 부족은 보존하고 모르는 일을 확정된 사실로 바꾸지 않습니다."
           : "用确定性叙述替代模糊表达：去掉「似乎」直接描述状态，用具体细节替代「可能」",
       });
     }
@@ -182,7 +193,7 @@ export function analyzeAITells(content: string, language: AITellLanguage = "zh")
   // dim 22: Formulaic transition repetition
   const transitionCounts: Record<string, number> = {};
   for (const word of TRANSITION_WORDS[language]) {
-    const regex = new RegExp(word, isEnglish ? "gi" : "g");
+    const regex = expressionPattern(word, language);
     const matches = content.match(regex);
     const count = matches?.length ?? 0;
     if (count > 0) {

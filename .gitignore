@@ -15,6 +15,7 @@ test-project/
 .worktrees/
 docs/*
 !docs/2026-08-27-fiction-content-neutral-runtime.md
+!docs/author-craft-inputs.md
 novel-to-comic-research.docx
 .pnpm-store/
 tmp/

@@ -13,6 +13,9 @@ export {
 export { FIREFLY_PRODUCTION_MODEL, FIREFLY_PRODUCTION_REASONING, FireflyRuntimeModelSchema, type FireflyRuntimeModel } from "./production/model-policy.js";
 // Models
 export { type BookConfig, type Platform, type Genre, type BookStatus, type FanficMode, type ChapterReviewMode, type RevisionGate, BookConfigSchema, PlatformSchema, GenreSchema, BookStatusSchema, FanficModeSchema, normalizePlatformId, normalizePlatformOrOther, resolveChapterReviewMode, resolveRevisionGate } from "./models/book.js";
+export { AuthorCraftPackSchema, AuthorCraftConfigSchema, AuthorCraftStageSchema, AuthorCraftPackReceiptSchema, AuthorCraftContextReceiptSchema, type AuthorCraftPack, type AuthorCraftCase, type AuthorCraftConfig, type AuthorCraftContext, type AuthorCraftStage } from "./models/author-craft.js";
+export { installAuthorCraftPack, loadAuthorCraftPack, readAuthorCraftPackFile, resolveAuthorCraftContext, selectAuthorCraftContext, resolveAuthorCraftInputReceipt, authorCraftPackPath, availableAuthorCraftTokens, readAuthorCraftHistory, type AuthorCraftHistoryEntry } from "./reference/author-craft.js";
+export { configureBookAuthorCraft } from "./reference/author-craft-config.js";
 export {
   type ChapterArcProvenance,
   type ChapterStoryRailProvenance,
@@ -435,6 +438,7 @@ export {
   type ChapterSummariesState,
   type CurrentStateFact,
   type EntityObservation,
+  type CharacterPerspectiveKind,
   type StoredEntityObservation,
   type CurrentStateState,
   type CurrentStatePatch,
@@ -450,6 +454,7 @@ export {
   ChapterSummariesStateSchema,
   CurrentStateFactSchema,
   EntityObservationSchema,
+  CharacterPerspectiveKindSchema,
   StoredEntityObservationSchema,
   CurrentStateStateSchema,
   CurrentStatePatchSchema,
@@ -1488,3 +1493,16 @@ export {
   type BookRuleOwnerDecisionInput,
   type BookRuleProvenanceCollection,
 } from "./models/book-rule-provenance.js";
+
+export { mapDailyPlanningCandidate, DailyPlanningCandidateMappingSchema, SourceFirstHandoffMappingSchema, SourceFirstHandoffAuthorizationSchema, SourceFirstHandoffManifestSchema, validateSourceFirstHandoff, applySourceFirstHandoff, initializeSourceFirstHandoffBook, HANDOFF_FOUNDATION_PATHS, type SourceFirstHandoffSubject, type ValidatedSourceFirstHandoff } from "./planning/source-first-handoff.js";
+
+export * from "./models/creative-brief.js";
+export * from "./planning/creative-brief.js";
+export * from "./planning/scene-decision.js";
+export * from "./planning/draft-discovery.js";
+export * from "./planning/draft-discovery-runtime.js";
+
+export * from "./models/narrative-evidence.js";
+export * from "./state/narrative-evidence.js";
+
+export * from "./planning/revision-experience.js";

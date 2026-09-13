@@ -1,3 +1,4 @@
+import { projectSceneDecisionForWriter } from "../planning/scene-decision.js";
 import type { ChapterIntent, ChapterMemo, ContextPackage } from "../models/input-governance.js";
 
 const HOOK_ID_PATTERN = /\bH\d+\b/gi;
@@ -78,7 +79,7 @@ export function renderMemoAsNarrativeBlock(
 
   // Emit the 7-section memo body at top level so each heading is a task.
   if (memo.body.trim().length > 0) {
-    sections.push(s(memo.body));
+    sections.push(s(projectSceneDecisionForWriter(memo, language).body));
   }
 
   return sections.join("\n\n");
@@ -140,7 +141,9 @@ export function renderNarrativeSelectedContext(
       // evidence and make Writer's recorded input differ from its actual input.
       const detail = entry.source === "story/state/current_state.json#entity-observations"
         ? entry.excerpt
-        : entry.excerpt && sanitizeNarrativeControlText(entry.excerpt, language);
+        : entry.excerpt && sanitizeNarrativeControlText(entry.source === "runtime/chapter_memo"
+          ? projectSceneDecisionForWriter({ chapter: 1, goal: "", isGoldenOpening: false, threadRefs: [], body: entry.excerpt }, language).body
+          : entry.excerpt, language);
       const lines = [
         `### ${heading} ${index + 1}`,
         `- ${reasonLabel}: ${sanitizeNarrativeControlText(entry.reason, language)}`,

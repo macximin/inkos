@@ -29,6 +29,7 @@ import {
   type ProductionInputReceipt,
 } from "./production-input.js";
 import { resolveWriteNextProductionSkills } from "./production-skill.js";
+import { resolveAuthorCraftInputReceipt } from "../reference/author-craft.js";
 import { resolveTaskGuidance } from "./task-guidance-resolver.js";
 import {
   ProductionCommandBindingSchema,
@@ -263,11 +264,13 @@ export async function executeObserveOnlyWriteNext(input: {
     ) {
       throw new Error("Active Soul adoption evidence no longer matches the Writer genre profile resolved for this Book.");
     }
+    const authorCraft = await resolveAuthorCraftInputReceipt(input.projectRoot, book.writing?.authorCraft, book.language ?? writerGenreProfile.language);
     const productionInputs = createProductionInputReceipt({
       schemaVersion: "production-input-receipt/v1",
       soul: activeSoul?.receipt ?? null,
       skills: [...resolvedSkills.receipts],
       writerGenreProfile,
+      ...(authorCraft ? { authorCraft } : {}),
       externalContextSha256: command.authorization.ownerDirection.textSha256,
       promptInjectionSha256: sha256Bytes(promptInjection),
     });

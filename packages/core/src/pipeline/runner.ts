@@ -1,3 +1,4 @@
+import { persistDraftDiscoveryObservation } from "../planning/draft-discovery-runtime.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { LLMClient, LLMMessage, LLMResponse, OnStreamProgress } from "../llm/provider.js";
 import { createLLMClient } from "../llm/provider.js";
@@ -1538,6 +1539,20 @@ export class PipelineRunner {
     });
   }
 
+  /** The Chapter transaction has committed; the surrounding Book lease is still held. */
+  private async persistCommittedDraftDiscoveries(bookId: string, chapterNumber: number, output: WriteChapterOutput): Promise<void> {
+    const observation = output.draftDiscoveryObservation;
+    if (!observation) return;
+    if (observation.bookId !== bookId || observation.chapter !== chapterNumber) {
+      this.config.logger?.warn("[draft-discovery] Observation does not match the committed Book/Chapter; excluded.");
+      return;
+    }
+    // Re-read saved bytes and the current inventory/plan. A normalizer, repair
+    // or later settlement must not rebind an earlier observation to new prose.
+    const discovery = await persistDraftDiscoveryObservation(this.state.bookDir(bookId), observation);
+    for (const reason of discovery.diagnostics) this.config.logger?.warn(`[draft-discovery] ${reason}`);
+  }
+
   /** Write a single draft chapter. Saves chapter file + truth files + index + snapshot. */
   async writeDraft(bookId: string, context?: string, wordCount?: number): Promise<DraftResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
@@ -1690,6 +1705,8 @@ export class PipelineRunner {
           });
         },
       });
+
+      await this.persistCommittedDraftDiscoveries(bookId, chapterNumber, draftOutput);
 
       await this.emitWebhook("chapter-complete", bookId, chapterNumber, {
         title: draftOutput.title,
@@ -3096,7 +3113,7 @@ export class PipelineRunner {
     } else {
       const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
       const reviewResult = await runChapterReviewCycle({
-        book: { genre: book.genre },
+        book: { id: book.id, genre: book.genre, language: pipelineLang },
         bookDir,
         chapterNumber,
         initialOutput: output,
@@ -3428,6 +3445,8 @@ export class PipelineRunner {
       },
     });
 
+    await this.persistCommittedDraftDiscoveries(bookId, chapterNumber, persistenceOutput);
+
     // 6. Send notification
     if (this.config.notifyChannels && this.config.notifyChannels.length > 0) {
       const statusEmoji = resolvedStatus === "state-degraded"
@@ -3615,6 +3634,8 @@ export class PipelineRunner {
         });
       },
     });
+
+    await this.persistCommittedDraftDiscoveries(bookId, targetChapter, repairedOutput);
 
     const repairedPassesAudit = baseStatus !== "audit-failed";
     return {
@@ -3837,6 +3858,7 @@ export class PipelineRunner {
         });
       },
     });
+    await this.persistCommittedDraftDiscoveries(bookId, targetChapter, syncedOutput);
     return {
       chapterNumber: targetChapter,
       title: targetMeta.title,
@@ -4549,6 +4571,8 @@ ${matrix}`,
             });
           },
         });
+
+        await this.persistCommittedDraftDiscoveries(input.bookId, chapterNumber, persistedOutput);
 
         importedCount++;
         totalWords += chapterWordCount;

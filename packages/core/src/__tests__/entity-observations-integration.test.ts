@@ -116,6 +116,34 @@ afterEach(async () => {
 });
 
 describe("entity observation persistence and consumer boundaries", () => {
+  it.each(["legacy", "v2"] as const)("projects recorded perspective for an explicit POV in the %s creative path", async (mode) => {
+    const f = await fixture();
+    const belief = "Min Seo believed that Harbor would repay the debt.";
+    const secret = "Harbor intended to keep the money without telling Min Seo.";
+    const body = `${belief}\n${secret}`;
+    await f.writer.saveChapter(f.bookDir, { ...output(body), runtimeStateDelta: RuntimeStateDeltaSchema.parse({ chapter: 1, entityObservations: [
+      { kind: "person", name: "Min Seo", evidence: belief, perspective: "belief" },
+      { kind: "person", name: "Harbor", evidence: secret, perspective: "intention" },
+    ] }) }, false, "en");
+    await writeFile(join(f.storyDir, "volume_outline.md"), "# Outline\n## Chapter 2\nPOV: Min Seo\nMin Seo asks about repayment.\n");
+    vi.spyOn(WriterAgent.prototype as never, "loadRecentChapters" as never).mockResolvedValue("");
+    const chat = vi.spyOn(WriterAgent.prototype as never, "chat" as never).mockRejectedValue(new Error("captured-before-provider"));
+    await expect(f.writer.writeChapter({ book: f.book, bookDir: f.bookDir, chapterNumber: 2,
+      ...(mode === "v2" ? {
+        chapterMemo: { chapter: 2, goal: "Ask about the debt.", isGoldenOpening: false, body: "Continue the conversation.", threadRefs: [] },
+        contextPackage: { chapter: 2, selectedContext: [] },
+        ruleStack: { layers: [], sections: { hard: [], soft: [], diagnostic: [] }, overrideEdges: [], activeOverrides: [] },
+      } : {}),
+    })).rejects.toThrow("captured-before-provider");
+    const creativeInput = (chat.mock.calls[0]![0] as Array<{ content: string }>).map((message) => message.content).join("\n");
+    expect(creativeInput).toContain(belief);
+    expect(creativeInput).toContain("Belief");
+    expect(creativeInput).not.toContain(secret);
+    expect(chat).toHaveBeenCalledTimes(1);
+    // The writer projection must not erase another character's stored evidence.
+    expect(JSON.parse(await readFile(f.statePath, "utf8")).entityObservations).toHaveLength(2);
+  });
+
   it.each(["legacy", "v2"] as const)("feeds saved observations into the next %s Writer call despite existing role cards", async (mode) => {
     const f = await fixture();
     await f.writer.saveChapter(f.bookDir, output(), false, "en");

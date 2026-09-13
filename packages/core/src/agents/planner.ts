@@ -1,3 +1,5 @@
+import { readNarrativeEvidenceContext } from "../state/narrative-evidence.js";
+import { readDraftDiscoveryPlanningContext } from "../planning/draft-discovery-runtime.js";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BaseAgent } from "./base.js";
@@ -43,8 +45,11 @@ import {
   readPendingHooks,
   readSubplotBoard,
 } from "./planner-context.js";
+import { readBookCreativeBrief, renderBookCreativeBrief, recordBookCreativeBrief } from "../planning/creative-brief.js";
+import { readSceneDecision, recordSceneDecision, sceneDecisionGuidance } from "../planning/scene-decision.js";
 import type { StoredHook } from "../state/memory-db.js";
 import { ENTITY_OBSERVATION_CONTEXT_SOURCE, readEntityObservationContext } from "../state/entity-observations.js";
+import { resolveAuthorCraftContext, recordAuthorCraftContext, availableAuthorCraftTokens } from "../reference/author-craft.js";
 
 export interface PlanChapterInput {
   readonly book: BookConfig;
@@ -56,6 +61,9 @@ export interface PlanChapterInput {
 }
 
 export interface PlanChapterOutput {
+  readonly authorCraftReceiptPath?: string;
+  readonly sceneDecisionReceiptPath?: string;
+  readonly creativeBriefReceiptPath?: string;
   readonly intent: ChapterIntent;
   readonly memo: ChapterMemo;
   readonly intentMarkdown: string;
@@ -179,6 +187,9 @@ export class PlannerAgent extends BaseAgent {
     });
 
     const isGoldenOpening = this.isGoldenOpeningChapter(plannerLanguage, input.chapterNumber);
+    let authorCraftReceiptPath: string | undefined;
+    let creativeBriefReceiptPath: string | undefined;
+    const creativeBrief = await readBookCreativeBrief({ bookDir: input.bookDir, bookId: input.book.id, chapterNumber: input.chapterNumber });
     const memo = await this.planChapterMemo({
       storyDir,
       bookDir: input.bookDir,
@@ -194,6 +205,33 @@ export class PlannerAgent extends BaseAgent {
       moralAuthoritySources,
       recyclableHooks: memorySelection.recyclableHooks,
       genreFunContract,
+      sceneDecisionEnabled: Boolean(input.book.writing?.authorCraft),
+      resolveAuthorCraft: async (reservedText) => {
+        const briefContext = renderBookCreativeBrief(creativeBrief, { language: plannerLanguage,
+          maxInputTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+            outputTokens: this.ctx.client.defaults.maxTokens, reservedText, extraReserve: 512 }) });
+        creativeBriefReceiptPath = await recordBookCreativeBrief(input.bookDir, input.chapterNumber, "planning", briefContext).catch(() => { this.ctx.logger?.warn("[creative-brief] Optional input receipt could not be saved."); return undefined; });
+        const discoveryContext = await readDraftDiscoveryPlanningContext(input.bookDir, input.book.id, plannerLanguage,
+          availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+            outputTokens: this.ctx.client.defaults.maxTokens, reservedText: [reservedText, briefContext.rendered].join("\n\n"), extraReserve: 512 }), input.chapterNumber - 1);
+        const narrativeContext = await readNarrativeEvidenceContext(input.bookDir, { bookId: input.book.id,
+          throughChapter: input.chapterNumber - 1, language: plannerLanguage, query: [goal, outlineNode, input.externalContext].filter(Boolean).join("\n"),
+          maxInputTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+            outputTokens: this.ctx.client.defaults.maxTokens, reservedText: [reservedText, briefContext.rendered, discoveryContext.rendered].join("\n\n"), extraReserve: 512 }),
+        });
+        const authorCraft = await resolveAuthorCraftContext({
+          projectRoot: this.ctx.projectRoot,
+          bookId: input.book.id,
+          config: input.book.writing?.authorCraft,
+          language: plannerLanguage,
+          stage: "planning",
+          query: [goal, outlineNode, input.externalContext].filter(Boolean).join("\n"),
+          maxContextTokens: availableAuthorCraftTokens({ contextWindow: this.ctx.client._piModel?.contextWindow,
+            outputTokens: this.ctx.client.defaults.maxTokens, reservedText: [reservedText, briefContext.rendered, discoveryContext.rendered, narrativeContext.rendered].join("\n\n"), extraReserve: 512 }),
+        });
+        authorCraftReceiptPath = await recordAuthorCraftContext(input.bookDir, input.chapterNumber, authorCraft);
+        return [briefContext.rendered, discoveryContext.rendered, narrativeContext.rendered, authorCraft?.rendered].filter(Boolean).join("\n\n");
+      },
       // Phase hotfix 4: thread book language through so the planner uses
       // English prompts (system + user template + golden opening guidance)
       // for English books instead of always-Chinese.
@@ -204,6 +242,8 @@ export class PlannerAgent extends BaseAgent {
     // Overwrite intent.goal so downstream composer/retrieval gets the
     // concrete task statement instead of the outline-derived fallback.
     intent.goal = memo.goal;
+    const sceneDecision = input.book.writing?.authorCraft || readSceneDecision(memo).status !== "missing"
+      ? await recordSceneDecision(input.bookDir, memo).catch(() => { this.ctx.logger?.warn("[scene-decision] Optional decision receipt could not be saved."); return undefined; }) : undefined;
 
     const runtimePath = join(runtimeDir, `chapter-${String(input.chapterNumber).padStart(4, "0")}.intent.md`);
     const intentMarkdown = this.renderIntentMarkdown(
@@ -218,6 +258,9 @@ export class PlannerAgent extends BaseAgent {
 
     return {
       intent,
+      ...(authorCraftReceiptPath ? { authorCraftReceiptPath } : {}),
+      ...(sceneDecision ? { sceneDecisionReceiptPath: sceneDecision.path } : {}),
+      ...(creativeBriefReceiptPath ? { creativeBriefReceiptPath } : {}),
       memo,
       intentMarkdown,
       plannerInputs: [...materials.plannerInputs, ENTITY_OBSERVATION_CONTEXT_SOURCE],
@@ -246,6 +289,9 @@ export class PlannerAgent extends BaseAgent {
     readonly moralAuthoritySources?: ReadonlyArray<ArchitectMoralAuthoritySource>;
     readonly recyclableHooks?: ReadonlyArray<StoredHook>;
     readonly genreFunContract?: PlannerGenreFunContract;
+    readonly authorCraftContext?: string;
+    readonly sceneDecisionEnabled?: boolean;
+    readonly resolveAuthorCraft?: (reservedText: string) => Promise<string>;
     readonly language?: "zh" | "ko" | "en";
   }): Promise<ChapterMemo> {
     const [characterMatrix, subplotBoard, emotionalArcs, pendingHooks] = await Promise.all([
@@ -320,9 +366,11 @@ export class PlannerAgent extends BaseAgent {
       genreFunContract: input.genreFunContract,
       language,
     });
-    const userMessage = entityContext ? `${baseUserMessage}\n\n${entityContext}` : baseUserMessage;
-
-    const systemPrompt = getPlannerMemoSystemPrompt(language);
+    const systemPrompt = [getPlannerMemoSystemPrompt(language), input.sceneDecisionEnabled ? sceneDecisionGuidance(language) : ""].filter(Boolean).join("\n\n");
+    const authorCraft = input.resolveAuthorCraft
+      ? await input.resolveAuthorCraft([systemPrompt, baseUserMessage, entityContext].filter(Boolean).join("\n\n"))
+      : input.authorCraftContext;
+    const userMessage = [baseUserMessage, entityContext, authorCraft].filter(Boolean).join("\n\n");
 
     let currentUserMessage = userMessage;
     let lastError: PlannerParseError | undefined;
